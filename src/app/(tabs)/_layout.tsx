@@ -52,11 +52,16 @@ export default function TabsLayout() {
           onPress: () => {
             // Later replace this with:
             // router.push("/emergency");
+
             console.log("Emergency request started");
           },
         },
       ]
     );
+  };
+
+  const handleSignUp = () => {
+    router.push("/signup");
   };
 
   return (
@@ -68,8 +73,8 @@ export default function TabsLayout() {
         {/* ================================================= */}
 
         <View style={styles.header}>
-          <View style={styles.brandContainer}>
 
+          <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
               <Ionicons
                 name="shield-checkmark"
@@ -81,23 +86,36 @@ export default function TabsLayout() {
             <Text style={styles.brandTitle}>
               SafeSync
             </Text>
-
           </View>
 
-          {/* SIGN OUT */}
+          {/* HEADER ACTIONS */}
+          <View style={styles.headerActions}>
 
-          <TouchableOpacity
-            style={styles.signOutButton}
-            activeOpacity={0.7}
-            onPress={handleSignOut}
-          >
-            <Ionicons
-              name="log-out-outline"
-              size={20}
-              color="#0F172A"
-            />
-          </TouchableOpacity>
+            {/* SIGN UP */}
+            <TouchableOpacity
+              style={styles.signUpButton}
+              activeOpacity={0.7}
+              onPress={handleSignUp}
+            >
+              <Text style={styles.signUpText}>
+                Sign Up
+              </Text>
+            </TouchableOpacity>
 
+            {/* SIGN OUT */}
+            <TouchableOpacity
+              style={styles.signOutButton}
+              activeOpacity={0.7}
+              onPress={handleSignOut}
+            >
+              <Ionicons
+                name="log-out-outline"
+                size={20}
+                color="#0F172A"
+              />
+            </TouchableOpacity>
+
+          </View>
         </View>
 
         {/* ================================================= */}
@@ -105,31 +123,23 @@ export default function TabsLayout() {
         {/* ================================================= */}
 
         <View style={styles.tabsContainer}>
-
           <Tabs
             screenOptions={{
               headerShown: false,
-
               tabBarActiveTintColor: "#DC2626",
               tabBarInactiveTintColor: "#94A3B8",
-
               tabBarStyle: styles.tabBar,
-
               tabBarLabelStyle: styles.tabLabel,
-
               tabBarItemStyle: styles.tabItem,
-
               tabBarHideOnKeyboard: true,
             }}
           >
 
             {/* HOME */}
-
             <Tabs.Screen
               name="home"
               options={{
                 title: "Home",
-
                 tabBarIcon: ({ color, focused }) => (
                   <Ionicons
                     name={
@@ -145,12 +155,10 @@ export default function TabsLayout() {
             />
 
             {/* HISTORY */}
-
             <Tabs.Screen
               name="history"
               options={{
                 title: "History",
-
                 tabBarIcon: ({ color, focused }) => (
                   <Ionicons
                     name={
@@ -166,12 +174,10 @@ export default function TabsLayout() {
             />
 
             {/* WALLET */}
-
             <Tabs.Screen
               name="wallet"
               options={{
                 title: "Wallet",
-
                 tabBarIcon: ({ color, focused }) => (
                   <Ionicons
                     name={
@@ -187,12 +193,10 @@ export default function TabsLayout() {
             />
 
             {/* PROFILE */}
-
             <Tabs.Screen
               name="profile"
               options={{
                 title: "Profile",
-
                 tabBarIcon: ({ color, focused }) => (
                   <Ionicons
                     name={
@@ -234,7 +238,6 @@ export default function TabsLayout() {
           </View>
 
         </View>
-
       </View>
     </SafeAreaView>
   );
@@ -251,24 +254,19 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
   },
 
-  /* ============================================= */
-  /* HEADER                                        */
-  /* ============================================= */
+  /* =============================================
+     HEADER
+  ============================================= */
 
   header: {
     height: 64,
-
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-
     paddingHorizontal: 20,
-
     backgroundColor: "#FFFFFF",
-
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
-
     zIndex: 10,
   },
 
@@ -280,14 +278,10 @@ const styles = StyleSheet.create({
   logoBadge: {
     width: 34,
     height: 34,
-
     borderRadius: 17,
-
     backgroundColor: "#E11D48",
-
     alignItems: "center",
     justifyContent: "center",
-
     marginRight: 9,
   },
 
@@ -297,64 +291,82 @@ const styles = StyleSheet.create({
     color: "#0F172A",
   },
 
+  /* =============================================
+     HEADER ACTIONS
+  ============================================= */
+
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  /* =============================================
+     SIGN UP
+  ============================================= */
+
+  signUpButton: {
+    height: 40,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  signUpText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  /* =============================================
+     SIGN OUT
+  ============================================= */
+
   signOutButton: {
     width: 40,
     height: 40,
-
     borderRadius: 12,
-
     borderWidth: 1,
     borderColor: "#E2E8F0",
-
     alignItems: "center",
     justifyContent: "center",
-
     backgroundColor: "#FFFFFF",
   },
 
-  /* ============================================= */
-  /* TABS CONTAINER                                */
-  /* ============================================= */
+  /* =============================================
+     TABS CONTAINER
+  ============================================= */
 
   tabsContainer: {
     flex: 1,
   },
 
-  /* ============================================= */
-  /* BOTTOM NAVIGATION                             */
-  /* ============================================= */
+  /* =============================================
+     BOTTOM NAVIGATION
+  ============================================= */
 
   tabBar: {
     position: "absolute",
-
     left: 12,
     right: 12,
     bottom: Platform.OS === "ios" ? 10 : 12,
-
     height: 68,
-
     backgroundColor: "#FFFFFF",
-
     borderWidth: 1,
     borderColor: "#E2E8F0",
-
     borderRadius: 20,
-
     paddingTop: 7,
-    paddingBottom:
-      Platform.OS === "ios" ? 8 : 6,
+    paddingBottom: Platform.OS === "ios" ? 8 : 6,
 
     shadowColor: "#000",
-
     shadowOffset: {
       width: 0,
       height: 4,
     },
-
     shadowOpacity: 0.08,
-
     shadowRadius: 12,
-
     elevation: 8,
   },
 
@@ -368,73 +380,51 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  /* ============================================= */
-  /* GLOBAL EMERGENCY BUTTON                       */
-  /* ============================================= */
+  /* =============================================
+     GLOBAL EMERGENCY BUTTON
+  ============================================= */
 
   emergencyWrapper: {
     position: "absolute",
-
     left: 20,
     right: 20,
-
-    bottom:
-      Platform.OS === "ios"
-        ? 88
-        : 88,
-
+    bottom: 88,
     zIndex: 20,
   },
 
   emergencyButton: {
     height: 54,
-
     backgroundColor: "#DC2626",
-
     borderRadius: 18,
-
     flexDirection: "row",
-
     alignItems: "center",
     justifyContent: "center",
-
     paddingHorizontal: 20,
 
     shadowColor: "#DC2626",
-
     shadowOffset: {
       width: 0,
       height: 5,
     },
-
     shadowOpacity: 0.3,
-
     shadowRadius: 10,
-
     elevation: 8,
   },
 
   emergencyIcon: {
     width: 32,
     height: 32,
-
     borderRadius: 16,
-
     backgroundColor: "rgba(255,255,255,0.18)",
-
     alignItems: "center",
     justifyContent: "center",
-
     marginRight: 9,
   },
 
   emergencyText: {
     color: "#FFFFFF",
-
     fontSize: 13,
-
     fontWeight: "900",
-
     letterSpacing: 0.4,
   },
 });
