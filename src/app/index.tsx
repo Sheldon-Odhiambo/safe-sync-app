@@ -22,40 +22,32 @@ const COLORS = {
   muted: "#64748B",
   placeholder: "#94A3B8",
   border: "#E2E8F0",
-  inputBackground: "#FFFFFF",
   background: "#F8FAFC",
 };
-
-const DEMO_ACCOUNTS = [
-  {
-    role: "Client",
-    email: "wanjiru@example.com",
-  },
-  {
-    role: "Driver",
-    email: "amwangi@safesync.co.ke",
-  },
-  {
-    role: "Super admin",
-    email: "admin@safesync.co.ke",
-  },
-];
 
 export default function LoginScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
-  const isDesktop = width >= 768; // Screen breakpoint for side-by-side view
+
+  const isDesktop = width >= 768;
+  const isSmallPhone = width < 380;
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
   const [showPassword, setShowPassword] = useState(false);
+
+  const [focusedField, setFocusedField] = useState<
+    "email" | "password" | null
+  >(null);
+
   const [error, setError] = useState("");
 
   const handleLogin = () => {
     setError("");
 
     if (!email.trim()) {
-      setError("Please enter your email.");
+      setError("Please enter your email address.");
       return;
     }
 
@@ -64,66 +56,177 @@ export default function LoginScreen() {
       return;
     }
 
+    // Backend authentication will be connected later.
     router.replace("/home");
-  };
-
-  const handleDemoAccount = (accountEmail: string) => {
-    setEmail(accountEmail);
-    setPassword("password");
-    setError("");
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         style={styles.keyboard}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <View style={[styles.page, isDesktop && styles.pageDesktop]}>
-          {/* BRAND PANEL: Render only on Desktop / Wide screens */}
+
+          {/* DESKTOP BRAND PANEL */}
           {isDesktop && <BrandPanel />}
 
           {/* LOGIN PANEL */}
-          <View style={styles.loginPanel}>
+          <View
+            style={[
+              styles.loginPanel,
+              !isDesktop && styles.loginPanelMobile,
+              isSmallPhone && styles.loginPanelSmallPhone,
+            ]}
+          >
             <ScrollView
-              contentContainerStyle={styles.scrollContent}
+              contentContainerStyle={[
+                styles.scrollContent,
+                !isDesktop && styles.scrollContentMobile,
+              ]}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
               <View style={styles.loginContainer}>
+
+                {/* MOBILE LOGO */}
+                {!isDesktop && (
+                  <View style={styles.mobileLogoContainer}>
+                    <View style={styles.mobileLogoCircle}>
+                      <View style={styles.mobileLogoShield}>
+                        <Text style={styles.mobileLogoPlus}>+</Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.mobileLogoText}>
+                      SafeSync
+                    </Text>
+                  </View>
+                )}
+
+                {/* HEADING */}
                 <View style={styles.heading}>
-                  <Text style={styles.welcomeTitle}>Welcome back</Text>
+                  <Text style={styles.welcomeTitle}>
+                    Welcome back
+                  </Text>
+
                   <Text style={styles.welcomeSubtitle}>
-                    Clients, drivers and administrators sign in here.
+                    Sign in to your SafeSync account to continue.
                   </Text>
                 </View>
 
                 {/* EMAIL */}
-                <InputField
-                  label="Email"
-                  value={email}
-                  onChangeText={setEmail}
-                  placeholder="you@example.com"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>
+                    Email address
+                  </Text>
+
+                  <View
+                    style={[
+                      styles.inputWrapper,
+                      focusedField === "email" &&
+                        styles.inputWrapperFocused,
+                    ]}
+                  >
+                    <Text style={styles.inputSymbol}>
+                      @
+                    </Text>
+
+                    <TextInput
+                      style={styles.input}
+                      value={email}
+                      onChangeText={(value) => {
+                        setEmail(value);
+                        setError("");
+                      }}
+                      placeholder="you@example.com"
+                      placeholderTextColor={COLORS.placeholder}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      autoComplete="email"
+                      textContentType="emailAddress"
+                      onFocus={() =>
+                        setFocusedField("email")
+                      }
+                      onBlur={() =>
+                        setFocusedField(null)
+                      }
+                      returnKeyType="next"
+                      selectionColor={COLORS.primary}
+                    />
+                  </View>
+                </View>
 
                 {/* PASSWORD */}
-                <View style={styles.passwordWrapper}>
-                  <InputField
-                    label="Password"
-                    value={password}
-                    onChangeText={setPassword}
-                    placeholder="••••••••"
-                    secureTextEntry={!showPassword}
-                  />
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>
+                    Password
+                  </Text>
 
-                  <Pressable
-                    style={styles.passwordToggle}
-                    onPress={() => setShowPassword((value) => !value)}
+                  <View
+                    style={[
+                      styles.inputWrapper,
+                      focusedField === "password" &&
+                        styles.inputWrapperFocused,
+                    ]}
                   >
-                    <Text style={styles.passwordToggleText}>
-                      {showPassword ? "Hide" : "Show"}
+                    <Text style={styles.inputSymbol}>
+                      •
+                    </Text>
+
+                    <TextInput
+                      style={styles.input}
+                      value={password}
+                      onChangeText={(value) => {
+                        setPassword(value);
+                        setError("");
+                      }}
+                      placeholder="Enter your password"
+                      placeholderTextColor={COLORS.placeholder}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      autoComplete="password"
+                      textContentType="password"
+                      onFocus={() =>
+                        setFocusedField("password")
+                      }
+                      onBlur={() =>
+                        setFocusedField(null)
+                      }
+                      returnKeyType="done"
+                      onSubmitEditing={handleLogin}
+                      selectionColor={COLORS.primary}
+                    />
+
+                    {/* SHOW / HIDE */}
+                    <Pressable
+                      style={styles.passwordToggle}
+                      onPress={() =>
+                        setShowPassword(
+                          (value) => !value
+                        )
+                      }
+                      hitSlop={10}
+                    >
+                      <Text style={styles.passwordToggleText}>
+                        {showPassword ? "Hide" : "Show"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                {/* FORGOT PASSWORD */}
+                <View style={styles.forgotContainer}>
+                  <Pressable
+                    onPress={() => {
+                      // Password reset will be connected later.
+                    }}
+                    hitSlop={10}
+                  >
+                    <Text style={styles.forgotPassword}>
+                      Forgot password?
                     </Text>
                   </Pressable>
                 </View>
@@ -131,7 +234,9 @@ export default function LoginScreen() {
                 {/* ERROR */}
                 {error ? (
                   <View style={styles.errorBox}>
-                    <Text style={styles.errorText}>{error}</Text>
+                    <Text style={styles.errorText}>
+                      {error}
+                    </Text>
                   </View>
                 ) : null}
 
@@ -143,25 +248,19 @@ export default function LoginScreen() {
                   ]}
                   onPress={handleLogin}
                 >
-                  <Text style={styles.loginButtonText}>Log in</Text>
+                  <Text style={styles.loginButtonText}>
+                    Log in
+                  </Text>
                 </Pressable>
 
-                {/* DIVIDER */}
-                <Divider />
-
-                {/* DEMO ACCOUNTS */}
-                <View style={styles.demoSection}>
-                  <View style={styles.demoList}>
-                    {DEMO_ACCOUNTS.map((account) => (
-                      <DemoAccount
-                        key={account.email}
-                        role={account.role}
-                        email={account.email}
-                        onPress={() => handleDemoAccount(account.email)}
-                      />
-                    ))}
-                  </View>
+                {/* SECURITY MESSAGE */}
+                <View style={styles.securityMessage}>
+                  <Text style={styles.securityText}>
+                    Your account is protected by SafeSync
+                    security.
+                  </Text>
                 </View>
+
               </View>
             </ScrollView>
           </View>
@@ -171,11 +270,15 @@ export default function LoginScreen() {
   );
 }
 
-/* BRAND PANEL */
+/* =========================================================
+   BRAND PANEL
+========================================================= */
+
 function BrandPanel() {
   return (
     <View style={styles.brandPanel}>
       <View style={styles.brandContent}>
+
         {/* LOGO */}
         <View style={styles.logoRow}>
           <View style={styles.logoCircle}>
@@ -183,7 +286,10 @@ function BrandPanel() {
               <Text style={styles.logoPlus}>+</Text>
             </View>
           </View>
-          <Text style={styles.logoText}>SafeSync</Text>
+
+          <Text style={styles.logoText}>
+            SafeSync
+          </Text>
         </View>
 
         {/* MESSAGE */}
@@ -195,90 +301,26 @@ function BrandPanel() {
           </Text>
 
           <Text style={styles.brandDescription}>
-            12,480 verified responders across 184 cities, coordinated in real
-            time.
+            Emergency response coordination designed to
+            connect people, responders and organizations
+            in real time.
           </Text>
         </View>
 
         {/* FOOTER */}
-        <Text style={styles.copyright}>© 2026 SafeSync</Text>
+        <Text style={styles.copyright}>
+          © 2026 SafeSync Technologies Ltd.
+        </Text>
+
       </View>
     </View>
   );
 }
 
-/* INPUT FIELD */
-type InputFieldProps = {
-  label: string;
-  value: string;
-  onChangeText: (value: string) => void;
-  placeholder: string;
-  secureTextEntry?: boolean;
-  keyboardType?: "default" | "email-address";
-  autoCapitalize?: "none" | "sentences";
-};
+/* =========================================================
+   STYLES
+========================================================= */
 
-function InputField({
-  label,
-  value,
-  onChangeText,
-  placeholder,
-  secureTextEntry = false,
-  keyboardType = "default",
-  autoCapitalize = "sentences",
-}: InputFieldProps) {
-  return (
-    <View style={styles.inputGroup}>
-      <Text style={styles.inputLabel}>{label}</Text>
-      <TextInput
-        style={styles.input}
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={COLORS.placeholder}
-        secureTextEntry={secureTextEntry}
-        keyboardType={keyboardType}
-        autoCapitalize={autoCapitalize}
-        autoCorrect={false}
-      />
-    </View>
-  );
-}
-
-/* DEMO ACCOUNT */
-type DemoAccountProps = {
-  role: string;
-  email: string;
-  onPress: () => void;
-};
-
-function DemoAccount({ role, email, onPress }: DemoAccountProps) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.demoAccount,
-        pressed && styles.demoAccountPressed,
-      ]}
-    >
-      <Text style={styles.demoRole}>{role}</Text>
-      <Text style={styles.demoEmail}>{email}</Text>
-    </Pressable>
-  );
-}
-
-/* DIVIDER */
-function Divider() {
-  return (
-    <View style={styles.dividerContainer}>
-      <View style={styles.divider} />
-      <Text style={styles.dividerText}>demo accounts</Text>
-      <View style={styles.divider} />
-    </View>
-  );
-}
-
-/* STYLES */
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -303,13 +345,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
+  scrollContentMobile: {
+    paddingVertical: 28,
+  },
+
   /* BRAND PANEL */
+
   brandPanel: {
     flex: 1,
     backgroundColor: COLORS.primary,
     paddingHorizontal: 48,
     paddingVertical: 48,
-    justifyContent: "space-between",
   },
 
   brandContent: {
@@ -323,9 +369,9 @@ const styles = StyleSheet.create({
   },
 
   logoCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: COLORS.white,
     alignItems: "center",
     justifyContent: "center",
@@ -333,8 +379,8 @@ const styles = StyleSheet.create({
   },
 
   logoShield: {
-    width: 20,
-    height: 22,
+    width: 21,
+    height: 23,
     borderWidth: 2,
     borderColor: COLORS.primary,
     borderRadius: 5,
@@ -350,7 +396,7 @@ const styles = StyleSheet.create({
 
   logoText: {
     color: COLORS.white,
-    fontSize: 20,
+    fontSize: 21,
     fontWeight: "800",
   },
 
@@ -382,18 +428,69 @@ const styles = StyleSheet.create({
   },
 
   /* LOGIN PANEL */
+
   loginPanel: {
     flex: 1,
     backgroundColor: COLORS.white,
-    paddingHorizontal: 32,
+    paddingHorizontal: 40,
     paddingVertical: 40,
+  },
+
+  loginPanelMobile: {
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+  },
+
+  loginPanelSmallPhone: {
+    paddingHorizontal: 18,
   },
 
   loginContainer: {
     width: "100%",
-    maxWidth: 400,
+    maxWidth: 420,
     alignSelf: "center",
   },
+
+  /* MOBILE LOGO */
+
+  mobileLogoContainer: {
+    alignItems: "center",
+    marginBottom: 32,
+  },
+
+  mobileLogoCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: COLORS.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+
+  mobileLogoShield: {
+    width: 28,
+    height: 31,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  mobileLogoPlus: {
+    color: COLORS.white,
+    fontSize: 19,
+    fontWeight: "900",
+  },
+
+  mobileLogoText: {
+    color: COLORS.black,
+    fontSize: 21,
+    fontWeight: "800",
+  },
+
+  /* HEADING */
 
   heading: {
     marginBottom: 28,
@@ -410,11 +507,13 @@ const styles = StyleSheet.create({
     marginTop: 8,
     color: COLORS.muted,
     fontSize: 14,
+    lineHeight: 21,
   },
 
   /* INPUTS */
+
   inputGroup: {
-    marginBottom: 16,
+    marginBottom: 18,
   },
 
   inputLabel: {
@@ -424,39 +523,73 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  input: {
-    height: 48,
+  inputWrapper: {
+    minHeight: 54,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    color: COLORS.black,
-    backgroundColor: COLORS.inputBackground,
-    fontSize: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
   },
 
-  passwordWrapper: {
-    position: "relative",
+  inputWrapperFocused: {
+    borderColor: COLORS.primary,
+    borderWidth: 1.5,
+  },
+
+  inputSymbol: {
+    width: 48,
+    textAlign: "center",
+    color: COLORS.muted,
+    fontSize: 18,
+    fontWeight: "700",
+  },
+
+  input: {
+    flex: 1,
+    minHeight: 52,
+    paddingVertical: 12,
+    paddingHorizontal: 0,
+    color: COLORS.black,
+    backgroundColor: "transparent",
+    fontSize: 15,
   },
 
   passwordToggle: {
-    position: "absolute",
-    right: 14,
-    top: 38,
+    width: 58,
+    minHeight: 52,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   passwordToggleText: {
-    color: COLORS.muted,
-    fontSize: 12,
-    fontWeight: "600",
+    color: COLORS.primary,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  /* FORGOT PASSWORD */
+
+  forgotContainer: {
+    alignItems: "flex-end",
+    marginTop: -4,
+    marginBottom: 18,
+  },
+
+  forgotPassword: {
+    color: COLORS.primary,
+    fontSize: 13,
+    fontWeight: "700",
   },
 
   /* ERROR */
+
   errorBox: {
     marginBottom: 14,
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
+    paddingVertical: 11,
+    borderRadius: 9,
     backgroundColor: "#FEF2F2",
   },
 
@@ -467,13 +600,14 @@ const styles = StyleSheet.create({
   },
 
   /* LOGIN BUTTON */
+
   loginButton: {
-    height: 48,
-    borderRadius: 8,
+    minHeight: 54,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: COLORS.primary,
-    marginTop: 8,
+    marginTop: 4,
   },
 
   buttonPressed: {
@@ -486,58 +620,18 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  /* DIVIDER */
-  dividerContainer: {
-    flexDirection: "row",
+  /* SECURITY */
+
+  securityMessage: {
     alignItems: "center",
-    marginVertical: 24,
+    marginTop: 22,
+    paddingHorizontal: 10,
   },
 
-  divider: {
-    flex: 1,
-    height: 1,
-    backgroundColor: COLORS.border,
-  },
-
-  dividerText: {
-    marginHorizontal: 12,
-    color: COLORS.placeholder,
-    fontSize: 12,
-  },
-
-  /* DEMO SECTION */
-  demoSection: {
-    marginTop: 0,
-  },
-
-  demoList: {
-    gap: 10,
-  },
-
-  demoAccount: {
-    height: 48,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 8,
-    backgroundColor: COLORS.white,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-
-  demoAccountPressed: {
-    backgroundColor: "#F8FAFC",
-  },
-
-  demoRole: {
-    color: COLORS.black,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-
-  demoEmail: {
+  securityText: {
     color: COLORS.muted,
-    fontSize: 13,
+    fontSize: 12,
+    textAlign: "center",
+    lineHeight: 18,
   },
 });
