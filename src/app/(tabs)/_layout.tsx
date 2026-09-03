@@ -1,18 +1,17 @@
-import React from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Platform,
-  SafeAreaView,
-  Alert,
-} from "react-native";
-import { Tabs, useRouter } from "expo-router";
 import {
   Ionicons,
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
+import { Tabs, useRouter } from "expo-router";
+import {
+  Alert,
+  Platform,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 export default function TabsLayout() {
   const router = useRouter();
@@ -51,7 +50,7 @@ export default function TabsLayout() {
           style: "destructive",
           onPress: () => {
             // Later replace this with:
-            // router.push("/emergency");
+            router.push("/emergency");
 
             console.log("Emergency request started");
           },
