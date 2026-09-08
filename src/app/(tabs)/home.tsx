@@ -164,7 +164,7 @@ export default function Home() {
                         color="#DC2626"
                       />
                     ) : (
-                      <Ionicons
+                      <FontAwesome5
                         name="flame"
                         size={24}
                         color="#DC2626"
@@ -225,7 +225,7 @@ export default function Home() {
               <TouchableOpacity
                 style={styles.requestButton}
                 activeOpacity={0.8}
-                onPress={() => router.push}
+                onPress={() => router.push("/emergency")}
               >
                 <Text style={styles.requestButtonText}>
                   Request
