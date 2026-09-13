@@ -25,6 +25,8 @@ const COLORS = {
   background: "#F8FAFC",
 };
 
+type UserRole = "Client" | "Admin" | "Responder";
+
 export default function LoginScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -36,6 +38,9 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
 
   const [showPassword, setShowPassword] = useState(false);
+
+  const [selectedRole, setSelectedRole] = useState<UserRole>("Client");
+  const [showRoleDropdown, setShowRoleDropdown] = useState(false);
 
   const [focusedField, setFocusedField] = useState<
     "email" | "password" | null
@@ -56,8 +61,26 @@ export default function LoginScreen() {
       return;
     }
 
-    // Backend authentication will be connected later.
-    router.replace("/home");
+    switch (selectedRole) {
+      case "Client":
+        router.replace("/(tabs)/home");
+        break;
+      case "Admin":
+        router.replace("/admin");
+        break;
+      case "Responder":
+        router.replace("/responder");
+        break;
+    }
+  };
+
+  const handleGoogleSignIn = () => {
+    // Integrate Google Auth provider here (e.g., expo-auth-session / Supabase / Firebase)
+    console.log("Initiating Google Sign-In...");
+  };
+
+  const handleSignUp = () => {
+    router.push("/signup");
   };
 
   return (
@@ -67,7 +90,6 @@ export default function LoginScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <View style={[styles.page, isDesktop && styles.pageDesktop]}>
-
           {/* DESKTOP BRAND PANEL */}
           {isDesktop && <BrandPanel />}
 
@@ -88,7 +110,6 @@ export default function LoginScreen() {
               showsVerticalScrollIndicator={false}
             >
               <View style={styles.loginContainer}>
-
                 {/* MOBILE LOGO */}
                 {!isDesktop && (
                   <View style={styles.mobileLogoContainer}>
@@ -98,17 +119,13 @@ export default function LoginScreen() {
                       </View>
                     </View>
 
-                    <Text style={styles.mobileLogoText}>
-                      SafeSync
-                    </Text>
+                    <Text style={styles.mobileLogoText}>SafeSync</Text>
                   </View>
                 )}
 
                 {/* HEADING */}
                 <View style={styles.heading}>
-                  <Text style={styles.welcomeTitle}>
-                    Welcome back
-                  </Text>
+                  <Text style={styles.welcomeTitle}>Welcome back</Text>
 
                   <Text style={styles.welcomeSubtitle}>
                     Sign in to your SafeSync account to continue.
@@ -117,9 +134,7 @@ export default function LoginScreen() {
 
                 {/* EMAIL */}
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>
-                    Email address
-                  </Text>
+                  <Text style={styles.inputLabel}>Email address</Text>
 
                   <View
                     style={[
@@ -128,9 +143,7 @@ export default function LoginScreen() {
                         styles.inputWrapperFocused,
                     ]}
                   >
-                    <Text style={styles.inputSymbol}>
-                      @
-                    </Text>
+                    <Text style={styles.inputSymbol}>@</Text>
 
                     <TextInput
                       style={styles.input}
@@ -146,12 +159,8 @@ export default function LoginScreen() {
                       autoCorrect={false}
                       autoComplete="email"
                       textContentType="emailAddress"
-                      onFocus={() =>
-                        setFocusedField("email")
-                      }
-                      onBlur={() =>
-                        setFocusedField(null)
-                      }
+                      onFocus={() => setFocusedField("email")}
+                      onBlur={() => setFocusedField(null)}
                       returnKeyType="next"
                       selectionColor={COLORS.primary}
                     />
@@ -160,9 +169,7 @@ export default function LoginScreen() {
 
                 {/* PASSWORD */}
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>
-                    Password
-                  </Text>
+                  <Text style={styles.inputLabel}>Password</Text>
 
                   <View
                     style={[
@@ -171,9 +178,7 @@ export default function LoginScreen() {
                         styles.inputWrapperFocused,
                     ]}
                   >
-                    <Text style={styles.inputSymbol}>
-                      •
-                    </Text>
+                    <Text style={styles.inputSymbol}>•</Text>
 
                     <TextInput
                       style={styles.input}
@@ -189,24 +194,17 @@ export default function LoginScreen() {
                       autoCorrect={false}
                       autoComplete="password"
                       textContentType="password"
-                      onFocus={() =>
-                        setFocusedField("password")
-                      }
-                      onBlur={() =>
-                        setFocusedField(null)
-                      }
+                      onFocus={() => setFocusedField("password")}
+                      onBlur={() => setFocusedField(null)}
                       returnKeyType="done"
                       onSubmitEditing={handleLogin}
                       selectionColor={COLORS.primary}
                     />
 
-                    {/* SHOW / HIDE */}
                     <Pressable
                       style={styles.passwordToggle}
                       onPress={() =>
-                        setShowPassword(
-                          (value) => !value
-                        )
+                        setShowPassword((value) => !value)
                       }
                       hitSlop={10}
                     >
@@ -217,14 +215,102 @@ export default function LoginScreen() {
                   </View>
                 </View>
 
+                {/* ROLE DROPDOWN */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Sign in as</Text>
+
+                  <Pressable
+                    style={[
+                      styles.roleSelector,
+                      showRoleDropdown && styles.roleSelectorFocused,
+                    ]}
+                    onPress={() =>
+                      setShowRoleDropdown((value) => !value)
+                    }
+                  >
+                    <View style={styles.roleSelectorContent}>
+                      <View style={styles.roleIcon}>
+                        <Text style={styles.roleIconText}>
+                          {selectedRole === "Client"
+                            ? "C"
+                            : selectedRole === "Admin"
+                            ? "A"
+                            : "R"}
+                        </Text>
+                      </View>
+
+                      <Text style={styles.selectedRoleText}>
+                        {selectedRole}
+                      </Text>
+                    </View>
+
+                    <Text style={styles.dropdownArrow}>
+                      {showRoleDropdown ? "▲" : "▼"}
+                    </Text>
+                  </Pressable>
+
+                  {showRoleDropdown && (
+                    <View style={styles.dropdownMenu}>
+                      {(["Client", "Admin", "Responder"] as UserRole[]).map(
+                        (role) => (
+                          <Pressable
+                            key={role}
+                            style={[
+                              styles.roleOption,
+                              selectedRole === role &&
+                                styles.selectedRoleOption,
+                            ]}
+                            onPress={() => {
+                              setSelectedRole(role);
+                              setShowRoleDropdown(false);
+                              setError("");
+                            }}
+                          >
+                            <View style={styles.roleOptionContent}>
+                              <View style={styles.optionIcon}>
+                                <Text style={styles.optionIconText}>
+                                  {role === "Client"
+                                    ? "C"
+                                    : role === "Admin"
+                                    ? "A"
+                                    : "R"}
+                                </Text>
+                              </View>
+
+                              <View>
+                                <Text
+                                  style={[
+                                    styles.roleOptionText,
+                                    selectedRole === role &&
+                                      styles.selectedRoleOptionText,
+                                  ]}
+                                >
+                                  {role}
+                                </Text>
+
+                                <Text style={styles.roleDescription}>
+                                  {role === "Client"
+                                    ? "Request and track emergency assistance"
+                                    : role === "Admin"
+                                    ? "Manage organizations and operations"
+                                    : "Respond to emergency requests"}
+                                </Text>
+                              </View>
+                            </View>
+
+                            {selectedRole === role && (
+                              <Text style={styles.checkmark}>✓</Text>
+                            )}
+                          </Pressable>
+                        )
+                      )}
+                    </View>
+                  )}
+                </View>
+
                 {/* FORGOT PASSWORD */}
                 <View style={styles.forgotContainer}>
-                  <Pressable
-                    onPress={() => {
-                      // Password reset will be connected later.
-                    }}
-                    hitSlop={10}
-                  >
+                  <Pressable onPress={() => {}} hitSlop={10}>
                     <Text style={styles.forgotPassword}>
                       Forgot password?
                     </Text>
@@ -234,9 +320,7 @@ export default function LoginScreen() {
                 {/* ERROR */}
                 {error ? (
                   <View style={styles.errorBox}>
-                    <Text style={styles.errorText}>
-                      {error}
-                    </Text>
+                    <Text style={styles.errorText}>{error}</Text>
                   </View>
                 ) : null}
 
@@ -248,19 +332,48 @@ export default function LoginScreen() {
                   ]}
                   onPress={handleLogin}
                 >
-                  <Text style={styles.loginButtonText}>
-                    Log in
+                  <Text style={styles.loginButtonText}>Log in</Text>
+                </Pressable>
+
+                {/* DIVIDER */}
+                <View style={styles.dividerContainer}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>OR</Text>
+                  <View style={styles.dividerLine} />
+                </View>
+
+                {/* GOOGLE SIGN IN BUTTON */}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.googleButton,
+                    pressed && styles.googleButtonPressed,
+                  ]}
+                  onPress={handleGoogleSignIn}
+                >
+                  <View style={styles.googleIconBadge}>
+                    <Text style={styles.googleIconText}>G</Text>
+                  </View>
+                  <Text style={styles.googleButtonText}>
+                    Sign in with Google
                   </Text>
                 </Pressable>
+
+                {/* SIGN UP LINK */}
+                <View style={styles.signUpContainer}>
+                  <Text style={styles.signUpPrompt}>
+                    Don't have an account?{" "}
+                  </Text>
+                  <Pressable onPress={handleSignUp} hitSlop={10}>
+                    <Text style={styles.signUpLink}>Sign up</Text>
+                  </Pressable>
+                </View>
 
                 {/* SECURITY MESSAGE */}
                 <View style={styles.securityMessage}>
                   <Text style={styles.securityText}>
-                    Your account is protected by SafeSync
-                    security.
+                    Your account is protected by SafeSync security.
                   </Text>
                 </View>
-
               </View>
             </ScrollView>
           </View>
@@ -278,8 +391,6 @@ function BrandPanel() {
   return (
     <View style={styles.brandPanel}>
       <View style={styles.brandContent}>
-
-        {/* LOGO */}
         <View style={styles.logoRow}>
           <View style={styles.logoCircle}>
             <View style={styles.logoShield}>
@@ -287,12 +398,9 @@ function BrandPanel() {
             </View>
           </View>
 
-          <Text style={styles.logoText}>
-            SafeSync
-          </Text>
+          <Text style={styles.logoText}>SafeSync</Text>
         </View>
 
-        {/* MESSAGE */}
         <View style={styles.brandMessage}>
           <Text style={styles.brandTitle}>
             Every second you{"\n"}
@@ -301,17 +409,14 @@ function BrandPanel() {
           </Text>
 
           <Text style={styles.brandDescription}>
-            Emergency response coordination designed to
-            connect people, responders and organizations
-            in real time.
+            Emergency response coordination designed to connect people,
+            responders and organizations in real time.
           </Text>
         </View>
 
-        {/* FOOTER */}
         <Text style={styles.copyright}>
           © 2026 SafeSync Technologies Ltd.
         </Text>
-
       </View>
     </View>
   );
@@ -569,6 +674,132 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  /* ROLE DROPDOWN */
+
+  roleSelector: {
+    minHeight: 54,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+  },
+
+  roleSelectorFocused: {
+    borderColor: COLORS.primary,
+    borderWidth: 1.5,
+  },
+
+  roleSelectorContent: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  roleIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+
+  roleIconText: {
+    color: COLORS.primary,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  selectedRoleText: {
+    color: COLORS.black,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+
+  dropdownArrow: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  dropdownMenu: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    overflow: "hidden",
+    elevation: 4,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 5,
+  },
+
+  roleOption: {
+    minHeight: 64,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+
+  selectedRoleOption: {
+    backgroundColor: "#FEF2F2",
+  },
+
+  roleOptionContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+
+  optionIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+
+  optionIconText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  roleOptionText: {
+    color: COLORS.black,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+
+  selectedRoleOptionText: {
+    color: COLORS.primary,
+  },
+
+  roleDescription: {
+    color: COLORS.muted,
+    fontSize: 10,
+    marginTop: 2,
+  },
+
+  checkmark: {
+    color: COLORS.primary,
+    fontSize: 18,
+    fontWeight: "800",
+    marginLeft: 8,
+  },
+
   /* FORGOT PASSWORD */
 
   forgotContainer: {
@@ -617,6 +848,86 @@ const styles = StyleSheet.create({
   loginButtonText: {
     color: COLORS.white,
     fontSize: 15,
+    fontWeight: "700",
+  },
+
+  /* DIVIDER */
+
+  dividerContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginVertical: 20,
+  },
+
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+
+  dividerText: {
+    marginHorizontal: 12,
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+
+  /* GOOGLE BUTTON */
+
+  googleButton: {
+    minHeight: 54,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  googleButtonPressed: {
+    backgroundColor: COLORS.background,
+  },
+
+  googleIconBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#4285F4",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+
+  googleIconText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  googleButtonText: {
+    color: COLORS.text,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+
+  /* SIGN UP */
+
+  signUpContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 20,
+  },
+
+  signUpPrompt: {
+    color: COLORS.muted,
+    fontSize: 14,
+  },
+
+  signUpLink: {
+    color: COLORS.primary,
+    fontSize: 14,
     fontWeight: "700",
   },
 
