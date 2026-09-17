@@ -1,4 +1,4 @@
-import { MAP_SERVER } from "./map";
+import { MAP_SERVER } from "./maps";
 
 export const SAFE_SYNC_MAP_STYLE = {
   version: 8,

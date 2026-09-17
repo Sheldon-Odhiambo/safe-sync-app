@@ -12,10 +12,8 @@ export const KENYA_BOUNDS = {
   east: 41.97685,
   north: 4.629931,
 };
-
 export const KENYA_CENTER = {
   longitude: 37.922375,
   latitude: -0.093173,
 };
-
 export const DEFAULT_MAP_ZOOM = 7;
