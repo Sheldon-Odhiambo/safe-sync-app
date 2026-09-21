@@ -14,8 +14,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-// Physical device? Use your PC's LAN IP or an ngrok URL, not localhost.
-const API_BASE = process.env.EXPO_PUBLIC_API_URL ?? "http://192.168.1.10:8000";
+import { createDeposit, getDepositStatus } from "@/lib/payments_api";
 
 type Step = "form" | "waiting" | "success" | "failed";
 
@@ -28,6 +27,8 @@ type Props = {
 
 const QUICK_AMOUNTS = [500, 1000, 2000, 5000];
 const PHONE_RE = /^(?:\+?254|0)?[17]\d{8}$/;
+const POLL_INTERVAL_MS = 3000;
+const MAX_POLLS = 30;
 
 export default function DepositModal({
   visible,
@@ -85,11 +86,10 @@ export default function DepositModal({
     timer.current = setInterval(async () => {
       tries += 1;
       try {
-        const res = await fetch(`${API_BASE}/api/payments/deposit/${reference}`);
-        const s = await res.json();
+        const s = await getDepositStatus(reference);
         if (s.status === "SUCCESS") {
           stopPolling();
-          setReceipt(s.receipt ?? null);
+          setReceipt(s.receipt);
           setStep("success");
           onSuccess?.(amt, s.receipt);
         } else if (s.status === "FAILED") {
@@ -100,14 +100,14 @@ export default function DepositModal({
       } catch {
         /* transient network error, keep polling */
       }
-      if (tries >= 30) {
+      if (tries >= MAX_POLLS) {
         stopPolling();
         setError(
           "We didn't receive a confirmation. If money was deducted, it will reflect shortly."
         );
         setStep("failed");
       }
-    }, 3000);
+    }, POLL_INTERVAL_MS);
   };
 
   const submit = async () => {
@@ -122,18 +122,9 @@ export default function DepositModal({
 
     setSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE}/api/payments/deposit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone_number: phone, amount: amt }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const detail = Array.isArray(data.detail) ? data.detail[0]?.msg : data.detail;
-        throw new Error(detail || "Something went wrong");
-      }
+      const { reference } = await createDeposit(phone, amt);
       setStep("waiting");
-      startPolling(data.reference, amt);
+      startPolling(reference, amt);
     } catch (e: any) {
       setError(e.message || "Network error. Please try again.");
     } finally {
