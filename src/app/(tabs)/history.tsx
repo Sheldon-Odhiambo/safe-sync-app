@@ -9,6 +9,11 @@ import {
   View,
 } from "react-native";
 
+import {
+  Download,
+  FileText,
+} from "lucide-react-native";
+
 const COLORS = {
   primary: "#DC2626",
   primaryDark: "#B91C1C",
@@ -61,6 +66,7 @@ export default function HistoryScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
+
         {/* HEADER */}
         <View style={styles.header}>
           <View>
@@ -77,6 +83,7 @@ export default function HistoryScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
+
           {/* SUMMARY */}
           <View style={styles.summaryCard}>
             <View style={styles.summaryItem}>
@@ -84,21 +91,29 @@ export default function HistoryScreen() {
                 {emergencyHistory.length}
               </Text>
 
-              <Text style={styles.summaryLabel}>Total incidents</Text>
+              <Text style={styles.summaryLabel}>
+                Total incidents
+              </Text>
             </View>
 
             <View style={styles.summaryDivider} />
 
             <View style={styles.summaryItem}>
-              <Text style={styles.summaryValue}>100%</Text>
+              <Text style={styles.summaryValue}>
+                100%
+              </Text>
 
-              <Text style={styles.summaryLabel}>Resolved</Text>
+              <Text style={styles.summaryLabel}>
+                Resolved
+              </Text>
             </View>
           </View>
 
           {/* SECTION TITLE */}
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Previous incidents</Text>
+            <Text style={styles.sectionTitle}>
+              Previous incidents
+            </Text>
 
             <Text style={styles.sectionCount}>
               {emergencyHistory.length} records
@@ -107,11 +122,15 @@ export default function HistoryScreen() {
 
           {/* HISTORY CARDS */}
           {emergencyHistory.map((item) => (
-            <HistoryCard key={item.id} item={item} />
+            <HistoryCard
+              key={item.id}
+              item={item}
+            />
           ))}
 
-          {/* EMPTY SPACE FOR TAB BAR */}
+          {/* SPACE FOR TAB BAR */}
           <View style={{ height: 30 }} />
+
         </ScrollView>
       </View>
     </SafeAreaView>
@@ -122,7 +141,11 @@ export default function HistoryScreen() {
 /* HISTORY CARD */
 /* ------------------------------------------------ */
 
-function HistoryCard({ item }: { item: (typeof emergencyHistory)[number] }) {
+function HistoryCard({
+  item,
+}: {
+  item: (typeof emergencyHistory)[number];
+}) {
   const handleDownload = () => {
     Alert.alert(
       "Report",
@@ -139,25 +162,34 @@ function HistoryCard({ item }: { item: (typeof emergencyHistory)[number] }) {
 
   return (
     <View style={styles.historyCard}>
+
       {/* TOP ROW */}
       <View style={styles.cardTopRow}>
+
         <View style={styles.cardTitleContainer}>
-          <Text style={styles.emergencyType}>{item.type}</Text>
+          <Text style={styles.emergencyType}>
+            {item.type}
+          </Text>
 
           <Text style={styles.emergencyId}>
             {item.date} · {item.id}
           </Text>
         </View>
 
+        {/* STATUS */}
         <View style={styles.statusBadge}>
           <View style={styles.statusDot} />
 
-          <Text style={styles.statusText}>{item.status}</Text>
+          <Text style={styles.statusText}>
+            {item.status}
+          </Text>
         </View>
+
       </View>
 
       {/* INFORMATION GRID */}
       <View style={styles.infoGrid}>
+
         <InfoCell
           label="Responder"
           value={item.responder}
@@ -178,33 +210,46 @@ function HistoryCard({ item }: { item: (typeof emergencyHistory)[number] }) {
           label="Cost"
           value={item.cost}
         />
+
       </View>
 
       {/* ACTIONS */}
       <View style={styles.actions}>
+
+        {/* DOWNLOAD */}
         <TouchableOpacity
           style={styles.outlineButton}
           activeOpacity={0.8}
           onPress={handleDownload}
         >
-          <Text style={styles.downloadIcon}>↓</Text>
+          <Download
+            size={17}
+            color={COLORS.text}
+            strokeWidth={2.2}
+          />
 
           <Text style={styles.outlineButtonText}>
             Download report
           </Text>
         </TouchableOpacity>
 
+        {/* DETAILS */}
         <TouchableOpacity
           style={styles.detailsButton}
           activeOpacity={0.7}
           onPress={handleDetails}
         >
-          <Text style={styles.fileIcon}>▤</Text>
+          <FileText
+            size={16}
+            color={COLORS.muted}
+            strokeWidth={2.2}
+          />
 
           <Text style={styles.detailsButtonText}>
             View details
           </Text>
         </TouchableOpacity>
+
       </View>
     </View>
   );
@@ -230,7 +275,9 @@ function InfoCell({
         fullWidth && styles.infoCellFull,
       ]}
     >
-      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoLabel}>
+        {label}
+      </Text>
 
       <Text
         style={styles.infoValue}
@@ -463,13 +510,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 8,
-  },
-
-  downloadIcon: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: COLORS.text,
-    marginRight: 6,
+    gap: 6,
   },
 
   outlineButtonText: {
@@ -485,13 +526,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-  },
-
-  fileIcon: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: COLORS.muted,
-    marginRight: 5,
+    gap: 5,
   },
 
   detailsButtonText: {

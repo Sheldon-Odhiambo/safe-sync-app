@@ -1,24 +1,63 @@
 import React, { useState } from "react";
+import { useRouter } from "expo-router";
+
 import {
-  View,
-  Text,
-  StyleSheet,
-  TextInput,
-  TouchableOpacity,
-  SafeAreaView,
-  ScrollView,
+  ArrowLeft,
+  ArrowRight,
+  Building2,
+  Check,
+  CheckCircle,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  LockKeyhole,
+  Mail,
+  Phone,
+  ShieldCheck,
+  UserRound,
+} from "lucide-react-native";
+
+import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Alert,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router"
+
+const COLORS = {
+  primary: "#ED111C",
+  primaryDark: "#C90D16",
+  background: "#F8FAFC",
+  white: "#FFFFFF",
+  text: "#0F172A",
+  textSecondary: "#334155",
+  muted: "#64748B",
+  placeholder: "#94A3B8",
+  border: "#E2E8F0",
+  inputBorder: "#CBD5E1",
+  softRed: "#FFF1F2",
+  softRedBorder: "#FECDD3",
+  error: "#B91C1C",
+  errorBackground: "#FEF2F2",
+  success: "#15803D",
+  successBackground: "#F0FDF4",
+};
+
+type AccountType = "individual" | "organization";
+
 export default function SignupScreen() {
   const router = useRouter();
 
-  // ACCOUNT TYPE
   const [accountType, setAccountType] =
     useState<AccountType>("individual");
+
   const [showAccountDropdown, setShowAccountDropdown] =
     useState(false);
 
@@ -29,119 +68,255 @@ export default function SignupScreen() {
   const [confirmPassword, setConfirmPassword] =
     useState("");
 
-  const [showPassword, setShowPassword] = useState(false);
+  const [showPassword, setShowPassword] =
+    useState(false);
+
   const [showConfirmPassword, setShowConfirmPassword] =
     useState(false);
 
-  const [acceptedTerms, setAcceptedTerms] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] =
+    useState(false);
 
-  const handleSignup = () => {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // --------------------------------------------------
+  // VALIDATION
+  // --------------------------------------------------
+
+  const isValidEmail = (value: string) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+      value.trim()
+    );
+  };
+
+  const isValidPhone = (value: string) => {
+    const cleaned = value.replace(/[\s-]/g, "");
+
+    return /^\+?[0-9]{9,15}$/.test(cleaned);
+  };
+
+  const validateForm = () => {
+    setError("");
+
     if (!fullName.trim()) {
-      Alert.alert(
-        "Missing information",
+      setError(
         accountType === "organization"
-          ? "Please enter the organization name."
+          ? "Please enter your organization name."
           : "Please enter your full name."
       );
-      return;
+      return false;
     }
 
     if (!email.trim()) {
-      Alert.alert(
-        "Missing information",
+      setError(
         accountType === "organization"
-          ? "Please enter the organization email address."
+          ? "Please enter your organization email address."
           : "Please enter your email address."
       );
-      return;
+      return false;
+    }
+
+    if (!isValidEmail(email)) {
+      setError("Please enter a valid email address.");
+      return false;
     }
 
     if (!phone.trim()) {
-      Alert.alert(
-        "Missing information",
-        "Please enter your phone number."
+      setError(
+        accountType === "organization"
+          ? "Please enter your organization phone number."
+          : "Please enter your phone number."
       );
-      return;
+      return false;
+    }
+
+    if (!isValidPhone(phone)) {
+      setError(
+        "Please enter a valid phone number, for example +254 712 345 678."
+      );
+      return false;
     }
 
     if (!password) {
-      Alert.alert(
-        "Missing information",
-        "Please create a password."
-      );
-      return;
+      setError("Please create a password.");
+      return false;
     }
 
     if (password.length < 8) {
-      Alert.alert(
-        "Weak password",
+      setError(
         "Your password must contain at least 8 characters."
       );
-      return;
+      return false;
     }
 
     if (password !== confirmPassword) {
-      Alert.alert(
-        "Passwords do not match",
-        "Please make sure both passwords are the same."
-      );
-      return;
+      setError("Your passwords do not match.");
+      return false;
     }
 
     if (!acceptedTerms) {
-      Alert.alert(
-        "Terms required",
+      setError(
         "Please agree to the Terms of Service and Privacy Policy."
       );
+      return false;
+    }
+
+    return true;
+  };
+
+  // --------------------------------------------------
+  // SIGN UP
+  // --------------------------------------------------
+
+  const handleSignup = async () => {
+    if (!validateForm()) {
       return;
     }
 
     setLoading(true);
+    setError("");
 
-    /*
-     * TODO:
-     * Connect this section to your backend/Supabase/Firebase.
-     *
-     * The backend should receive:
-     *
-     * accountType: "individual" | "organization"
-     *
-     * Example:
-     *
-     * {
-     *   accountType,
-     *   fullName,
-     *   email,
-     *   phone,
-     *   password
-     * }
-     */
+    try {
+      /*
+       * BACKEND INTEGRATION
+       *
+       * The backend should receive:
+       *
+       * {
+       *   accountType: "individual" | "organization",
+       *   name: fullName,
+       *   email,
+       *   phone,
+       *   password
+       * }
+       *
+       * Example:
+       *
+       * const response = await fetch(
+       *   `${API_URL}/auth/register`,
+       *   {
+       *     method: "POST",
+       *     headers: {
+       *       "Content-Type": "application/json",
+       *     },
+       *     body: JSON.stringify({
+       *       accountType,
+       *       name: fullName.trim(),
+       *       email: email.trim().toLowerCase(),
+       *       phone: phone.trim(),
+       *       password,
+       *     }),
+       *   }
+       * );
+       *
+       * if (!response.ok) {
+       *   const data = await response.json();
+       *   throw new Error(
+       *     data.message || "Unable to create account."
+       *   );
+       * }
+       */
 
-    setTimeout(() => {
-      setLoading(false);
-
-      Alert.alert(
-        "Account created",
-        accountType === "organization"
-          ? "Your organization account has been created successfully."
-          : "Your SafeSync account has been created successfully.",
-        [
-          {
-            text: "Continue",
-            onPress: () => router.replace("/"),
-          },
-        ]
+      // Temporary frontend simulation
+      await new Promise((resolve) =>
+        setTimeout(resolve, 1200)
       );
-    }, 1000);
+
+      /*
+       * After the backend creates the account and
+       * sends the 6-digit verification code,
+       * go to the email verification screen.
+       */
+
+      router.push({
+        pathname: "/verify-email",
+        params: {
+          email: email.trim().toLowerCase(),
+        },
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to create your account. Please try again."
+      );
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // --------------------------------------------------
+  // ACCOUNT TYPE
+  // --------------------------------------------------
+
+  const handleAccountTypeChange = (
+    type: AccountType
+  ) => {
+    setAccountType(type);
+    setShowAccountDropdown(false);
+    setError("");
+  };
+
+  // --------------------------------------------------
+  // INPUT COMPONENT
+  // --------------------------------------------------
+
+  const renderInput = ({
+    icon,
+    value,
+    onChangeText,
+    placeholder,
+    keyboardType,
+    secureTextEntry,
+    rightElement,
+    autoCapitalize = "none",
+  }: {
+    icon: React.ReactNode;
+    value: string;
+    onChangeText: (value: string) => void;
+    placeholder: string;
+    keyboardType?: "default" | "email-address" | "phone-pad";
+    secureTextEntry?: boolean;
+    rightElement?: React.ReactNode;
+    autoCapitalize?: "none" | "words";
+  }) => {
+    return (
+      <View style={styles.inputWrapper}>
+        <View style={styles.inputIcon}>
+          {icon}
+        </View>
+
+        <TextInput
+          style={styles.input}
+          placeholder={placeholder}
+          placeholderTextColor={COLORS.placeholder}
+          value={value}
+          onChangeText={onChangeText}
+          keyboardType={keyboardType}
+          secureTextEntry={secureTextEntry}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={false}
+          editable={!loading}
+        />
+
+        {rightElement}
+      </View>
+    );
+  };
+
+  // --------------------------------------------------
+  // MAIN UI
+  // --------------------------------------------------
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         style={styles.keyboardView}
         behavior={
-          Platform.OS === "ios" ? "padding" : undefined
+          Platform.OS === "ios"
+            ? "padding"
+            : undefined
         }
       >
         <ScrollView
@@ -152,34 +327,36 @@ export default function SignupScreen() {
           {/* HEADER */}
 
           <View style={styles.header}>
-            <TouchableOpacity
+            <Pressable
               style={styles.backButton}
               onPress={() => router.back()}
-              activeOpacity={0.7}
+              disabled={loading}
             >
-              <Ionicons
-                name="arrow-back"
-                size={21}
-                color="#0F172A"
+              <ArrowLeft
+                size={20}
+                color={COLORS.text}
+                strokeWidth={2}
               />
-            </TouchableOpacity>
+            </Pressable>
 
             <View style={styles.logoContainer}>
               <View style={styles.logoBadge}>
-                <Ionicons
-                  name="shield-checkmark"
+                <ShieldCheck
                   size={22}
-                  color="#FFFFFF"
+                  color={COLORS.white}
+                  strokeWidth={2}
                 />
               </View>
 
-              <Text style={styles.logoText}>SafeSync</Text>
+              <Text style={styles.logoText}>
+                SafeSync
+              </Text>
             </View>
 
             <View style={styles.headerSpacer} />
           </View>
 
-          {/* INTRODUCTION */}
+          {/* INTRO */}
 
           <View style={styles.introSection}>
             <Text style={styles.title}>
@@ -187,8 +364,8 @@ export default function SignupScreen() {
             </Text>
 
             <Text style={styles.subtitle}>
-              Join SafeSync and get access to fast and reliable
-              emergency assistance when you need it.
+              Join SafeSync for fast, reliable emergency
+              assistance and response coordination.
             </Text>
           </View>
 
@@ -203,73 +380,82 @@ export default function SignupScreen() {
               </Text>
 
               <Text style={styles.accountHelperText}>
-                Choose whether you are registering as an
-                individual or an organization.
+                Select how you will use SafeSync.
               </Text>
 
-              {/* DROPDOWN */}
-
-              <TouchableOpacity
+              <Pressable
                 style={[
                   styles.dropdown,
                   showAccountDropdown &&
                     styles.dropdownActive,
                 ]}
-                activeOpacity={0.8}
                 onPress={() =>
                   setShowAccountDropdown(
                     !showAccountDropdown
                   )
                 }
+                disabled={loading}
               >
                 <View style={styles.dropdownLeft}>
                   <View style={styles.dropdownIcon}>
-                    <Ionicons
-                      name={
-                        accountType === "individual"
-                          ? "person-outline"
-                          : "business-outline"
-                      }
-                      size={20}
-                      color="#64748B"
-                    />
+                    {accountType === "individual" ? (
+                      <UserRound
+                        size={18}
+                        color={COLORS.muted}
+                      />
+                    ) : (
+                      <Building2
+                        size={18}
+                        color={COLORS.muted}
+                      />
+                    )}
                   </View>
 
-                  <Text style={styles.dropdownText}>
-                    {accountType === "individual"
-                      ? "Individual"
-                      : "Organization"}
-                  </Text>
+                  <View>
+                    <Text style={styles.dropdownText}>
+                      {accountType === "individual"
+                        ? "Individual"
+                        : "Organization"}
+                    </Text>
+
+                    <Text
+                      style={styles.dropdownSubtext}
+                    >
+                      {accountType === "individual"
+                        ? "Personal SafeSync account"
+                        : "Company or organization account"}
+                    </Text>
+                  </View>
                 </View>
 
-                <Ionicons
-                  name={
-                    showAccountDropdown
-                      ? "chevron-up"
-                      : "chevron-down"
-                  }
-                  size={20}
-                  color="#64748B"
-                />
-              </TouchableOpacity>
-
-              {/* DROPDOWN OPTIONS */}
+                {showAccountDropdown ? (
+                  <ChevronUp
+                    size={20}
+                    color={COLORS.muted}
+                  />
+                ) : (
+                  <ChevronDown
+                    size={20}
+                    color={COLORS.muted}
+                  />
+                )}
+              </Pressable>
 
               {showAccountDropdown && (
                 <View style={styles.dropdownMenu}>
                   {/* INDIVIDUAL */}
 
-                  <TouchableOpacity
+                  <Pressable
                     style={[
                       styles.dropdownOption,
                       accountType === "individual" &&
                         styles.dropdownOptionActive,
                     ]}
-                    activeOpacity={0.8}
-                    onPress={() => {
-                      setAccountType("individual");
-                      setShowAccountDropdown(false);
-                    }}
+                    onPress={() =>
+                      handleAccountTypeChange(
+                        "individual"
+                      )
+                    }
                   >
                     <View
                       style={[
@@ -278,13 +464,12 @@ export default function SignupScreen() {
                           styles.optionIconActive,
                       ]}
                     >
-                      <Ionicons
-                        name="person-outline"
+                      <UserRound
                         size={19}
                         color={
                           accountType === "individual"
-                            ? "#FFFFFF"
-                            : "#64748B"
+                            ? COLORS.white
+                            : COLORS.muted
                         }
                       />
                     </View>
@@ -308,27 +493,26 @@ export default function SignupScreen() {
                     </View>
 
                     {accountType === "individual" && (
-                      <Ionicons
-                        name="checkmark-circle"
+                      <CheckCircle
                         size={21}
-                        color="#DC2626"
+                        color={COLORS.primary}
                       />
                     )}
-                  </TouchableOpacity>
+                  </Pressable>
 
                   {/* ORGANIZATION */}
 
-                  <TouchableOpacity
+                  <Pressable
                     style={[
                       styles.dropdownOption,
                       accountType === "organization" &&
                         styles.dropdownOptionActive,
                     ]}
-                    activeOpacity={0.8}
-                    onPress={() => {
-                      setAccountType("organization");
-                      setShowAccountDropdown(false);
-                    }}
+                    onPress={() =>
+                      handleAccountTypeChange(
+                        "organization"
+                      )
+                    }
                   >
                     <View
                       style={[
@@ -337,13 +521,12 @@ export default function SignupScreen() {
                           styles.optionIconActive,
                       ]}
                     >
-                      <Ionicons
-                        name="business-outline"
+                      <Building2
                         size={19}
                         color={
                           accountType === "organization"
-                            ? "#FFFFFF"
-                            : "#64748B"
+                            ? COLORS.white
+                            : COLORS.muted
                         }
                       />
                     </View>
@@ -352,8 +535,7 @@ export default function SignupScreen() {
                       <Text
                         style={[
                           styles.optionTitle,
-                          accountType ===
-                            "organization" &&
+                          accountType === "organization" &&
                             styles.optionTitleActive,
                         ]}
                       >
@@ -368,18 +550,17 @@ export default function SignupScreen() {
                     </View>
 
                     {accountType === "organization" && (
-                      <Ionicons
-                        name="checkmark-circle"
+                      <CheckCircle
                         size={21}
-                        color="#DC2626"
+                        color={COLORS.primary}
                       />
                     )}
-                  </TouchableOpacity>
+                  </Pressable>
                 </View>
               )}
             </View>
 
-            {/* FULL NAME / ORGANIZATION NAME */}
+            {/* NAME */}
 
             <View style={styles.inputGroup}>
               <Text style={styles.label}>
@@ -388,32 +569,27 @@ export default function SignupScreen() {
                   : "Full name"}
               </Text>
 
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name={
-                    accountType === "organization"
-                      ? "business-outline"
-                      : "person-outline"
-                  }
-                  size={20}
-                  color="#64748B"
-                  style={styles.inputIcon}
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder={
-                    accountType === "organization"
-                      ? "Enter organization name"
-                      : "Enter your full name"
-                  }
-                  placeholderTextColor="#94A3B8"
-                  value={fullName}
-                  onChangeText={setFullName}
-                  autoCapitalize="words"
-                  autoCorrect={false}
-                />
-              </View>
+              {renderInput({
+                icon:
+                  accountType === "organization" ? (
+                    <Building2
+                      size={19}
+                      color={COLORS.muted}
+                    />
+                  ) : (
+                    <UserRound
+                      size={19}
+                      color={COLORS.muted}
+                    />
+                  ),
+                value: fullName,
+                onChangeText: setFullName,
+                placeholder:
+                  accountType === "organization"
+                    ? "Enter organization name"
+                    : "Enter your full name",
+                autoCapitalize: "words",
+              })}
             </View>
 
             {/* EMAIL */}
@@ -425,29 +601,21 @@ export default function SignupScreen() {
                   : "Email address"}
               </Text>
 
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="mail-outline"
-                  size={20}
-                  color="#64748B"
-                  style={styles.inputIcon}
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder={
-                    accountType === "organization"
-                      ? "organization@example.com"
-                      : "you@example.com"
-                  }
-                  placeholderTextColor="#94A3B8"
-                  value={email}
-                  onChangeText={setEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
+              {renderInput({
+                icon: (
+                  <Mail
+                    size={19}
+                    color={COLORS.muted}
+                  />
+                ),
+                value: email,
+                onChangeText: setEmail,
+                placeholder:
+                  accountType === "organization"
+                    ? "organization@example.com"
+                    : "you@example.com",
+                keyboardType: "email-address",
+              })}
             </View>
 
             {/* PHONE */}
@@ -459,23 +627,18 @@ export default function SignupScreen() {
                   : "Phone number"}
               </Text>
 
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="call-outline"
-                  size={20}
-                  color="#64748B"
-                  style={styles.inputIcon}
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="+254 7XX XXX XXX"
-                  placeholderTextColor="#94A3B8"
-                  value={phone}
-                  onChangeText={setPhone}
-                  keyboardType="phone-pad"
-                />
-              </View>
+              {renderInput({
+                icon: (
+                  <Phone
+                    size={19}
+                    color={COLORS.muted}
+                  />
+                ),
+                value: phone,
+                onChangeText: setPhone,
+                placeholder:"+254 712 345 678",
+                keyboardType: "phone-pad",
+              })}
             </View>
 
             {/* PASSWORD */}
@@ -485,46 +648,61 @@ export default function SignupScreen() {
                 Password
               </Text>
 
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={20}
-                  color="#64748B"
-                  style={styles.inputIcon}
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Create a password"
-                  placeholderTextColor="#94A3B8"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-
-                <TouchableOpacity
-                  style={styles.eyeButton}
-                  onPress={() =>
-                    setShowPassword(!showPassword)
-                  }
-                >
-                  <Ionicons
-                    name={
-                      showPassword
-                        ? "eye-off-outline"
-                        : "eye-outline"
-                    }
-                    size={21}
-                    color="#64748B"
+              {renderInput({
+                icon: (
+                  <LockKeyhole
+                    size={19}
+                    color={COLORS.muted}
                   />
-                </TouchableOpacity>
-              </View>
+                ),
+                value: password,
+                onChangeText: setPassword,
+                placeholder: "Create a password",
+                secureTextEntry: !showPassword,
+                rightElement: (
+                  <Pressable
+                    style={styles.eyeButton}
+                    onPress={() =>
+                      setShowPassword(!showPassword)
+                    }
+                  >
+                    {showPassword ? (
+                      <EyeOff
+                        size={20}
+                        color={COLORS.muted}
+                      />
+                    ) : (
+                      <Eye
+                        size={20}
+                        color={COLORS.muted}
+                      />
+                    )}
+                  </Pressable>
+                ),
+              })}
 
-              <Text style={styles.helperText}>
-                Use at least 8 characters.
-              </Text>
+              <View
+                style={styles.passwordRequirements}
+              >
+                <CheckCircle
+                  size={14}
+                  color={
+                    password.length >= 8
+                      ? COLORS.success
+                      : COLORS.placeholder
+                  }
+                />
+
+                <Text
+                  style={[
+                    styles.requirementText,
+                    password.length >= 8 &&
+                      styles.requirementTextActive,
+                  ]}
+                >
+                  At least 8 characters
+                </Text>
+              </View>
             </View>
 
             {/* CONFIRM PASSWORD */}
@@ -534,56 +712,80 @@ export default function SignupScreen() {
                 Confirm password
               </Text>
 
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={20}
-                  color="#64748B"
-                  style={styles.inputIcon}
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Confirm your password"
-                  placeholderTextColor="#94A3B8"
-                  value={confirmPassword}
-                  onChangeText={setConfirmPassword}
-                  secureTextEntry={
-                    !showConfirmPassword
-                  }
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-
-                <TouchableOpacity
-                  style={styles.eyeButton}
-                  onPress={() =>
-                    setShowConfirmPassword(
-                      !showConfirmPassword
-                    )
-                  }
-                >
-                  <Ionicons
-                    name={
-                      showConfirmPassword
-                        ? "eye-off-outline"
-                        : "eye-outline"
-                    }
-                    size={21}
-                    color="#64748B"
+              {renderInput({
+                icon: (
+                  <LockKeyhole
+                    size={19}
+                    color={COLORS.muted}
                   />
-                </TouchableOpacity>
-              </View>
+                ),
+                value: confirmPassword,
+                onChangeText: setConfirmPassword,
+                placeholder: "Confirm your password",
+                secureTextEntry:
+                  !showConfirmPassword,
+                rightElement: (
+                  <Pressable
+                    style={styles.eyeButton}
+                    onPress={() =>
+                      setShowConfirmPassword(
+                        !showConfirmPassword
+                      )
+                    }
+                  >
+                    {showConfirmPassword ? (
+                      <EyeOff
+                        size={20}
+                        color={COLORS.muted}
+                      />
+                    ) : (
+                      <Eye
+                        size={20}
+                        color={COLORS.muted}
+                      />
+                    )}
+                  </Pressable>
+                ),
+              })}
+
+              {confirmPassword.length > 0 && (
+                <View
+                  style={styles.passwordRequirements}
+                >
+                  <CheckCircle
+                    size={14}
+                    color={
+                      password === confirmPassword
+                        ? COLORS.success
+                        : COLORS.error
+                    }
+                  />
+
+                  <Text
+                    style={[
+                      styles.requirementText,
+                      password === confirmPassword &&
+                        styles.requirementTextActive,
+                      password !== confirmPassword &&
+                        styles.requirementTextError,
+                    ]}
+                  >
+                    {password === confirmPassword
+                      ? "Passwords match"
+                      : "Passwords do not match"}
+                  </Text>
+                </View>
+              )}
             </View>
 
             {/* TERMS */}
 
-            <TouchableOpacity
+            <Pressable
               style={styles.termsRow}
-              activeOpacity={0.7}
               onPress={() =>
                 setAcceptedTerms(!acceptedTerms)
               }
+              disabled={loading}
             >
               <View
                 style={[
@@ -593,10 +795,10 @@ export default function SignupScreen() {
                 ]}
               >
                 {acceptedTerms && (
-                  <Ionicons
-                    name="checkmark"
+                  <Check
                     size={15}
-                    color="#FFFFFF"
+                    color={COLORS.white}
+                    strokeWidth={3}
                   />
                 )}
               </View>
@@ -612,42 +814,63 @@ export default function SignupScreen() {
                 </Text>
                 .
               </Text>
-            </TouchableOpacity>
+            </Pressable>
 
-            {/* SIGN UP BUTTON */}
+            {/* ERROR */}
 
-            <TouchableOpacity
+            {error ? (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>
+                  {error}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* CREATE ACCOUNT */}
+
+            <Pressable
               style={[
                 styles.signupButton,
                 loading &&
                   styles.signupButtonDisabled,
               ]}
-              activeOpacity={0.85}
               onPress={handleSignup}
               disabled={loading}
             >
               {loading ? (
-                <Text style={styles.signupButtonText}>
-                  Creating account...
-                </Text>
+                <>
+                  <ActivityIndicator
+                    color={COLORS.white}
+                  />
+
+                  <Text
+                    style={styles.signupButtonText}
+                  >
+                    Creating account...
+                  </Text>
+                </>
               ) : (
                 <>
-                  <Text style={styles.signupButtonText}>
+                  <Text
+                    style={styles.signupButtonText}
+                  >
                     Create Account
                   </Text>
 
-                  <Ionicons
-                    name="arrow-forward"
-                    size={20}
-                    color="#FFFFFF"
+                  <ArrowRight
+                    size={19}
+                    color={COLORS.white}
+                    strokeWidth={2.2}
                   />
                 </>
               )}
-            </TouchableOpacity>
+            </Pressable>
 
             {/* DIVIDER */}
 
-            <View style={styles.dividerContainer}>
+            <View
+              style={styles.dividerContainer}
+            >
               <View style={styles.divider} />
 
               <Text style={styles.dividerText}>
@@ -657,32 +880,32 @@ export default function SignupScreen() {
               <View style={styles.divider} />
             </View>
 
-            {/* SIGN IN */}
+            {/* LOGIN */}
 
             <View style={styles.loginContainer}>
               <Text style={styles.loginText}>
                 Already have an account?
               </Text>
 
-              <TouchableOpacity
+              <Pressable
                 onPress={() => router.replace("/")}
-                activeOpacity={0.7}
+                disabled={loading}
               >
                 <Text style={styles.loginLink}>
                   Sign In
                 </Text>
-              </TouchableOpacity>
+              </Pressable>
             </View>
           </View>
 
-          {/* SECURITY MESSAGE */}
+          {/* SECURITY */}
 
           <View style={styles.securityBox}>
             <View style={styles.securityIcon}>
-              <Ionicons
-                name="shield-checkmark-outline"
+              <ShieldCheck
                 size={19}
-                color="#DC2626"
+                color={COLORS.primary}
+                strokeWidth={2}
               />
             </View>
 
@@ -692,8 +915,9 @@ export default function SignupScreen() {
               </Text>
 
               <Text style={styles.securityText}>
-                Your information is securely handled and
-                used to provide emergency assistance.
+                Your account information is securely
+                handled and used to provide emergency
+                assistance when you need it.
               </Text>
             </View>
           </View>
@@ -712,7 +936,7 @@ export default function SignupScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: COLORS.background,
   },
 
   keyboardView: {
@@ -724,17 +948,15 @@ const styles = StyleSheet.create({
     paddingBottom: 35,
   },
 
-  /* HEADER */
-
   header: {
     height: 70,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORS.white,
     borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
+    borderBottomColor: COLORS.border,
   },
 
   backButton: {
@@ -742,10 +964,10 @@ const styles = StyleSheet.create({
     height: 42,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORS.white,
   },
 
   logoContainer: {
@@ -757,7 +979,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 12,
-    backgroundColor: "#DC2626",
+    backgroundColor: COLORS.primary,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 9,
@@ -766,14 +988,12 @@ const styles = StyleSheet.create({
   logoText: {
     fontSize: 21,
     fontWeight: "800",
-    color: "#0F172A",
+    color: COLORS.text,
   },
 
   headerSpacer: {
     width: 42,
   },
-
-  /* INTRO */
 
   introSection: {
     paddingHorizontal: 24,
@@ -784,17 +1004,15 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 30,
     fontWeight: "800",
-    color: "#0F172A",
+    color: COLORS.text,
     marginBottom: 10,
   },
 
   subtitle: {
-    fontSize: 15,
-    lineHeight: 23,
-    color: "#64748B",
+    fontSize: 14,
+    lineHeight: 22,
+    color: COLORS.muted,
   },
-
-  /* FORM */
 
   formContainer: {
     paddingHorizontal: 24,
@@ -807,34 +1025,32 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 13,
     fontWeight: "700",
-    color: "#334155",
+    color: COLORS.textSecondary,
     marginBottom: 8,
   },
-
-  /* ACCOUNT TYPE */
 
   accountHelperText: {
     fontSize: 11,
     lineHeight: 17,
-    color: "#94A3B8",
+    color: COLORS.muted,
     marginTop: -3,
     marginBottom: 9,
   },
 
   dropdown: {
-    minHeight: 54,
+    minHeight: 58,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORS.white,
     borderWidth: 1,
-    borderColor: "#CBD5E1",
+    borderColor: COLORS.inputBorder,
     borderRadius: 14,
     paddingHorizontal: 14,
   },
 
   dropdownActive: {
-    borderColor: "#DC2626",
+    borderColor: COLORS.primary,
   },
 
   dropdownLeft: {
@@ -844,40 +1060,39 @@ const styles = StyleSheet.create({
   },
 
   dropdownIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 9,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     backgroundColor: "#F1F5F9",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: 11,
   },
 
   dropdownText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#0F172A",
+    fontSize: 14,
+    fontWeight: "800",
+    color: COLORS.text,
+  },
+
+  dropdownSubtext: {
+    fontSize: 10,
+    color: COLORS.muted,
+    marginTop: 2,
   },
 
   dropdownMenu: {
     marginTop: 7,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORS.white,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: COLORS.border,
     borderRadius: 14,
     overflow: "hidden",
-    shadowColor: "#000000",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
     elevation: 4,
   },
 
   dropdownOption: {
-    minHeight: 70,
+    minHeight: 72,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 13,
@@ -900,7 +1115,7 @@ const styles = StyleSheet.create({
   },
 
   optionIconActive: {
-    backgroundColor: "#DC2626",
+    backgroundColor: COLORS.primary,
   },
 
   optionContent: {
@@ -910,7 +1125,7 @@ const styles = StyleSheet.create({
   optionTitle: {
     fontSize: 13,
     fontWeight: "800",
-    color: "#334155",
+    color: COLORS.textSecondary,
     marginBottom: 3,
   },
 
@@ -920,18 +1135,16 @@ const styles = StyleSheet.create({
 
   optionDescription: {
     fontSize: 11,
-    color: "#64748B",
+    color: COLORS.muted,
   },
 
-  /* INPUTS */
-
   inputWrapper: {
-    height: 54,
+    minHeight: 54,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORS.white,
     borderWidth: 1,
-    borderColor: "#CBD5E1",
+    borderColor: COLORS.inputBorder,
     borderRadius: 14,
     paddingHorizontal: 14,
   },
@@ -942,9 +1155,9 @@ const styles = StyleSheet.create({
 
   input: {
     flex: 1,
-    height: "100%",
-    fontSize: 15,
-    color: "#0F172A",
+    minHeight: 52,
+    fontSize: 14,
+    color: COLORS.text,
     paddingVertical: 0,
   },
 
@@ -952,19 +1165,31 @@ const styles = StyleSheet.create({
     padding: 5,
   },
 
-  helperText: {
-    fontSize: 11,
-    color: "#94A3B8",
+  passwordRequirements: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
     marginTop: 6,
   },
 
-  /* TERMS */
+  requirementText: {
+    fontSize: 11,
+    color: COLORS.muted,
+  },
+
+  requirementTextActive: {
+    color: COLORS.success,
+  },
+
+  requirementTextError: {
+    color: COLORS.error,
+  },
 
   termsRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     marginTop: 2,
-    marginBottom: 22,
+    marginBottom: 15,
   },
 
   checkbox: {
@@ -972,8 +1197,8 @@ const styles = StyleSheet.create({
     height: 21,
     borderRadius: 6,
     borderWidth: 1.5,
-    borderColor: "#CBD5E1",
-    backgroundColor: "#FFFFFF",
+    borderColor: COLORS.inputBorder,
+    backgroundColor: COLORS.white,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 10,
@@ -981,41 +1206,47 @@ const styles = StyleSheet.create({
   },
 
   checkboxActive: {
-    backgroundColor: "#DC2626",
-    borderColor: "#DC2626",
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
   },
 
   termsText: {
     flex: 1,
     fontSize: 12,
     lineHeight: 19,
-    color: "#64748B",
+    color: COLORS.muted,
   },
 
   termsLink: {
-    color: "#DC2626",
+    color: COLORS.primary,
     fontWeight: "700",
   },
 
-  /* BUTTON */
+  errorBox: {
+    backgroundColor: COLORS.errorBackground,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+
+  errorText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLORS.error,
+  },
 
   signupButton: {
-    height: 56,
+    minHeight: 56,
     borderRadius: 16,
-    backgroundColor: "#DC2626",
+    backgroundColor: COLORS.primary,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 20,
-
-    shadowColor: "#DC2626",
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    elevation: 6,
+    gap: 10,
+    elevation: 5,
   },
 
   signupButtonDisabled: {
@@ -1023,13 +1254,10 @@ const styles = StyleSheet.create({
   },
 
   signupButtonText: {
-    color: "#FFFFFF",
+    color: COLORS.white,
     fontSize: 15,
     fontWeight: "800",
-    marginRight: 10,
   },
-
-  /* DIVIDER */
 
   dividerContainer: {
     flexDirection: "row",
@@ -1040,17 +1268,15 @@ const styles = StyleSheet.create({
   divider: {
     flex: 1,
     height: 1,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: COLORS.border,
   },
 
   dividerText: {
     fontSize: 11,
     fontWeight: "700",
-    color: "#94A3B8",
+    color: COLORS.placeholder,
     marginHorizontal: 14,
   },
-
-  /* LOGIN */
 
   loginContainer: {
     flexDirection: "row",
@@ -1060,26 +1286,24 @@ const styles = StyleSheet.create({
 
   loginText: {
     fontSize: 14,
-    color: "#64748B",
+    color: COLORS.muted,
     marginRight: 5,
   },
 
   loginLink: {
     fontSize: 14,
     fontWeight: "800",
-    color: "#DC2626",
+    color: COLORS.primary,
   },
-
-  /* SECURITY */
 
   securityBox: {
     marginHorizontal: 24,
     marginTop: 28,
     padding: 15,
     borderRadius: 15,
-    backgroundColor: "#FFF1F2",
+    backgroundColor: COLORS.softRed,
     borderWidth: 1,
-    borderColor: "#FECDD3",
+    borderColor: COLORS.softRedBorder,
     flexDirection: "row",
     alignItems: "flex-start",
   },
@@ -1088,7 +1312,7 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 10,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: COLORS.white,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 11,
@@ -1111,13 +1335,10 @@ const styles = StyleSheet.create({
     color: "#881337",
   },
 
-  /* FOOTER */
-
   footer: {
     textAlign: "center",
     fontSize: 10,
-    color: "#94A3B8",
+    color: COLORS.placeholder,
     marginTop: 25,
   },
 });
- 

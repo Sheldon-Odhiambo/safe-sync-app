@@ -21,9 +21,20 @@ import MapView, {
 import * as Location from "expo-location";
 
 import {
-  Ionicons,
-  FontAwesome5,
-} from "@expo/vector-icons";
+  Ambulance,
+  Check,
+  CheckCircle,
+  ChevronRight,
+  Flame,
+  LocateFixed,
+  MapPin,
+  Navigation,
+  Search,
+  XCircle,
+  ShieldCheck,
+  Clock3,
+  Radio,
+} from "lucide-react-native";
 
 import { useRouter } from "expo-router";
 
@@ -31,15 +42,6 @@ import { useRouter } from "expo-router";
 /* GOOGLE MAPS / GEOCODING API KEY           */
 /* ========================================= */
 
-/*
- * This is read from your .env file. It must be
- * prefixed with EXPO_PUBLIC_ so Expo exposes it
- * to the JS bundle. The SAME key is also required
- * in app.json (android.config.googleMaps.apiKey and
- * ios.config.googleMapsApiKey) for the native map
- * tiles to render — that part cannot be done from
- * this file, since it's native config, not JS.
- */
 const GOOGLE_MAPS_API_KEY =
   process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
 
@@ -64,9 +66,9 @@ export default function Home() {
 
   const mapRef = useRef<MapView | null>(null);
 
-  /* ----------------------------------------- */
-  /* LOCATION STATE                             */
-  /* ----------------------------------------- */
+  /* ========================================= */
+  /* LOCATION STATE                            */
+  /* ========================================= */
 
   const [locationModalVisible, setLocationModalVisible] =
     useState(true);
@@ -83,9 +85,9 @@ export default function Home() {
   const [mapRegion, setMapRegion] =
     useState<Region | null>(null);
 
-  /* ----------------------------------------- */
-  /* SEARCH STATE                               */
-  /* ----------------------------------------- */
+  /* ========================================= */
+  /* SEARCH STATE                              */
+  /* ========================================= */
 
   const [searchQuery, setSearchQuery] =
     useState("");
@@ -96,17 +98,24 @@ export default function Home() {
   const [searchedLocation, setSearchedLocation] =
     useState<LocationData | null>(null);
 
-  /* ----------------------------------------- */
-  /* EMERGENCY STATE                            */
-  /* ----------------------------------------- */
+  /* ========================================= */
+  /* EMERGENCY STATE                           */
+  /* ========================================= */
 
   const [selectedEmergency, setSelectedEmergency] =
     useState<EmergencyType | null>(null);
 
+  /* ========================================= */
+  /* RESPONDER STATE                           */
+  /* ========================================= */
+
+  const [dispatchingResponderId, setDispatchingResponderId] =
+    useState<string | null>(null);
+
   /*
    * Temporary responder data.
    *
-   * This will later come from the SafeSync backend
+   * Later this will come from the SafeSync backend
    * based on the confirmed client coordinates.
    */
   const nearbyUnits = [
@@ -147,7 +156,7 @@ export default function Home() {
   }, []);
 
   /* ========================================= */
-  /* REVERSE GEOCODING (Google Geocoding API)  */
+  /* REVERSE GEOCODING                         */
   /* ========================================= */
 
   const getAddressFromCoordinates = async (
@@ -159,7 +168,10 @@ export default function Home() {
     }
 
     try {
-      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${GOOGLE_MAPS_API_KEY}`;
+      const url =
+        `https://maps.googleapis.com/maps/api/geocode/json` +
+        `?latlng=${latitude},${longitude}` +
+        `&key=${GOOGLE_MAPS_API_KEY}`;
 
       const response = await fetch(url);
       const data = await response.json();
@@ -171,7 +183,7 @@ export default function Home() {
         return data.results[0].formatted_address;
       }
     } catch {
-      // Coordinates remain valid even if reverse geocoding fails.
+      // Coordinates remain valid even if geocoding fails.
     }
 
     return "Current GPS location";
@@ -242,26 +254,19 @@ export default function Home() {
       setMapRegion(region);
       setLocationConfirmed(true);
 
-      /*
-       * Clear any previous search.
-       */
       setSearchQuery("");
       setSearchedLocation(null);
 
       setLocationLoading(false);
       setLocationModalVisible(false);
 
-      /*
-       * Wait for the map to render before
-       * animating to the user's location.
-       */
       setTimeout(() => {
         mapRef.current?.animateToRegion(
           region,
           500
         );
       }, 300);
-    } catch (error) {
+    } catch {
       setLocationLoading(false);
 
       Alert.alert(
@@ -272,7 +277,7 @@ export default function Home() {
   };
 
   /* ========================================= */
-  /* SEARCH LOCATION (Google Geocoding API)    */
+  /* SEARCH LOCATION                           */
   /* ========================================= */
 
   const searchForLocation = async () => {
@@ -302,9 +307,10 @@ export default function Home() {
       setSearchLoading(true);
       setSearchedLocation(null);
 
-      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-        query
-      )}&key=${GOOGLE_MAPS_API_KEY}`;
+      const url =
+        `https://maps.googleapis.com/maps/api/geocode/json` +
+        `?address=${encodeURIComponent(query)}` +
+        `&key=${GOOGLE_MAPS_API_KEY}`;
 
       const response = await fetch(url);
       const data = await response.json();
@@ -327,8 +333,10 @@ export default function Home() {
 
       const latitude =
         result.geometry.location.lat;
+
       const longitude =
         result.geometry.location.lng;
+
       const address =
         result.formatted_address ?? query;
 
@@ -348,9 +356,6 @@ export default function Home() {
       setSearchedLocation(locationData);
       setMapRegion(region);
 
-      /*
-       * Move the main map when it exists.
-       */
       setTimeout(() => {
         mapRef.current?.animateToRegion(
           region,
@@ -359,7 +364,7 @@ export default function Home() {
       }, 100);
 
       setSearchLoading(false);
-    } catch (error) {
+    } catch {
       setSearchLoading(false);
 
       Alert.alert(
@@ -396,9 +401,6 @@ export default function Home() {
 
     setLocationModalVisible(false);
 
-    /*
-     * Clear temporary search state.
-     */
     setSearchQuery("");
     setSearchedLocation(null);
 
@@ -421,16 +423,12 @@ export default function Home() {
   };
 
   /* ========================================= */
-  /* EMERGENCY REQUEST                         */
+  /* GENERAL EMERGENCY REQUEST                 */
   /* ========================================= */
 
   const requestEmergency = (
     type: EmergencyType
   ) => {
-    /*
-     * Emergency requests can never proceed
-     * without a confirmed location.
-     */
     if (!clientLocation || !locationConfirmed) {
       setLocationModalVisible(true);
       return;
@@ -450,6 +448,98 @@ export default function Home() {
           clientLocation.address,
       },
     });
+  };
+
+  /* ========================================= */
+  /* REQUEST SPECIFIC RESPONDER                */
+  /* ========================================= */
+
+  const requestResponder = (
+    unit: (typeof nearbyUnits)[number]
+  ) => {
+    if (!clientLocation || !locationConfirmed) {
+      setLocationModalVisible(true);
+      return;
+    }
+
+    const emergencyType: EmergencyType =
+      unit.kind === "Ambulance"
+        ? "ambulance"
+        : "fire";
+
+    Alert.alert(
+      `Request ${unit.kind}?`,
+      `You are requesting ${unit.name} (${unit.vehicle}) to respond to:\n\n${clientLocation.address}\n\nETA: ${unit.eta}\nDistance: ${unit.distance}`,
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Confirm & Dispatch",
+          style: "destructive",
+          onPress: () => {
+            dispatchResponder(
+              unit,
+              emergencyType
+            );
+          },
+        },
+      ]
+    );
+  };
+
+  /* ========================================= */
+  /* DISPATCH RESPONDER                        */
+  /* ========================================= */
+
+  const dispatchResponder = (
+    unit: (typeof nearbyUnits)[number],
+    emergencyType: EmergencyType
+  ) => {
+    if (!clientLocation) {
+      return;
+    }
+
+    setDispatchingResponderId(unit.id);
+
+    /*
+     * Later replace this simulated timeout
+     * with your SafeSync API request.
+     */
+
+    setTimeout(() => {
+      setDispatchingResponderId(null);
+
+      Alert.alert(
+        "Dispatch Confirmed",
+        `${unit.name} (${unit.vehicle}) has been requested.\n\nETA: ${unit.eta}\nDistance: ${unit.distance}\n\nHelp is being dispatched to your confirmed location.`,
+        [
+          {
+            text: "Track Response",
+            onPress: () => {
+              router.push({
+                pathname: "/emergency",
+                params: {
+                  type: emergencyType,
+                  responderId: unit.id,
+                  responderName: unit.name,
+                  vehicle: unit.vehicle,
+                  eta: unit.eta,
+                  distance: unit.distance,
+                  latitude:
+                    clientLocation.latitude.toString(),
+                  longitude:
+                    clientLocation.longitude.toString(),
+                  address:
+                    clientLocation.address,
+                },
+              });
+            },
+          },
+        ]
+      );
+    }, 1000);
   };
 
   /* ========================================= */
@@ -482,44 +572,47 @@ export default function Home() {
         {/* LOCATION BANNER                       */}
         {/* ===================================== */}
 
-        {locationConfirmed && clientLocation && (
-          <TouchableOpacity
-            style={styles.locationBanner}
-            activeOpacity={0.8}
-            onPress={changeLocation}
-          >
-            <View style={styles.locationBannerIcon}>
-              <Ionicons
-                name="location"
-                size={20}
-                color="#DC2626"
-              />
-            </View>
-
-            <View
-              style={styles.locationBannerContent}
+        {locationConfirmed &&
+          clientLocation && (
+            <TouchableOpacity
+              style={styles.locationBanner}
+              activeOpacity={0.8}
+              onPress={changeLocation}
             >
-              <Text
-                style={styles.locationBannerLabel}
+              <View
+                style={styles.locationBannerIcon}
               >
-                EMERGENCY LOCATION
-              </Text>
+                <MapPin
+                  size={20}
+                  color="#DC2626"
+                  strokeWidth={2.3}
+                />
+              </View>
 
-              <Text
-                style={styles.locationBannerAddress}
-                numberOfLines={2}
+              <View
+                style={styles.locationBannerContent}
               >
-                {clientLocation.address}
-              </Text>
-            </View>
+                <Text
+                  style={styles.locationBannerLabel}
+                >
+                  EMERGENCY LOCATION
+                </Text>
 
-            <Ionicons
-              name="chevron-forward"
-              size={20}
-              color="#64748B"
-            />
-          </TouchableOpacity>
-        )}
+                <Text
+                  style={styles.locationBannerAddress}
+                  numberOfLines={2}
+                >
+                  {clientLocation.address}
+                </Text>
+              </View>
+
+              <ChevronRight
+                size={20}
+                color="#64748B"
+                strokeWidth={2}
+              />
+            </TouchableOpacity>
+          )}
 
         {/* ===================================== */}
         {/* MAP                                   */}
@@ -537,9 +630,7 @@ export default function Home() {
                 showsCompass
                 mapType="standard"
               >
-                {/* -------------------------------- */}
-                {/* CLIENT LOCATION                    */}
-                {/* -------------------------------- */}
+                {/* CLIENT LOCATION */}
 
                 {clientLocation && (
                   <Marker
@@ -554,21 +645,17 @@ export default function Home() {
                       clientLocation.address
                     }
                   >
-                    <View
-                      style={styles.userMarker}
-                    >
-                      <Ionicons
-                        name="location"
+                    <View style={styles.userMarker}>
+                      <MapPin
                         size={18}
                         color="#FFFFFF"
+                        strokeWidth={2.5}
                       />
                     </View>
                   </Marker>
                 )}
 
-                {/* -------------------------------- */}
-                {/* RESPONDER MARKERS                 */}
-                {/* -------------------------------- */}
+                {/* RESPONDER MARKERS */}
 
                 {nearbyUnits.map((unit) => (
                   <Marker
@@ -581,22 +668,19 @@ export default function Home() {
                     description={`${unit.eta} · ${unit.distance}`}
                   >
                     <View
-                      style={
-                        styles.responderMarker
-                      }
+                      style={styles.responderMarker}
                     >
-                      {unit.kind ===
-                      "Ambulance" ? (
-                        <FontAwesome5
-                          name="ambulance"
-                          size={16}
-                          color="#FFFFFF"
-                        />
-                      ) : (
-                        <Ionicons
-                          name="flame"
+                      {unit.kind === "Ambulance" ? (
+                        <Ambulance
                           size={18}
                           color="#FFFFFF"
+                          strokeWidth={2.3}
+                        />
+                      ) : (
+                        <Flame
+                          size={19}
+                          color="#FFFFFF"
+                          strokeWidth={2.3}
                         />
                       )}
                     </View>
@@ -604,22 +688,18 @@ export default function Home() {
                 ))}
               </MapView>
 
-              {/* -------------------------------- */}
-              {/* MAP STATUS                        */}
-              {/* -------------------------------- */}
+              {/* MAP STATUS */}
 
-              <View
-                style={styles.mapOverlay}
-              >
+              <View style={styles.mapOverlay}>
                 <View
                   style={
                     styles.locationVerifiedBadge
                   }
                 >
-                  <Ionicons
-                    name="checkmark-circle"
+                  <CheckCircle
                     size={15}
                     color="#059669"
+                    strokeWidth={2.3}
                   />
 
                   <Text
@@ -633,14 +713,10 @@ export default function Home() {
               </View>
             </View>
 
-            {/* -------------------------------- */}
-            {/* MAP FOOTER                         */}
-            {/* -------------------------------- */}
+            {/* MAP FOOTER */}
 
             <View style={styles.mapFooter}>
-              <View
-                style={styles.mapFooterInfo}
-              >
+              <View style={styles.mapFooterInfo}>
                 <Text
                   style={styles.mapFooterTitle}
                 >
@@ -650,7 +726,8 @@ export default function Home() {
                 <Text
                   style={styles.mapFooterSubtitle}
                 >
-                  Responders will be dispatched here
+                  Responders will be dispatched
+                  here
                 </Text>
               </View>
 
@@ -660,16 +737,14 @@ export default function Home() {
                 }
                 onPress={changeLocation}
               >
-                <Ionicons
-                  name="location-outline"
+                <MapPin
                   size={15}
                   color="#DC2626"
+                  strokeWidth={2.3}
                 />
 
                 <Text
-                  style={
-                    styles.changeLocationText
-                  }
+                  style={styles.changeLocationText}
                 >
                   Change
                 </Text>
@@ -685,14 +760,12 @@ export default function Home() {
             style={styles.locationRequiredCard}
           >
             <View
-              style={
-                styles.locationRequiredIcon
-              }
+              style={styles.locationRequiredIcon}
             >
-              <Ionicons
-                name="location-outline"
+              <MapPin
                 size={34}
                 color="#DC2626"
+                strokeWidth={2}
               />
             </View>
 
@@ -705,15 +778,13 @@ export default function Home() {
             <Text
               style={styles.locationRequiredText}
             >
-              SafeSync needs to know where help is
-              required before showing available
+              SafeSync needs to know where help
+              is required before showing available
               emergency responders.
             </Text>
 
             <TouchableOpacity
-              style={
-                styles.primaryLocationButton
-              }
+              style={styles.primaryLocationButton}
               onPress={requestLocation}
               disabled={locationLoading}
             >
@@ -721,10 +792,10 @@ export default function Home() {
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
                 <>
-                  <Ionicons
-                    name="locate"
+                  <LocateFixed
                     size={19}
                     color="#FFFFFF"
+                    strokeWidth={2.3}
                   />
 
                   <Text
@@ -744,10 +815,10 @@ export default function Home() {
                 setLocationModalVisible(true);
               }}
             >
-              <Ionicons
-                name="search"
+              <Search
                 size={17}
                 color="#DC2626"
+                strokeWidth={2.3}
               />
 
               <Text
@@ -772,19 +843,16 @@ export default function Home() {
             </Text>
 
             <Text style={styles.sectionSubtitle}>
-              Select the type of emergency assistance
-              you need.
+              Select the type of emergency
+              assistance you need.
             </Text>
 
-            {/* -------------------------------- */}
-            {/* AMBULANCE                         */}
-            {/* -------------------------------- */}
+            {/* AMBULANCE */}
 
             <TouchableOpacity
               style={[
                 styles.emergencyCard,
-                selectedEmergency ===
-                  "ambulance" &&
+                selectedEmergency === "ambulance" &&
                   styles.emergencyCardSelected,
               ]}
               activeOpacity={0.85}
@@ -798,44 +866,36 @@ export default function Home() {
                   styles.ambulanceIcon,
                 ]}
               >
-                <FontAwesome5
-                  name="ambulance"
-                  size={25}
+                <Ambulance
+                  size={27}
                   color="#FFFFFF"
+                  strokeWidth={2.1}
                 />
               </View>
 
               <View
-                style={
-                  styles.emergencyCardContent
-                }
+                style={styles.emergencyCardContent}
               >
                 <Text
-                  style={
-                    styles.emergencyCardTitle
-                  }
+                  style={styles.emergencyCardTitle}
                 >
                   Request Ambulance
                 </Text>
 
                 <Text
-                  style={
-                    styles.emergencyCardText
-                  }
+                  style={styles.emergencyCardText}
                 >
                   Medical emergency, accident or
                   urgent medical assistance.
                 </Text>
 
                 <View
-                  style={
-                    styles.emergencyCardMeta
-                  }
+                  style={styles.emergencyCardMeta}
                 >
-                  <Ionicons
-                    name="navigate-outline"
+                  <Navigation
                     size={14}
                     color="#64748B"
+                    strokeWidth={2}
                   />
 
                   <Text
@@ -848,16 +908,14 @@ export default function Home() {
                 </View>
               </View>
 
-              <Ionicons
-                name="chevron-forward"
+              <ChevronRight
                 size={22}
                 color="#94A3B8"
+                strokeWidth={2}
               />
             </TouchableOpacity>
 
-            {/* -------------------------------- */}
-            {/* FIRE                              */}
-            {/* -------------------------------- */}
+            {/* FIRE */}
 
             <TouchableOpacity
               style={[
@@ -876,44 +934,36 @@ export default function Home() {
                   styles.fireIcon,
                 ]}
               >
-                <Ionicons
-                  name="flame"
-                  size={27}
+                <Flame
+                  size={28}
                   color="#FFFFFF"
+                  strokeWidth={2.2}
                 />
               </View>
 
               <View
-                style={
-                  styles.emergencyCardContent
-                }
+                style={styles.emergencyCardContent}
               >
                 <Text
-                  style={
-                    styles.emergencyCardTitle
-                  }
+                  style={styles.emergencyCardTitle}
                 >
                   Request Fire Response
                 </Text>
 
                 <Text
-                  style={
-                    styles.emergencyCardText
-                  }
+                  style={styles.emergencyCardText}
                 >
-                  Fire, smoke, building fire or other
-                  fire-related emergency.
+                  Fire, smoke, building fire or
+                  other fire-related emergency.
                 </Text>
 
                 <View
-                  style={
-                    styles.emergencyCardMeta
-                  }
+                  style={styles.emergencyCardMeta}
                 >
-                  <Ionicons
-                    name="navigate-outline"
+                  <Navigation
                     size={14}
                     color="#64748B"
+                    strokeWidth={2}
                   />
 
                   <Text
@@ -926,10 +976,10 @@ export default function Home() {
                 </View>
               </View>
 
-              <Ionicons
-                name="chevron-forward"
+              <ChevronRight
                 size={22}
                 color="#94A3B8"
+                strokeWidth={2}
               />
             </TouchableOpacity>
           </View>
@@ -941,33 +991,21 @@ export default function Home() {
 
         {locationConfirmed && (
           <View style={styles.respondersSection}>
-            <View
-              style={styles.sectionHeaderRow}
-            >
+            <View style={styles.sectionHeaderRow}>
               <View style={styles.sectionHeaderInfo}>
-                <Text
-                  style={styles.sectionTitle}
-                >
+                <Text style={styles.sectionTitle}>
                   Nearby Responders
                 </Text>
 
-                <Text
-                  style={styles.sectionSubtitle}
-                >
+                <Text style={styles.sectionSubtitle}>
                   Based on your confirmed location
                 </Text>
               </View>
 
-              <View
-                style={styles.coverageBadge}
-              >
-                <View
-                  style={styles.coverageDot}
-                />
+              <View style={styles.coverageBadge}>
+                <View style={styles.coverageDot} />
 
-                <Text
-                  style={styles.coverageText}
-                >
+                <Text style={styles.coverageText}>
                   Covered
                 </Text>
               </View>
@@ -978,47 +1016,36 @@ export default function Home() {
                 key={unit.id}
                 style={styles.responderCard}
               >
-                <View
-                  style={styles.cardHeader}
-                >
-                  <View
-                    style={styles.cardHeaderLeft}
-                  >
-                    <View
-                      style={styles.iconBadge}
-                    >
-                      {unit.kind ===
-                      "Ambulance" ? (
-                        <FontAwesome5
-                          name="ambulance"
-                          size={21}
+                {/* CARD HEADER */}
+
+                <View style={styles.cardHeader}>
+                  <View style={styles.cardHeaderLeft}>
+                    <View style={styles.iconBadge}>
+                      {unit.kind === "Ambulance" ? (
+                        <Ambulance
+                          size={23}
                           color="#DC2626"
+                          strokeWidth={2.1}
                         />
                       ) : (
-                        <Ionicons
-                          name="flame"
-                          size={25}
+                        <Flame
+                          size={27}
                           color="#DC2626"
+                          strokeWidth={2.1}
                         />
                       )}
                     </View>
 
-                    <View
-                      style={styles.cardTitleBox}
-                    >
+                    <View style={styles.cardTitleBox}>
                       <Text
-                        style={
-                          styles.responderTitle
-                        }
+                        style={styles.responderTitle}
                         numberOfLines={1}
                       >
                         {unit.name}
                       </Text>
 
                       <Text
-                        style={
-                          styles.responderLocation
-                        }
+                        style={styles.responderLocation}
                         numberOfLines={1}
                       >
                         {unit.station}
@@ -1039,9 +1066,9 @@ export default function Home() {
                   </View>
                 </View>
 
-                <View
-                  style={styles.metricsGrid}
-                >
+                {/* METRICS */}
+
+                <View style={styles.metricsGrid}>
                   <Stat
                     label="ETA"
                     value={unit.eta}
@@ -1063,8 +1090,225 @@ export default function Home() {
                     value={unit.vehicle}
                   />
                 </View>
+
+                {/* REQUEST RESPONDER */}
+
+                <TouchableOpacity
+                  style={[
+                    styles.requestResponderButton,
+                    dispatchingResponderId ===
+                      unit.id &&
+                      styles.requestResponderButtonDisabled,
+                  ]}
+                  activeOpacity={0.85}
+                  disabled={
+                    dispatchingResponderId !== null
+                  }
+                  onPress={() =>
+                    requestResponder(unit)
+                  }
+                >
+                  {dispatchingResponderId ===
+                  unit.id ? (
+                    <ActivityIndicator
+                      color="#FFFFFF"
+                      size="small"
+                    />
+                  ) : unit.kind === "Ambulance" ? (
+                    <Ambulance
+                      size={18}
+                      color="#FFFFFF"
+                      strokeWidth={2.3}
+                    />
+                  ) : (
+                    <Flame
+                      size={19}
+                      color="#FFFFFF"
+                      strokeWidth={2.3}
+                    />
+                  )}
+
+                  <Text
+                    style={
+                      styles.requestResponderButtonText
+                    }
+                  >
+                    {dispatchingResponderId ===
+                    unit.id
+                      ? "Dispatching..."
+                      : `Request ${unit.kind}`}
+                  </Text>
+                </TouchableOpacity>
               </View>
             ))}
+          </View>
+        )}
+
+        {/* ===================================== */}
+        {/* SAFETY & RESPONSE                     */}
+        {/* ===================================== */}
+
+        {locationConfirmed && (
+          <View style={styles.safetySection}>
+            <View style={styles.safetyHeader}>
+              <View style={styles.safetyHeaderContent}>
+                <Text style={styles.sectionTitle}>
+                  Safety & Response
+                </Text>
+
+                <Text style={styles.sectionSubtitle}>
+                  SafeSync keeps your emergency
+                  information ready.
+                </Text>
+              </View>
+
+              <View style={styles.safetyHeaderIcon}>
+                <ShieldCheck
+                  size={23}
+                  color="#059669"
+                  strokeWidth={2.2}
+                />
+              </View>
+            </View>
+
+            {/* SAFETY FEATURE GRID */}
+
+            <View style={styles.safetyGrid}>
+              {/* COVERAGE */}
+
+              <View style={styles.safetyCard}>
+                <View
+                  style={[
+                    styles.safetyIcon,
+                    styles.safetyIconGreen,
+                  ]}
+                >
+                  <CheckCircle
+                    size={21}
+                    color="#059669"
+                    strokeWidth={2.2}
+                  />
+                </View>
+
+                <Text style={styles.safetyCardTitle}>
+                  Covered
+                </Text>
+
+                <Text style={styles.safetyCardText}>
+                  Emergency responders are available
+                  in your area.
+                </Text>
+              </View>
+
+              {/* 24/7 RESPONSE */}
+
+              <View style={styles.safetyCard}>
+                <View
+                  style={[
+                    styles.safetyIcon,
+                    styles.safetyIconRed,
+                  ]}
+                >
+                  <Clock3
+                    size={21}
+                    color="#DC2626"
+                    strokeWidth={2.2}
+                  />
+                </View>
+
+                <Text style={styles.safetyCardTitle}>
+                  24/7 Response
+                </Text>
+
+                <Text style={styles.safetyCardText}>
+                  Request emergency assistance
+                  whenever you need it.
+                </Text>
+              </View>
+
+              {/* LIVE LOCATION */}
+
+              <View style={styles.safetyCard}>
+                <View
+                  style={[
+                    styles.safetyIcon,
+                    styles.safetyIconBlue,
+                  ]}
+                >
+                  <Radio
+                    size={21}
+                    color="#2563EB"
+                    strokeWidth={2.2}
+                  />
+                </View>
+
+                <Text style={styles.safetyCardTitle}>
+                  Live Location
+                </Text>
+
+                <Text style={styles.safetyCardText}>
+                  Your confirmed location can be
+                  shared with responders.
+                </Text>
+              </View>
+
+              {/* LOCATION READY */}
+
+              <View style={styles.safetyCard}>
+                <View
+                  style={[
+                    styles.safetyIcon,
+                    styles.safetyIconPurple,
+                  ]}
+                >
+                  <MapPin
+                    size={21}
+                    color="#7C3AED"
+                    strokeWidth={2.2}
+                  />
+                </View>
+
+                <Text style={styles.safetyCardTitle}>
+                  Location Ready
+                </Text>
+
+                <Text style={styles.safetyCardText}>
+                  Your emergency location is ready
+                  for dispatch.
+                </Text>
+              </View>
+            </View>
+
+            {/* EMERGENCY READY BANNER */}
+
+            <View style={styles.readyBanner}>
+              <View style={styles.readyBannerIcon}>
+                <ShieldCheck
+                  size={23}
+                  color="#FFFFFF"
+                  strokeWidth={2.2}
+                />
+              </View>
+
+              <View style={styles.readyBannerContent}>
+                <Text style={styles.readyBannerTitle}>
+                  Emergency Ready
+                </Text>
+
+                <Text style={styles.readyBannerText}>
+                  Your location is confirmed and ready
+                  for rapid dispatch.
+                </Text>
+              </View>
+
+              <View style={styles.readyCheck}>
+                <Check
+                  size={19}
+                  color="#059669"
+                  strokeWidth={2.6}
+                />
+              </View>
+            </View>
           </View>
         )}
 
@@ -1080,10 +1324,6 @@ export default function Home() {
         animationType="slide"
         transparent
         onRequestClose={() => {
-          /*
-           * Location selection cannot be dismissed
-           * if the user has not yet confirmed a location.
-           */
           if (locationConfirmed) {
             setLocationModalVisible(false);
           }
@@ -1094,10 +1334,10 @@ export default function Home() {
             <View style={styles.modalHandle} />
 
             <View style={styles.modalIcon}>
-              <Ionicons
-                name="location"
+              <MapPin
                 size={30}
                 color="#DC2626"
+                strokeWidth={2}
               />
             </View>
 
@@ -1105,17 +1345,13 @@ export default function Home() {
               Where do you need help?
             </Text>
 
-            <Text
-              style={styles.modalDescription}
-            >
-              Before requesting emergency assistance,
-              confirm the exact location where help is
-              needed.
+            <Text style={styles.modalDescription}>
+              Before requesting emergency
+              assistance, confirm the exact location
+              where help is needed.
             </Text>
 
-            {/* ================================= */}
-            {/* CURRENT LOCATION                  */}
-            {/* ================================= */}
+            {/* CURRENT LOCATION */}
 
             <TouchableOpacity
               style={styles.useLocationButton}
@@ -1127,10 +1363,10 @@ export default function Home() {
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
                 <>
-                  <Ionicons
-                    name="navigate"
+                  <Navigation
                     size={20}
                     color="#FFFFFF"
+                    strokeWidth={2.3}
                   />
 
                   <Text
@@ -1144,26 +1380,20 @@ export default function Home() {
               )}
             </TouchableOpacity>
 
-            {/* ================================= */}
-            {/* SEARCH                             */}
-            {/* ================================= */}
+            {/* SEARCH */}
 
             <View style={styles.manualSection}>
               <View style={styles.divider} />
 
-              <Text
-                style={styles.manualTitle}
-              >
+              <Text style={styles.manualTitle}>
                 Search for another location
               </Text>
 
-              <View
-                style={styles.searchContainer}
-              >
-                <Ionicons
-                  name="search"
-                  size={19}
-                  color="#64748B"
+              <View style={styles.searchContainer}>
+                <Search
+                  size={20}
+                  color="#94A3B8"
+                  strokeWidth={2}
                 />
 
                 <TextInput
@@ -1190,10 +1420,10 @@ export default function Home() {
                       setSearchedLocation(null);
                     }}
                   >
-                    <Ionicons
-                      name="close-circle"
+                    <XCircle
                       size={20}
                       color="#94A3B8"
+                      strokeWidth={2}
                     />
                   </TouchableOpacity>
                 )}
@@ -1211,27 +1441,21 @@ export default function Home() {
                   !searchQuery.trim() ||
                   searchLoading
                 }
-                onPress={
-                  searchForLocation
-                }
+                onPress={searchForLocation}
                 activeOpacity={0.8}
               >
                 {searchLoading ? (
-                  <ActivityIndicator
-                    color="#FFFFFF"
-                  />
+                  <ActivityIndicator color="#FFFFFF" />
                 ) : (
                   <>
-                    <Ionicons
-                      name="search"
+                    <Search
                       size={18}
                       color="#FFFFFF"
+                      strokeWidth={2.3}
                     />
 
                     <Text
-                      style={
-                        styles.searchButtonText
-                      }
+                      style={styles.searchButtonText}
                     >
                       Search Location
                     </Text>
@@ -1239,9 +1463,7 @@ export default function Home() {
                 )}
               </TouchableOpacity>
 
-              {/* ================================= */}
-              {/* SEARCH RESULT                     */}
-              {/* ================================= */}
+              {/* SEARCH RESULT */}
 
               {searchedLocation && (
                 <View
@@ -1250,19 +1472,15 @@ export default function Home() {
                   }
                 >
                   <View
-                    style={
-                      styles.searchResultHeader
-                    }
+                    style={styles.searchResultHeader}
                   >
                     <View
-                      style={
-                        styles.searchResultIcon
-                      }
+                      style={styles.searchResultIcon}
                     >
-                      <Ionicons
-                        name="location"
-                        size={18}
+                      <MapPin
+                        size={17}
                         color="#DC2626"
+                        strokeWidth={2.3}
                       />
                     </View>
 
@@ -1290,14 +1508,10 @@ export default function Home() {
                     </View>
                   </View>
 
-                  {/* -------------------------------- */}
-                  {/* SEARCH PREVIEW MAP               */}
-                  {/* -------------------------------- */}
+                  {/* PREVIEW MAP */}
 
                   <View
-                    style={
-                      styles.searchPreviewMap
-                    }
+                    style={styles.searchPreviewMap}
                   >
                     <MapView
                       style={styles.miniMap}
@@ -1329,19 +1543,17 @@ export default function Home() {
                             styles.selectedLocationMarker
                           }
                         >
-                          <Ionicons
-                            name="location"
+                          <MapPin
                             size={17}
                             color="#FFFFFF"
+                            strokeWidth={2.3}
                           />
                         </View>
                       </Marker>
                     </MapView>
                   </View>
 
-                  {/* -------------------------------- */}
-                  {/* CONFIRM                          */}
-                  {/* -------------------------------- */}
+                  {/* CONFIRM LOCATION */}
 
                   <TouchableOpacity
                     style={
@@ -1360,10 +1572,10 @@ export default function Home() {
                       Confirm This Location
                     </Text>
 
-                    <Ionicons
-                      name="checkmark"
+                    <Check
                       size={19}
                       color="#FFFFFF"
+                      strokeWidth={2.5}
                     />
                   </TouchableOpacity>
                 </View>
@@ -1398,8 +1610,7 @@ function Stat({
       <Text
         style={[
           styles.metricValue,
-          emphasis &&
-            styles.metricValueEmphasis,
+          emphasis && styles.metricValueEmphasis,
         ]}
         numberOfLines={1}
       >
@@ -1525,7 +1736,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: 20,
-
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -1556,7 +1766,6 @@ const styles = StyleSheet.create({
     borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
-
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -1580,7 +1789,6 @@ const styles = StyleSheet.create({
     borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
-
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -1936,6 +2144,167 @@ const styles = StyleSheet.create({
   },
 
   /* ========================================= */
+  /* REQUEST RESPONDER                         */
+  /* ========================================= */
+
+  requestResponderButton: {
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: "#DC2626",
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  requestResponderButtonDisabled: {
+    backgroundColor: "#94A3B8",
+  },
+
+  requestResponderButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+    marginLeft: 7,
+  },
+
+  /* ========================================= */
+  /* SAFETY & RESPONSE                        */
+  /* ========================================= */
+
+  safetySection: {
+    marginTop: 27,
+  },
+
+  safetyHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+
+  safetyHeaderContent: {
+    flex: 1,
+    marginRight: 10,
+  },
+
+  safetyHeaderIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  safetyGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginHorizontal: -5,
+  },
+
+  safetyCard: {
+    width: "50%",
+    minHeight: 150,
+    padding: 12,
+    marginBottom: 10,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+
+  safetyIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+
+  safetyIconGreen: {
+    backgroundColor: "#ECFDF5",
+  },
+
+  safetyIconRed: {
+    backgroundColor: "#FEF2F2",
+  },
+
+  safetyIconBlue: {
+    backgroundColor: "#EFF6FF",
+  },
+
+  safetyIconPurple: {
+    backgroundColor: "#F5F3FF",
+  },
+
+  safetyCardTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  safetyCardText: {
+    marginTop: 5,
+    fontSize: 10,
+    lineHeight: 15,
+    color: "#64748B",
+  },
+
+  /* ========================================= */
+  /* EMERGENCY READY BANNER                    */
+  /* ========================================= */
+
+  readyBanner: {
+    marginTop: 4,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  readyBannerIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: "#059669",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+
+  readyBannerContent: {
+    flex: 1,
+    marginRight: 8,
+  },
+
+  readyBannerTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#065F46",
+  },
+
+  readyBannerText: {
+    marginTop: 3,
+    fontSize: 10,
+    lineHeight: 15,
+    color: "#047857",
+  },
+
+  readyCheck: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  /* ========================================= */
   /* MODAL                                     */
   /* ========================================= */
 
@@ -2144,7 +2513,6 @@ const styles = StyleSheet.create({
     borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
-
     shadowColor: "#000",
     shadowOffset: {
       width: 0,

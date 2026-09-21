@@ -10,8 +10,25 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+
+import {
+  ArrowLeft,
+  Stethoscope,
+  Flame,
+  Car,
+  LifeBuoy,
+  ShieldAlert,
+  CircleAlert,
+  Check,
+  MapPin,
+  Siren,
+} from "lucide-react-native";
+
 import { useRouter } from "expo-router";
+
+/* =========================================================
+   EMERGENCY TYPES
+   ========================================================= */
 
 const emergencyTypes = [
   {
@@ -52,21 +69,32 @@ const emergencyTypes = [
   },
 ];
 
+/* =========================================================
+   COMPONENT
+   ========================================================= */
+
 export default function EmergencyRequest() {
   const router = useRouter();
 
-  const [selected, setSelected] = useState<string | null>(null);
-  const [locating, setLocating] = useState(false);
-  const [located, setLocated] = useState(false);
-  const [notes, setNotes] = useState("");
+  const [selected, setSelected] =
+    useState<string | null>(null);
+
+  const [locating, setLocating] =
+    useState(false);
+
+  const [located, setLocated] =
+    useState(false);
+
+  const [notes, setNotes] =
+    useState("");
 
   const selectedType = emergencyTypes.find(
     (item) => item.id === selected
   );
 
-  // ---------------------------------------------------------
-  // Simulate GPS capture
-  // ---------------------------------------------------------
+  /* =======================================================
+     SIMULATE GPS CAPTURE
+     ======================================================= */
 
   useEffect(() => {
     if (!selected) {
@@ -86,9 +114,9 @@ export default function EmergencyRequest() {
     return () => clearTimeout(timer);
   }, [selected]);
 
-  // ---------------------------------------------------------
-  // Dispatch emergency
-  // ---------------------------------------------------------
+  /* =======================================================
+     DISPATCH EMERGENCY
+     ======================================================= */
 
   const handleDispatch = () => {
     if (!located || !selectedType) {
@@ -108,7 +136,7 @@ export default function EmergencyRequest() {
           style: "destructive",
           onPress: () => {
             router.push({
-              pathname: "/(tabs)/track",
+              pathname: "/track",
               params: {
                 type: selectedType.label,
                 notes: notes,
@@ -120,112 +148,104 @@ export default function EmergencyRequest() {
     );
   };
 
-  // ---------------------------------------------------------
-  // Emergency icons
-  // ---------------------------------------------------------
+  /* =======================================================
+     LUCIDE EMERGENCY ICONS
+     ======================================================= */
 
   const getIcon = (icon: string) => {
+    const iconColor =
+      selected ===
+      emergencyTypes.find(
+        (item) => item.icon === icon
+      )?.id
+        ? "#FFFFFF"
+        : "#DC2626";
+
     switch (icon) {
       case "medical":
         return (
-          <Ionicons
-            name="medical"
+          <Stethoscope
             size={25}
-            color={
-              selected === "medical"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
+            color={iconColor}
+            strokeWidth={2.2}
           />
         );
 
       case "fire":
         return (
-          <MaterialCommunityIcons
-            name="fire"
+          <Flame
             size={27}
-            color={
-              selected === "fire"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
+            color={iconColor}
+            strokeWidth={2.2}
           />
         );
 
       case "car":
         return (
-          <Ionicons
-            name="car"
+          <Car
             size={25}
-            color={
-              selected === "accident"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
+            color={iconColor}
+            strokeWidth={2.2}
           />
         );
 
       case "lifebuoy":
         return (
-          <Ionicons
-            name="help-buoy"
+          <LifeBuoy
             size={26}
-            color={
-              selected === "rescue"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
+            color={iconColor}
+            strokeWidth={2.2}
           />
         );
 
       case "shield-alert":
         return (
-          <MaterialCommunityIcons
-            name="shield-alert-outline"
+          <ShieldAlert
             size={27}
-            color={
-              selected === "security"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
+            color={iconColor}
+            strokeWidth={2.2}
           />
         );
 
       default:
         return (
-          <Ionicons
-            name="alert-circle-outline"
+          <CircleAlert
             size={27}
-            color={
-              selected === "other"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
+            color={iconColor}
+            strokeWidth={2.2}
           />
         );
     }
   };
 
+  /* =======================================================
+     RENDER
+     ======================================================= */
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
 
-        {/* HEADER */}
+        {/* =================================================
+            HEADER
+            ================================================= */}
 
         <View style={styles.header}>
+
           <TouchableOpacity
             style={styles.backButton}
             activeOpacity={0.7}
             onPress={() => router.back()}
           >
-            <Ionicons
-              name="arrow-back"
+            <ArrowLeft
               size={22}
               color="#0F172A"
+              strokeWidth={2.2}
             />
           </TouchableOpacity>
 
           <View style={styles.headerTextContainer}>
+
             <Text
               style={styles.headerTitle}
               numberOfLines={1}
@@ -239,21 +259,29 @@ export default function EmergencyRequest() {
             >
               Pick the closest match — you can add details next.
             </Text>
+
           </View>
         </View>
 
-        {/* CONTENT */}
+        {/* =================================================
+            CONTENT
+            ================================================= */}
 
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
 
-          {/* EMERGENCY TYPES */}
+          {/* =================================================
+              EMERGENCY TYPES
+              ================================================= */}
 
           <View style={styles.emergencyList}>
+
             {emergencyTypes.map((item) => {
-              const active = selected === item.id;
+
+              const active =
+                selected === item.id;
 
               return (
                 <TouchableOpacity
@@ -284,8 +312,11 @@ export default function EmergencyRequest() {
                   {/* TEXT */}
 
                   <View
-                    style={styles.emergencyTextContainer}
+                    style={
+                      styles.emergencyTextContainer
+                    }
                   >
+
                     <Text
                       style={[
                         styles.emergencyTitle,
@@ -302,25 +333,32 @@ export default function EmergencyRequest() {
                     >
                       {item.hint}
                     </Text>
+
                   </View>
 
                   {/* CHECK */}
 
                   {active && (
-                    <View style={styles.checkCircle}>
-                      <Ionicons
-                        name="checkmark"
+                    <View
+                      style={styles.checkCircle}
+                    >
+                      <Check
                         size={17}
                         color="#DC2626"
+                        strokeWidth={3}
                       />
                     </View>
                   )}
+
                 </TouchableOpacity>
               );
             })}
+
           </View>
 
-          {/* LOCATION + NOTES */}
+          {/* =================================================
+              LOCATION + NOTES
+              ================================================= */}
 
           {selected && (
             <View style={styles.detailsCard}>
@@ -328,24 +366,30 @@ export default function EmergencyRequest() {
               {/* LOCATION */}
 
               <View style={styles.locationRow}>
+
                 <View style={styles.locationIcon}>
+
                   {locating ? (
                     <ActivityIndicator
                       size="small"
                       color="#DC2626"
                     />
                   ) : (
-                    <Ionicons
-                      name="location"
+                    <MapPin
                       size={21}
                       color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
+
                 </View>
 
                 <View
-                  style={styles.locationTextContainer}
+                  style={
+                    styles.locationTextContainer
+                  }
                 >
+
                   <Text
                     style={styles.locationTitle}
                     numberOfLines={1}
@@ -356,21 +400,29 @@ export default function EmergencyRequest() {
                   </Text>
 
                   <Text
-                    style={styles.locationSubtitle}
+                    style={
+                      styles.locationSubtitle
+                    }
                   >
                     {locating
                       ? "Please hold"
                       : "Accuracy 6 m · captured just now"}
                   </Text>
+
                 </View>
 
                 {located && (
-                  <View style={styles.locatedBadge}>
-                    <Text style={styles.locatedText}>
+                  <View
+                    style={styles.locatedBadge}
+                  >
+                    <Text
+                      style={styles.locatedText}
+                    >
                       Located
                     </Text>
                   </View>
                 )}
+
               </View>
 
               {/* NOTES */}
@@ -386,8 +438,12 @@ export default function EmergencyRequest() {
                 style={styles.notesInput}
               />
 
-              <View style={styles.characterCount}>
-                <Text style={styles.characterCountText}>
+              <View
+                style={styles.characterCount}
+              >
+                <Text
+                  style={styles.characterCountText}
+                >
                   {notes.length}/500
                 </Text>
               </View>
@@ -395,10 +451,11 @@ export default function EmergencyRequest() {
               {/* WARNING */}
 
               <View style={styles.warningBox}>
-                <MaterialCommunityIcons
-                  name="shield-alert-outline"
+
+                <ShieldAlert
                   size={20}
                   color="#D97706"
+                  strokeWidth={2.2}
                 />
 
                 <Text style={styles.warningText}>
@@ -406,16 +463,22 @@ export default function EmergencyRequest() {
                   notifies your emergency contacts with
                   your live location.
                 </Text>
+
               </View>
+
             </View>
           )}
 
           <View style={styles.bottomSpace} />
+
         </ScrollView>
 
-        {/* DISPATCH BUTTON */}
+        {/* =================================================
+            DISPATCH BUTTON
+            ================================================= */}
 
         <View style={styles.dispatchContainer}>
+
           <TouchableOpacity
             activeOpacity={0.85}
             disabled={!located}
@@ -426,16 +489,17 @@ export default function EmergencyRequest() {
                 styles.dispatchButtonDisabled,
             ]}
           >
+
             {locating ? (
               <ActivityIndicator
                 color="#FFFFFF"
                 size="small"
               />
             ) : (
-              <MaterialCommunityIcons
-                name="siren"
+              <Siren
                 size={24}
                 color="#FFFFFF"
+                strokeWidth={2.2}
               />
             )}
 
@@ -448,16 +512,19 @@ export default function EmergencyRequest() {
                 ? `CONFIRM & DISPATCH · ${selectedType.label.toUpperCase()}`
                 : "SELECT AN EMERGENCY"}
             </Text>
+
           </TouchableOpacity>
+
         </View>
+
       </View>
     </SafeAreaView>
   );
 }
 
-// =========================================================
-// STYLES
-// =========================================================
+/* =========================================================
+   STYLES
+   ========================================================= */
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -470,7 +537,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
   },
 
-  // HEADER
+  /* =======================================================
+     HEADER
+     ======================================================= */
 
   header: {
     flexDirection: "row",
@@ -510,7 +579,9 @@ const styles = StyleSheet.create({
     color: "#64748B",
   },
 
-  // CONTENT
+  /* =======================================================
+     CONTENT
+     ======================================================= */
 
   scrollContent: {
     paddingHorizontal: 18,
@@ -521,7 +592,9 @@ const styles = StyleSheet.create({
     gap: 12,
   },
 
-  // EMERGENCY OPTION
+  /* =======================================================
+     EMERGENCY OPTION
+     ======================================================= */
 
   emergencyOption: {
     minHeight: 82,
@@ -585,7 +658,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  // DETAILS
+  /* =======================================================
+     DETAILS
+     ======================================================= */
 
   detailsCard: {
     marginTop: 20,
@@ -596,7 +671,9 @@ const styles = StyleSheet.create({
     borderColor: "#E2E8F0",
   },
 
-  // LOCATION
+  /* =======================================================
+     LOCATION
+     ======================================================= */
 
   locationRow: {
     flexDirection: "row",
@@ -643,7 +720,9 @@ const styles = StyleSheet.create({
     color: "#15803D",
   },
 
-  // NOTES
+  /* =======================================================
+     NOTES
+     ======================================================= */
 
   notesInput: {
     minHeight: 110,
@@ -670,7 +749,9 @@ const styles = StyleSheet.create({
     color: "#94A3B8",
   },
 
-  // WARNING
+  /* =======================================================
+     WARNING
+     ======================================================= */
 
   warningBox: {
     flexDirection: "row",
@@ -689,7 +770,9 @@ const styles = StyleSheet.create({
     color: "#78350F",
   },
 
-  // DISPATCH
+  /* =======================================================
+     DISPATCH
+     ======================================================= */
 
   dispatchContainer: {
     position: "absolute",
@@ -713,6 +796,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 18,
     gap: 10,
+
     shadowColor: "#DC2626",
     shadowOffset: {
       width: 0,

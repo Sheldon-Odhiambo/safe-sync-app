@@ -9,9 +9,18 @@ import {
   View,
 } from "react-native";
 
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import {
+  Plus,
+  Download,
+  ArrowDown,
+  ArrowUp,
+  Smartphone,
+  CreditCard,
+  Landmark,
+  ChevronRight,
+} from "lucide-react-native";
 
-import DepositModal from "@/components/forms/deposit_modal";
+import DepositModal from "../../components/forms/deposit_modal";
 
 type Transaction = {
   id: string;
@@ -81,21 +90,30 @@ const formatAmount = (n: number) =>
 
 export default function Wallet() {
   const [semiAnnualTopUp, setSemiAnnualTopUp] = useState(true);
-const [annualTopUp, setAnnualTopUp] = useState(false);
-const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+  const [annualTopUp, setAnnualTopUp] = useState(false);
+  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
 
-  // Dummy data preserved as the starting state
   const [balance, setBalance] = useState(21800);
+
   const [transactions, setTransactions] =
     useState<Transaction[]>(initialTransactions);
+
   const [depositOpen, setDepositOpen] = useState(false);
 
-  const dispatchesCovered = Math.round(balance / STANDARD_DISPATCH_COST);
+  const dispatchesCovered = Math.round(
+    balance / STANDARD_DISPATCH_COST
+  );
 
-  const handleDeposit = () => setDepositOpen(true);
+  const handleDeposit = () => {
+    setDepositOpen(true);
+  };
 
-  const handleDepositSuccess = (amount: number, receipt?: string | null) => {
+  const handleDepositSuccess = (
+    amount: number,
+    receipt?: string | null
+  ) => {
     setBalance((current) => current + amount);
+
     setTransactions((current) => [
       {
         id: receipt ?? `TXN-${Date.now()}`,
@@ -113,16 +131,35 @@ const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
   };
 
   const handleDownloadReceipts = () => {
-    Alert.alert("Receipts", "Your receipts will be prepared for download.");
+    Alert.alert(
+      "Receipts",
+      "Your receipts will be prepared for download."
+    );
   };
 
   const handleAddPaymentMethod = () => {
-    Alert.alert("Add payment method", "Choose a payment method to add.", [
-      { text: "M-PESA", onPress: () => console.log("Add M-PESA") },
-      { text: "Card", onPress: () => console.log("Add card") },
-      { text: "Bank", onPress: () => console.log("Add bank") },
-      { text: "Cancel", style: "cancel" },
-    ]);
+    Alert.alert(
+      "Add payment method",
+      "Choose a payment method to add.",
+      [
+        {
+          text: "M-PESA",
+          onPress: () => console.log("Add M-PESA"),
+        },
+        {
+          text: "Card",
+          onPress: () => console.log("Add card"),
+        },
+        {
+          text: "Bank",
+          onPress: () => console.log("Add bank"),
+        },
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+      ]
+    );
   };
 
   return (
@@ -132,16 +169,23 @@ const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
         contentContainerStyle={styles.scrollContent}
       >
         {/* PAGE HEADER */}
+
         <View style={styles.pageHeader}>
-          <Text style={styles.pageTitle}>Wallet</Text>
+          <Text style={styles.pageTitle}>
+            Wallet
+          </Text>
+
           <Text style={styles.pageSubtitle}>
             Keep a balance so dispatch is never delayed by payment.
           </Text>
         </View>
 
         {/* BALANCE CARD */}
+
         <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>CURRENT BALANCE</Text>
+          <Text style={styles.balanceLabel}>
+            CURRENT BALANCE
+          </Text>
 
           <Text style={styles.balanceAmount}>
             KSh {formatAmount(balance)}
@@ -152,85 +196,168 @@ const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
           </Text>
 
           <View style={styles.balanceActions}>
+
+            {/* DEPOSIT */}
+
             <TouchableOpacity
               style={styles.depositButton}
               activeOpacity={0.8}
               onPress={handleDeposit}
             >
-              <Ionicons name="add" size={20} color="#DC2626" />
-              <Text style={styles.depositButtonText}>Deposit Funds</Text>
+              <Plus
+                size={20}
+                color="#DC2626"
+                strokeWidth={2.5}
+              />
+
+              <Text style={styles.depositButtonText}>
+                Deposit Funds
+              </Text>
             </TouchableOpacity>
+
+            {/* RECEIPTS */}
 
             <TouchableOpacity
               style={styles.receiptButton}
               activeOpacity={0.8}
               onPress={handleDownloadReceipts}
             >
-              <Ionicons name="download-outline" size={18} color="#FFFFFF" />
-              <Text style={styles.receiptButtonText}>Receipts</Text>
+              <Download
+                size={18}
+                color="#FFFFFF"
+                strokeWidth={2.2}
+              />
+
+              <Text style={styles.receiptButtonText}>
+                Receipts
+              </Text>
             </TouchableOpacity>
+
           </View>
         </View>
 
         {/* SEMI-ANNUAL TOP-UP */}
+
         <View style={styles.settingRow}>
           <View style={styles.settingTextContainer}>
-            <Text style={styles.settingTitle}>Semi-annual top-up</Text>
+            <Text style={styles.settingTitle}>
+              Semi-annual top-up
+            </Text>
+
             <Text style={styles.settingDescription}>
               KSh 6,000 added every 6 months
             </Text>
           </View>
 
           <TouchableOpacity
-            style={[styles.switch, semiAnnualTopUp && styles.switchActive]}
-            onPress={() => setSemiAnnualTopUp(!semiAnnualTopUp)}
+            style={[
+              styles.switch,
+              semiAnnualTopUp && styles.switchActive,
+            ]}
+            onPress={() =>
+              setSemiAnnualTopUp(!semiAnnualTopUp)
+            }
             activeOpacity={0.8}
           >
             <View
               style={[
                 styles.switchThumb,
-                semiAnnualTopUp && styles.switchThumbActive,
+                semiAnnualTopUp &&
+                  styles.switchThumbActive,
               ]}
             />
           </TouchableOpacity>
         </View>
 
         {/* ANNUAL TOP-UP */}
+
         <View style={styles.settingRow}>
           <View style={styles.settingTextContainer}>
-            <Text style={styles.settingTitle}>Annual top-up</Text>
+            <Text style={styles.settingTitle}>
+              Annual top-up
+            </Text>
+
             <Text style={styles.settingDescription}>
               KSh 12,000 added every year
             </Text>
           </View>
 
           <TouchableOpacity
-            style={[styles.switch, annualTopUp && styles.switchActive]}
-            onPress={() => setAnnualTopUp(!annualTopUp)}
+            style={[
+              styles.switch,
+              annualTopUp && styles.switchActive,
+            ]}
+            onPress={() =>
+              setAnnualTopUp(!annualTopUp)
+            }
             activeOpacity={0.8}
           >
             <View
               style={[
                 styles.switchThumb,
-                annualTopUp && styles.switchThumbActive,
+                annualTopUp &&
+                  styles.switchThumbActive,
+              ]}
+            />
+          </TouchableOpacity>
+        </View>
+
+        {/* LOW BALANCE ALERTS */}
+
+        <View style={styles.settingRow}>
+          <View style={styles.settingTextContainer}>
+            <Text style={styles.settingTitle}>
+              Low balance alerts
+            </Text>
+
+            <Text style={styles.settingDescription}>
+              Notify me when my wallet balance is low
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.switch,
+              lowBalanceAlerts && styles.switchActive,
+            ]}
+            onPress={() =>
+              setLowBalanceAlerts(!lowBalanceAlerts)
+            }
+            activeOpacity={0.8}
+          >
+            <View
+              style={[
+                styles.switchThumb,
+                lowBalanceAlerts &&
+                  styles.switchThumbActive,
               ]}
             />
           </TouchableOpacity>
         </View>
 
         {/* TRANSACTION HISTORY */}
+
         <View style={styles.panel}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.panelTitle}>Transaction history</Text>
+            <Text style={styles.panelTitle}>
+              Transaction history
+            </Text>
 
             <TouchableOpacity>
-              <Text style={styles.viewAllText}>View all</Text>
+              <Text style={styles.viewAllText}>
+                View all
+              </Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.transactionList}>
             {transactions.map((transaction) => (
-              <View key={transaction.id} style={styles.transactionRow}>
+              <View
+                key={transaction.id}
+                style={styles.transactionRow}
+              >
+                {/* TRANSACTION ICON */}
+
                 <View
                   style={[
                     styles.transactionIcon,
@@ -239,28 +366,46 @@ const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
                       : styles.debitIcon,
                   ]}
                 >
-                  <Ionicons
-                    name={
-                      transaction.kind === "credit" ? "arrow-down" : "arrow-up"
-                    }
-                    size={18}
-                    color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
-                  />
+                  {transaction.kind === "credit" ? (
+                    <ArrowDown
+                      size={18}
+                      color="#059669"
+                      strokeWidth={2.4}
+                    />
+                  ) : (
+                    <ArrowUp
+                      size={18}
+                      color="#DC2626"
+                      strokeWidth={2.4}
+                    />
+                  )}
                 </View>
 
+                {/* DETAILS */}
+
                 <View style={styles.transactionDetails}>
-                  <Text style={styles.transactionLabel} numberOfLines={1}>
+                  <Text
+                    style={styles.transactionLabel}
+                    numberOfLines={1}
+                  >
                     {transaction.label}
                   </Text>
-                  <Text style={styles.transactionDate} numberOfLines={1}>
+
+                  <Text
+                    style={styles.transactionDate}
+                    numberOfLines={1}
+                  >
                     {transaction.date} · {transaction.id}
                   </Text>
                 </View>
 
+                {/* AMOUNT */}
+
                 <Text
                   style={[
                     styles.transactionAmount,
-                    transaction.kind === "credit" && styles.creditAmount,
+                    transaction.kind === "credit" &&
+                      styles.creditAmount,
                   ]}
                 >
                   {transaction.amount}
@@ -271,8 +416,12 @@ const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
         </View>
 
         {/* SAVED PAYMENT METHODS */}
+
         <View style={styles.panel}>
-          <Text style={styles.panelTitle}>Saved payment methods</Text>
+          <Text style={styles.panelTitle}>
+            Saved payment methods
+          </Text>
+
           <Text style={styles.panelSubtitle}>
             Manage the accounts you use for SafeSync payments.
           </Text>
@@ -284,57 +433,93 @@ const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
                 style={styles.paymentMethod}
                 activeOpacity={0.75}
               >
+                {/* PAYMENT ICON */}
+
                 <View style={styles.paymentIcon}>
                   {method.icon === "phone" && (
-                    <Ionicons
-                      name="phone-portrait-outline"
+                    <Smartphone
                       size={20}
                       color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
+
                   {method.icon === "card" && (
-                    <Ionicons name="card-outline" size={20} color="#DC2626" />
-                  )}
-                  {method.icon === "bank" && (
-                    <MaterialCommunityIcons
-                      name="bank-outline"
+                    <CreditCard
                       size={20}
                       color="#DC2626"
+                      strokeWidth={2.2}
+                    />
+                  )}
+
+                  {method.icon === "bank" && (
+                    <Landmark
+                      size={20}
+                      color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
                 </View>
 
+                {/* METHOD DETAILS */}
+
                 <View style={styles.methodDetails}>
-                  <Text style={styles.methodLabel}>{method.label}</Text>
-                  <Text style={styles.methodDetail}>{method.detail}</Text>
+                  <Text style={styles.methodLabel}>
+                    {method.label}
+                  </Text>
+
+                  <Text style={styles.methodDetail}>
+                    {method.detail}
+                  </Text>
                 </View>
+
+                {/* DEFAULT BADGE */}
 
                 {method.badge && (
                   <View style={styles.defaultBadge}>
-                    <Text style={styles.defaultBadgeText}>{method.badge}</Text>
+                    <Text style={styles.defaultBadgeText}>
+                      {method.badge}
+                    </Text>
                   </View>
                 )}
 
-                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+                {/* CHEVRON */}
+
+                <ChevronRight
+                  size={18}
+                  color="#94A3B8"
+                  strokeWidth={2}
+                />
               </TouchableOpacity>
             ))}
           </View>
+
+          {/* ADD PAYMENT METHOD */}
 
           <TouchableOpacity
             style={styles.addPaymentButton}
             activeOpacity={0.8}
             onPress={handleAddPaymentMethod}
           >
-            <Ionicons name="add" size={20} color="#DC2626" />
-            <Text style={styles.addPaymentText}>Add payment method</Text>
+            <Plus
+              size={20}
+              color="#DC2626"
+              strokeWidth={2.5}
+            />
+
+            <Text style={styles.addPaymentText}>
+              Add payment method
+            </Text>
           </TouchableOpacity>
         </View>
 
         {/* BOTTOM SPACE FOR GLOBAL EMERGENCY BUTTON */}
+
         <View style={{ height: 120 }} />
       </ScrollView>
 
       {/* DEPOSIT FORM */}
+
       <DepositModal
         visible={depositOpen}
         onClose={() => setDepositOpen(false)}
@@ -384,7 +569,10 @@ const styles = StyleSheet.create({
     marginBottom: 16,
 
     shadowColor: "#DC2626",
-    shadowOffset: { width: 0, height: 8 },
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
     shadowOpacity: 0.25,
     shadowRadius: 14,
 

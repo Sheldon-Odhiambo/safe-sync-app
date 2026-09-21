@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   Alert,
+  Modal,
   ScrollView,
   StyleSheet,
   Switch,
@@ -9,36 +10,82 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 
-const contacts = [
+import {
+  UserRound,
+  HeartPulse,
+  Info,
+  UsersRound,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  AlertTriangle,
+  X,
+  UserPlus,
+} from "lucide-react-native";
+
+/* ============================================= */
+/* TYPES                                         */
+/* ============================================= */
+
+type EmergencyContact = {
+  id: string;
+  name: string;
+  relation: string;
+  phone: string;
+};
+
+/* ============================================= */
+/* INITIAL CONTACTS                              */
+/* ============================================= */
+
+const initialContacts: EmergencyContact[] = [
   {
+    id: "1",
     name: "Ama Mensah",
     relation: "Spouse",
     phone: "+254 712 345 678",
   },
   {
+    id: "2",
     name: "Dr. J. Osei",
     relation: "Family doctor",
     phone: "+254 722 221 908",
   },
   {
+    id: "3",
     name: "Kofi Mensah",
     relation: "Brother",
     phone: "+254 733 664 112",
   },
 ];
 
+/* ============================================= */
+/* PROFILE COMPONENT                             */
+/* ============================================= */
+
 export default function Profile() {
+  /* =========================================== */
+  /* SAFETY SETTINGS                             */
+  /* =========================================== */
+
   const [panicMode, setPanicMode] = useState(true);
   const [shareMedical, setShareMedical] = useState(true);
   const [recording, setRecording] = useState(true);
   const [offlineQueue, setOfflineQueue] = useState(true);
 
+  /* =========================================== */
+  /* PERSONAL DETAILS                            */
+  /* =========================================== */
+
   const [firstName, setFirstName] = useState("Kevin");
   const [lastName, setLastName] = useState("Mensah");
   const [dob, setDob] = useState("14 Mar 1992");
   const [language, setLanguage] = useState("English");
+
+  /* =========================================== */
+  /* MEDICAL INFORMATION                         */
+  /* =========================================== */
 
   const [bloodGroup, setBloodGroup] = useState("O+");
   const [insurance, setInsurance] = useState("NHIF / AAR Health");
@@ -48,6 +95,24 @@ export default function Profile() {
     "Penicillin, shellfish"
   );
 
+  /* =========================================== */
+  /* EMERGENCY CONTACTS                          */
+  /* =========================================== */
+
+  const [contacts, setContacts] =
+    useState<EmergencyContact[]>(initialContacts);
+
+  const [showContactModal, setShowContactModal] =
+    useState(false);
+
+  const [contactName, setContactName] = useState("");
+  const [contactRelation, setContactRelation] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+
+  /* =========================================== */
+  /* SAVE PROFILE                                */
+  /* =========================================== */
+
   const handleSaveProfile = () => {
     Alert.alert(
       "Profile saved",
@@ -55,310 +120,638 @@ export default function Profile() {
     );
   };
 
+  /* =========================================== */
+  /* OPEN ADD CONTACT FORM                       */
+  /* =========================================== */
+
   const handleAddContact = () => {
+    setContactName("");
+    setContactRelation("");
+    setContactPhone("");
+
+    setShowContactModal(true);
+  };
+
+  /* =========================================== */
+  /* CLOSE ADD CONTACT FORM                      */
+  /* =========================================== */
+
+  const handleCloseContactModal = () => {
+    setShowContactModal(false);
+
+    setContactName("");
+    setContactRelation("");
+    setContactPhone("");
+  };
+
+  /* =========================================== */
+  /* SAVE NEW CONTACT                            */
+  /* =========================================== */
+
+  const handleSaveContact = () => {
+    const trimmedName = contactName.trim();
+    const trimmedRelation = contactRelation.trim();
+    const trimmedPhone = contactPhone.trim();
+
+    if (!trimmedName || !trimmedRelation || !trimmedPhone) {
+      Alert.alert(
+        "Missing information",
+        "Please fill in the name, relationship, and phone number."
+      );
+      return;
+    }
+
+    const newContact: EmergencyContact = {
+      id: Date.now().toString(),
+      name: trimmedName,
+      relation: trimmedRelation,
+      phone: trimmedPhone,
+    };
+
+    setContacts((currentContacts) => [
+      ...currentContacts,
+      newContact,
+    ]);
+
+    setShowContactModal(false);
+
+    setContactName("");
+    setContactRelation("");
+    setContactPhone("");
+
     Alert.alert(
-      "Add emergency contact",
-      "The emergency contact form will be added here."
+      "Contact added",
+      `${trimmedName} has been added to your emergency contacts.`
     );
   };
 
+  /* =========================================== */
+  /* DELETE ACCOUNT                              */
+  /* =========================================== */
+
+  const handleDeleteAccount = () => {
+    // FIRST CONFIRMATION
+    Alert.alert(
+      "Delete account?",
+      "Are you sure you want to delete your SafeSync account? Your account information and associated data will be permanently removed.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Continue",
+          style: "destructive",
+          onPress: () => {
+            // SECOND CONFIRMATION
+            Alert.alert(
+              "Confirm account deletion",
+              "This is your final confirmation. Your SafeSync account, personal information, medical information, emergency contacts, and other associated data will be permanently deleted. This action cannot be undone.",
+              [
+                {
+                  text: "Keep My Account",
+                  style: "cancel",
+                },
+                {
+                  text: "Delete Permanently",
+                  style: "destructive",
+                  onPress: () => {
+                    /*
+                     * BACKEND INTEGRATION
+                     *
+                     * Later, replace this section with your
+                     * authenticated API request.
+                     *
+                     * Example:
+                     *
+                     * await fetch(`${API_URL}/auth/delete-account`, {
+                     *   method: "DELETE",
+                     *   headers: {
+                     *     Authorization: `Bearer ${token}`,
+                     *   },
+                     * });
+                     */
+
+                    Alert.alert(
+                      "Account deletion",
+                      "Your account deletion request has been submitted."
+                    );
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  };
+
+  /* =========================================== */
+  /* RENDER                                      */
+  /* =========================================== */
+
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* PAGE TITLE */}
+    <>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ===================================== */}
+        {/* PAGE TITLE                            */}
+        {/* ===================================== */}
 
-      <View style={styles.titleSection}>
-        <Text style={styles.pageTitle}>Profile</Text>
+        <View style={styles.titleSection}>
+          <Text style={styles.pageTitle}>
+            Profile
+          </Text>
 
-        <Text style={styles.pageDescription}>
-          Shared with the assigned crew only, for the duration of an
-          active incident.
-        </Text>
-      </View>
-
-      {/* ========================================= */}
-      {/* PERSONAL DETAILS                          */}
-      {/* ========================================= */}
-
-      <View style={styles.card}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionIcon}>
-            <Ionicons
-              name="person-outline"
-              size={19}
-              color="#DC2626"
-            />
-          </View>
-
-          <View>
-            <Text style={styles.sectionTitle}>
-              Personal details
-            </Text>
-
-            <Text style={styles.sectionSubtitle}>
-              Your basic personal information
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.formGrid}>
-          <InputField
-            label="First name"
-            value={firstName}
-            onChangeText={setFirstName}
-          />
-
-          <InputField
-            label="Last name"
-            value={lastName}
-            onChangeText={setLastName}
-          />
-
-          <InputField
-            label="Date of birth"
-            value={dob}
-            onChangeText={setDob}
-          />
-
-          <InputField
-            label="Language preference"
-            value={language}
-            onChangeText={setLanguage}
-          />
-        </View>
-      </View>
-
-      {/* ========================================= */}
-      {/* MEDICAL INFORMATION                       */}
-      {/* ========================================= */}
-
-      <View style={styles.card}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionIcon}>
-            <Ionicons
-              name="medical-outline"
-              size={19}
-              color="#DC2626"
-            />
-          </View>
-
-          <View>
-            <Text style={styles.sectionTitle}>
-              Medical information
-            </Text>
-
-            <Text style={styles.sectionSubtitle}>
-              Important information for emergency responders
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.formGrid}>
-          <InputField
-            label="Blood group"
-            value={bloodGroup}
-            onChangeText={setBloodGroup}
-          />
-
-          <InputField
-            label="Insurance provider"
-            value={insurance}
-            onChangeText={setInsurance}
-          />
-
-          <InputField
-            label="Preferred hospital"
-            value={hospital}
-            onChangeText={setHospital}
-          />
-
-          <InputField
-            label="Current medications"
-            value={medications}
-            onChangeText={setMedications}
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Allergies</Text>
-
-          <TextInput
-            value={allergies}
-            onChangeText={setAllergies}
-            multiline
-            textAlignVertical="top"
-            style={styles.textArea}
-            placeholder="Enter known allergies"
-            placeholderTextColor="#94A3B8"
-          />
-        </View>
-
-        <View style={styles.medicalNotice}>
-          <Ionicons
-            name="information-circle-outline"
-            size={18}
-            color="#DC2626"
-          />
-
-          <Text style={styles.medicalNoticeText}>
-            This information may be shared with your assigned
-            emergency responder during an active incident.
+          <Text style={styles.pageDescription}>
+            Shared with the assigned crew only, for the
+            duration of an active incident.
           </Text>
         </View>
-      </View>
 
-      {/* ========================================= */}
-      {/* EMERGENCY CONTACTS                        */}
-      {/* ========================================= */}
+        {/* ===================================== */}
+        {/* PERSONAL DETAILS                      */}
+        {/* ===================================== */}
 
-      <View style={styles.card}>
-        <View style={styles.contactHeader}>
-          <View style={styles.sectionHeaderSmall}>
+        <View style={styles.card}>
+          <View style={styles.sectionHeader}>
             <View style={styles.sectionIcon}>
-              <Ionicons
-                name="people-outline"
+              <UserRound
                 size={19}
                 color="#DC2626"
+                strokeWidth={2.2}
               />
             </View>
 
             <View>
               <Text style={styles.sectionTitle}>
-                Emergency contacts
+                Personal details
               </Text>
 
               <Text style={styles.sectionSubtitle}>
-                People who can be alerted during emergencies
+                Your basic personal information
               </Text>
             </View>
           </View>
 
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={handleAddContact}
-          >
-            <Ionicons
-              name="add"
-              size={18}
-              color="#DC2626"
+          <View style={styles.formGrid}>
+            <InputField
+              label="First name"
+              value={firstName}
+              onChangeText={setFirstName}
             />
 
-            <Text style={styles.addButtonText}>Add</Text>
-          </TouchableOpacity>
+            <InputField
+              label="Last name"
+              value={lastName}
+              onChangeText={setLastName}
+            />
+
+            <InputField
+              label="Date of birth"
+              value={dob}
+              onChangeText={setDob}
+            />
+
+            <InputField
+              label="Language preference"
+              value={language}
+              onChangeText={setLanguage}
+            />
+          </View>
         </View>
 
-        <View style={styles.contactsList}>
-          {contacts.map((contact) => (
-            <View
-              key={contact.name}
-              style={styles.contactCard}
-            >
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>
-                  {contact.name.charAt(0)}
-                </Text>
+        {/* ===================================== */}
+        {/* MEDICAL INFORMATION                   */}
+        {/* ===================================== */}
+
+        <View style={styles.card}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionIcon}>
+              <HeartPulse
+                size={19}
+                color="#DC2626"
+                strokeWidth={2.2}
+              />
+            </View>
+
+            <View>
+              <Text style={styles.sectionTitle}>
+                Medical information
+              </Text>
+
+              <Text style={styles.sectionSubtitle}>
+                Important information for emergency responders
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.formGrid}>
+            <InputField
+              label="Blood group"
+              value={bloodGroup}
+              onChangeText={setBloodGroup}
+            />
+
+            <InputField
+              label="Insurance provider"
+              value={insurance}
+              onChangeText={setInsurance}
+            />
+
+            <InputField
+              label="Preferred hospital"
+              value={hospital}
+              onChangeText={setHospital}
+            />
+
+            <InputField
+              label="Current medications"
+              value={medications}
+              onChangeText={setMedications}
+            />
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>
+              Allergies
+            </Text>
+
+            <TextInput
+              value={allergies}
+              onChangeText={setAllergies}
+              multiline
+              textAlignVertical="top"
+              style={styles.textArea}
+              placeholder="Enter known allergies"
+              placeholderTextColor="#94A3B8"
+            />
+          </View>
+
+          <View style={styles.medicalNotice}>
+            <Info
+              size={18}
+              color="#DC2626"
+              strokeWidth={2.2}
+            />
+
+            <Text style={styles.medicalNoticeText}>
+              This information may be shared with your
+              assigned emergency responder during an
+              active incident.
+            </Text>
+          </View>
+        </View>
+
+        {/* ===================================== */}
+        {/* EMERGENCY CONTACTS                    */}
+        {/* ===================================== */}
+
+        <View style={styles.card}>
+          <View style={styles.contactHeader}>
+            <View style={styles.sectionHeaderSmall}>
+              <View style={styles.sectionIcon}>
+                <UsersRound
+                  size={19}
+                  color="#DC2626"
+                  strokeWidth={2.2}
+                />
               </View>
 
-              <View style={styles.contactInfo}>
-                <Text style={styles.contactName}>
-                  {contact.name}
+              <View style={styles.contactTitleContainer}>
+                <Text style={styles.sectionTitle}>
+                  Emergency contacts
                 </Text>
 
-                <Text style={styles.contactDetails}>
-                  {contact.relation} · {contact.phone}
-                </Text>
-              </View>
-
-              <View style={styles.autoAlertBadge}>
-                <Text style={styles.autoAlertText}>
-                  Auto-alert
+                <Text style={styles.sectionSubtitle}>
+                  People who can be alerted during emergencies
                 </Text>
               </View>
             </View>
-          ))}
-        </View>
-      </View>
 
-      {/* ========================================= */}
-      {/* SAFETY SETTINGS                            */}
-      {/* ========================================= */}
+            {/* ADD BUTTON */}
 
-      <View style={styles.card}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionIcon}>
-            <Ionicons
-              name="shield-checkmark-outline"
-              size={19}
-              color="#DC2626"
-            />
+            <TouchableOpacity
+              style={styles.addButton}
+              onPress={handleAddContact}
+              activeOpacity={0.8}
+            >
+              <Plus
+                size={18}
+                color="#DC2626"
+                strokeWidth={2.5}
+              />
+
+              <Text style={styles.addButtonText}>
+                Add
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          <View>
-            <Text style={styles.sectionTitle}>
-              Safety settings
-            </Text>
+          {/* CONTACT LIST */}
 
-            <Text style={styles.sectionSubtitle}>
-              Configure how SafeSync responds during emergencies
-            </Text>
+          <View style={styles.contactsList}>
+            {contacts.map((contact) => (
+              <View
+                key={contact.id}
+                style={styles.contactCard}
+              >
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>
+                    {contact.name.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+
+                <View style={styles.contactInfo}>
+                  <Text style={styles.contactName}>
+                    {contact.name}
+                  </Text>
+
+                  <Text style={styles.contactDetails}>
+                    {contact.relation} · {contact.phone}
+                  </Text>
+                </View>
+
+                <View style={styles.autoAlertBadge}>
+                  <Text style={styles.autoAlertText}>
+                    Auto-alert
+                  </Text>
+                </View>
+              </View>
+            ))}
           </View>
         </View>
 
-        <SettingRow
-          title="Panic mode"
-          description="Triple-press power to dispatch silently"
-          value={panicMode}
-          onValueChange={setPanicMode}
-        />
+        {/* ===================================== */}
+        {/* SAFETY SETTINGS                       */}
+        {/* ===================================== */}
 
-        <SettingRow
-          title="Share medical profile"
-          description="Send details to the assigned crew"
-          value={shareMedical}
-          onValueChange={setShareMedical}
-        />
+        <View style={styles.card}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionIcon}>
+              <ShieldCheck
+                size={19}
+                color="#DC2626"
+                strokeWidth={2.2}
+              />
+            </View>
 
-        <SettingRow
-          title="Incident recording"
-          description="Record audio during an active incident"
-          value={recording}
-          onValueChange={setRecording}
-        />
+            <View>
+              <Text style={styles.sectionTitle}>
+                Safety settings
+              </Text>
 
-        <SettingRow
-          title="Offline request queue"
-          description="Queue requests without connectivity"
-          value={offlineQueue}
-          onValueChange={setOfflineQueue}
-        />
+              <Text style={styles.sectionSubtitle}>
+                Configure how SafeSync responds during emergencies
+              </Text>
+            </View>
+          </View>
 
-        {/* SAVE */}
-
-        <TouchableOpacity
-          style={styles.saveButton}
-          activeOpacity={0.85}
-          onPress={handleSaveProfile}
-        >
-          <Ionicons
-            name="shield-checkmark"
-            size={19}
-            color="#FFFFFF"
+          <SettingRow
+            title="Panic mode"
+            description="Triple-press power to dispatch silently"
+            value={panicMode}
+            onValueChange={setPanicMode}
           />
 
-          <Text style={styles.saveButtonText}>
-            Save profile
-          </Text>
-        </TouchableOpacity>
-      </View>
+          <SettingRow
+            title="Share medical profile"
+            description="Send details to the assigned crew"
+            value={shareMedical}
+            onValueChange={setShareMedical}
+          />
 
-      {/* Bottom spacing because emergency button/tab bar
-          are provided globally by _layout.tsx */}
+          <SettingRow
+            title="Incident recording"
+            description="Record audio during an active incident"
+            value={recording}
+            onValueChange={setRecording}
+          />
 
-      <View style={{ height: 160 }} />
-    </ScrollView>
+          <SettingRow
+            title="Offline request queue"
+            description="Queue requests without connectivity"
+            value={offlineQueue}
+            onValueChange={setOfflineQueue}
+          />
+
+          {/* SAVE PROFILE */}
+
+          <TouchableOpacity
+            style={styles.saveButton}
+            activeOpacity={0.85}
+            onPress={handleSaveProfile}
+          >
+            <ShieldCheck
+              size={19}
+              color="#FFFFFF"
+              strokeWidth={2.3}
+            />
+
+            <Text style={styles.saveButtonText}>
+              Save profile
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ===================================== */}
+        {/* ACCOUNT                               */}
+        {/* ===================================== */}
+
+        <View style={styles.card}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.deleteSectionIcon}>
+              <Trash2
+                size={19}
+                color="#DC2626"
+                strokeWidth={2.2}
+              />
+            </View>
+
+            <View>
+              <Text style={styles.sectionTitle}>
+                Account
+              </Text>
+
+              <Text style={styles.sectionSubtitle}>
+                Manage your SafeSync account
+              </Text>
+            </View>
+          </View>
+
+          {/* DELETE WARNING */}
+
+          <View style={styles.deleteWarningBox}>
+            <AlertTriangle
+              size={18}
+              color="#DC2626"
+              strokeWidth={2.2}
+            />
+
+            <Text style={styles.deleteWarningText}>
+              Deleting your account permanently removes your
+              account information and associated data. This
+              action cannot be undone.
+            </Text>
+          </View>
+
+          {/* DELETE ACCOUNT */}
+
+          <TouchableOpacity
+            style={styles.deleteAccountButton}
+            activeOpacity={0.8}
+            onPress={handleDeleteAccount}
+          >
+            <Trash2
+              size={18}
+              color="#DC2626"
+              strokeWidth={2.3}
+            />
+
+            <Text style={styles.deleteAccountText}>
+              Delete Account
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* BOTTOM SPACING */}
+
+        <View style={{ height: 160 }} />
+      </ScrollView>
+
+      {/* ======================================= */}
+      {/* ADD EMERGENCY CONTACT MODAL             */}
+      {/* ======================================= */}
+
+      <Modal
+        visible={showContactModal}
+        transparent
+        animationType="slide"
+        onRequestClose={handleCloseContactModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            {/* MODAL HEADER */}
+
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleContainer}>
+                <View style={styles.modalIcon}>
+                  <UserPlus
+                    size={20}
+                    color="#DC2626"
+                    strokeWidth={2.3}
+                  />
+                </View>
+
+                <View>
+                  <Text style={styles.modalTitle}>
+                    Add emergency contact
+                  </Text>
+
+                  <Text style={styles.modalSubtitle}>
+                    Add someone who can be alerted
+                  </Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={handleCloseContactModal}
+                activeOpacity={0.8}
+              >
+                <X
+                  size={21}
+                  color="#475569"
+                  strokeWidth={2.2}
+                />
+              </TouchableOpacity>
+            </View>
+
+            {/* FORM */}
+
+            <View style={styles.modalForm}>
+              <View style={styles.modalInputGroup}>
+                <Text style={styles.inputLabel}>
+                  Full name
+                </Text>
+
+                <TextInput
+                  value={contactName}
+                  onChangeText={setContactName}
+                  style={styles.modalInput}
+                  placeholder="e.g. Jane Doe"
+                  placeholderTextColor="#94A3B8"
+                  autoCapitalize="words"
+                />
+              </View>
+
+              <View style={styles.modalInputGroup}>
+                <Text style={styles.inputLabel}>
+                  Relationship
+                </Text>
+
+                <TextInput
+                  value={contactRelation}
+                  onChangeText={setContactRelation}
+                  style={styles.modalInput}
+                  placeholder="e.g. Spouse, Brother, Parent"
+                  placeholderTextColor="#94A3B8"
+                  autoCapitalize="words"
+                />
+              </View>
+
+              <View style={styles.modalInputGroup}>
+                <Text style={styles.inputLabel}>
+                  Phone number
+                </Text>
+
+                <TextInput
+                  value={contactPhone}
+                  onChangeText={setContactPhone}
+                  style={styles.modalInput}
+                  placeholder="+254 712 345 678"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="phone-pad"
+                />
+              </View>
+            </View>
+
+            {/* BUTTONS */}
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={handleCloseContactModal}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.cancelButtonText}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.saveContactButton}
+                onPress={handleSaveContact}
+                activeOpacity={0.85}
+              >
+                <Plus
+                  size={18}
+                  color="#FFFFFF"
+                  strokeWidth={2.5}
+                />
+
+                <Text style={styles.saveContactButtonText}>
+                  Save Contact
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -377,7 +770,9 @@ function InputField({
 }) {
   return (
     <View style={styles.inputGroup}>
-      <Text style={styles.inputLabel}>{label}</Text>
+      <Text style={styles.inputLabel}>
+        {label}
+      </Text>
 
       <TextInput
         value={value}
@@ -447,6 +842,8 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
 
+  /* PAGE TITLE */
+
   titleSection: {
     marginBottom: 20,
   },
@@ -471,7 +868,6 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     padding: 18,
     marginBottom: 16,
-
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
@@ -490,6 +886,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  contactTitleContainer: {
+    flex: 1,
+  },
+
   sectionIcon: {
     width: 40,
     height: 40,
@@ -498,6 +898,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: 11,
+  },
+
+  deleteSectionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 13,
+    backgroundColor: "#FFF1F2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+    borderWidth: 1,
+    borderColor: "#FECDD3",
   },
 
   sectionTitle: {
@@ -685,7 +1097,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 
-  /* SAVE */
+  /* SAVE PROFILE */
 
   saveButton: {
     height: 52,
@@ -702,5 +1114,168 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     marginLeft: 8,
+  },
+
+  /* DELETE ACCOUNT */
+
+  deleteWarningBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#FEF2F2",
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    padding: 12,
+    marginBottom: 14,
+  },
+
+  deleteWarningText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 17,
+    color: "#991B1B",
+    marginLeft: 8,
+  },
+
+  deleteAccountButton: {
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+    backgroundColor: "#FFF1F2",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  deleteAccountText: {
+    color: "#DC2626",
+    fontSize: 13,
+    fontWeight: "800",
+    marginLeft: 8,
+  },
+
+  /* ========================================= */
+  /* ADD CONTACT MODAL                         */
+  /* ========================================= */
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "flex-end",
+  },
+
+  modalContainer: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 30,
+  },
+
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 22,
+  },
+
+  modalTitleContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+
+  modalIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  modalSubtitle: {
+    fontSize: 11,
+    color: "#64748B",
+    marginTop: 3,
+  },
+
+  closeButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  modalForm: {
+    marginBottom: 6,
+  },
+
+  modalInputGroup: {
+    marginBottom: 15,
+  },
+
+  modalInput: {
+    height: 50,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    backgroundColor: "#FFFFFF",
+    color: "#0F172A",
+    fontSize: 14,
+  },
+
+  /* MODAL BUTTONS */
+
+  modalButtons: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 5,
+  },
+
+  cancelButton: {
+    flex: 1,
+    height: 52,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cancelButtonText: {
+    color: "#475569",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  saveContactButton: {
+    flex: 1.4,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: "#DC2626",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  saveContactButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+    marginLeft: 7,
   },
 });
