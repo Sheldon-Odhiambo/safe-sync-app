@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -28,13 +29,19 @@ type Props = {
 const QUICK_AMOUNTS = [500, 1000, 2000, 5000];
 const PHONE_RE = /^(?:\+?254|0)?[17]\d{8}$/;
 
-export default function DepositModal({ visible, onClose, onSuccess, defaultPhone = "" }: Props) {
+export default function DepositModal({
+  visible,
+  onClose,
+  onSuccess,
+  defaultPhone = "",
+}: Props) {
   const [phone, setPhone] = useState(defaultPhone);
   const [amount, setAmount] = useState("");
   const [step, setStep] = useState<Step>("form");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [receipt, setReceipt] = useState<string | null>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = () => {
@@ -43,6 +50,22 @@ export default function DepositModal({ visible, onClose, onSuccess, defaultPhone
   };
 
   useEffect(() => stopPolling, []);
+
+  // Lift the sheet by the keyboard's height
+  useEffect(() => {
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const showSub = Keyboard.addListener(showEvent, (e) =>
+      setKeyboardHeight(e.endCoordinates.height)
+    );
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (visible) {
@@ -53,6 +76,7 @@ export default function DepositModal({ visible, onClose, onSuccess, defaultPhone
       setReceipt(null);
     } else {
       stopPolling();
+      setKeyboardHeight(0);
     }
   }, [visible, defaultPhone]);
 
@@ -78,13 +102,16 @@ export default function DepositModal({ visible, onClose, onSuccess, defaultPhone
       }
       if (tries >= 30) {
         stopPolling();
-        setError("We didn't receive a confirmation. If money was deducted, it will reflect shortly.");
+        setError(
+          "We didn't receive a confirmation. If money was deducted, it will reflect shortly."
+        );
         setStep("failed");
       }
     }, 3000);
   };
 
   const submit = async () => {
+    Keyboard.dismiss();
     setError("");
     const amt = parseInt(amount, 10);
     if (!PHONE_RE.test(phone.replace(/[\s-]/g, ""))) {
@@ -116,32 +143,53 @@ export default function DepositModal({ visible, onClose, onSuccess, defaultPhone
 
   const busy = step === "waiting";
 
+  const handleOverlayPress = () => {
+    if (keyboardHeight > 0) return Keyboard.dismiss();
+    if (!busy) onClose();
+  };
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={busy ? undefined : onClose}>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <Pressable style={styles.overlay} onPress={busy ? undefined : onClose}>
-          <Pressable style={styles.sheet} onPress={() => {}}>
-            <View style={styles.handle} />
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      statusBarTranslucent
+      onRequestClose={busy ? undefined : onClose}
+    >
+      <Pressable style={styles.overlay} onPress={handleOverlayPress}>
+        <Pressable
+          style={[
+            styles.sheet,
+            {
+              marginBottom: keyboardHeight,
+              paddingBottom: keyboardHeight > 0 ? 16 : 32,
+            },
+          ]}
+          onPress={() => {}}
+        >
+          <View style={styles.handle} />
 
-            {/* HEADER */}
-            <View style={styles.header}>
-              <View style={styles.headerIcon}>
-                <Ionicons name="phone-portrait-outline" size={20} color="#DC2626" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.title}>Deposit Funds</Text>
-                <Text style={styles.subtitle}>Pay securely with M-PESA</Text>
-              </View>
-              {!busy && (
-                <TouchableOpacity onPress={onClose} hitSlop={10}>
-                  <Ionicons name="close" size={22} color="#64748B" />
-                </TouchableOpacity>
-              )}
+          {/* HEADER */}
+          <View style={styles.header}>
+            <View style={styles.headerIcon}>
+              <Ionicons name="phone-portrait-outline" size={20} color="#DC2626" />
             </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.title}>Deposit Funds</Text>
+              <Text style={styles.subtitle}>Pay securely with M-PESA</Text>
+            </View>
+            {!busy && (
+              <TouchableOpacity onPress={onClose} hitSlop={10}>
+                <Ionicons name="close" size={22} color="#64748B" />
+              </TouchableOpacity>
+            )}
+          </View>
 
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
             {/* FORM */}
             {step === "form" && (
               <>
@@ -173,7 +221,12 @@ export default function DepositModal({ visible, onClose, onSuccess, defaultPhone
                       onPress={() => setAmount(String(a))}
                       activeOpacity={0.8}
                     >
-                      <Text style={[styles.chipText, amount === String(a) && styles.chipTextActive]}>
+                      <Text
+                        style={[
+                          styles.chipText,
+                          amount === String(a) && styles.chipTextActive,
+                        ]}
+                      >
                         {a.toLocaleString()}
                       </Text>
                     </TouchableOpacity>
@@ -215,8 +268,13 @@ export default function DepositModal({ visible, onClose, onSuccess, defaultPhone
                   <Ionicons name="checkmark" size={30} color="#059669" />
                 </View>
                 <Text style={styles.stateTitle}>Deposit successful</Text>
-                {!!receipt && <Text style={styles.stateText}>M-PESA receipt: {receipt}</Text>}
-                <TouchableOpacity style={[styles.primaryButton, { alignSelf: "stretch" }]} onPress={onClose}>
+                {!!receipt && (
+                  <Text style={styles.stateText}>M-PESA receipt: {receipt}</Text>
+                )}
+                <TouchableOpacity
+                  style={[styles.primaryButton, { alignSelf: "stretch" }]}
+                  onPress={onClose}
+                >
                   <Text style={styles.primaryButtonText}>Done</Text>
                 </TouchableOpacity>
               </View>
@@ -232,51 +290,88 @@ export default function DepositModal({ visible, onClose, onSuccess, defaultPhone
                 <Text style={styles.stateText}>{error}</Text>
                 <TouchableOpacity
                   style={[styles.primaryButton, { alignSelf: "stretch" }]}
-                  onPress={() => { setError(""); setStep("form"); }}
+                  onPress={() => {
+                    setError("");
+                    setStep("form");
+                  }}
                 >
                   <Text style={styles.primaryButtonText}>Try again</Text>
                 </TouchableOpacity>
               </View>
             )}
-          </Pressable>
+          </ScrollView>
         </Pressable>
-      </KeyboardAvoidingView>
+      </Pressable>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  overlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.55)", justifyContent: "flex-end" },
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.55)",
+    justifyContent: "flex-end",
+  },
   sheet: {
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     padding: 20,
-    paddingBottom: 32,
+    maxHeight: "92%",
   },
   handle: {
-    alignSelf: "center", width: 40, height: 4, borderRadius: 2,
-    backgroundColor: "#E2E8F0", marginBottom: 16,
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#E2E8F0",
+    marginBottom: 16,
   },
-  header: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 20 },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 20,
+  },
   headerIcon: {
-    width: 40, height: 40, borderRadius: 12, backgroundColor: "#FEF2F2",
-    alignItems: "center", justifyContent: "center",
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
   },
   title: { fontSize: 18, fontWeight: "800", color: "#0F172A" },
   subtitle: { fontSize: 12, color: "#64748B", marginTop: 2 },
 
-  label: { fontSize: 12, fontWeight: "700", color: "#0F172A", marginBottom: 6, marginTop: 4 },
+  label: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0F172A",
+    marginBottom: 6,
+    marginTop: 4,
+  },
   input: {
-    height: 50, borderRadius: 14, borderWidth: 1, borderColor: "#E2E8F0",
-    backgroundColor: "#F8FAFC", paddingHorizontal: 14, fontSize: 15,
-    color: "#0F172A", marginBottom: 10,
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+    paddingHorizontal: 14,
+    fontSize: 15,
+    color: "#0F172A",
+    marginBottom: 10,
   },
   chips: { flexDirection: "row", gap: 8, marginBottom: 6 },
   chip: {
-    flex: 1, height: 38, borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0",
-    alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF",
+    flex: 1,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFFFF",
   },
   chipActive: { borderColor: "#DC2626", backgroundColor: "#FEF2F2" },
   chipText: { fontSize: 12, fontWeight: "700", color: "#475569" },
@@ -284,15 +379,33 @@ const styles = StyleSheet.create({
 
   error: { color: "#DC2626", fontSize: 12, marginTop: 8 },
   primaryButton: {
-    height: 50, borderRadius: 14, backgroundColor: "#DC2626",
-    alignItems: "center", justifyContent: "center", marginTop: 16,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
   },
   primaryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
 
   center: { alignItems: "center", paddingVertical: 12, gap: 8 },
   stateIcon: {
-    width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  stateTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A", marginTop: 8 },
-  stateText: { fontSize: 13, color: "#64748B", textAlign: "center", lineHeight: 19 },
+  stateTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginTop: 8,
+  },
+  stateText: {
+    fontSize: 13,
+    color: "#64748B",
+    textAlign: "center",
+    lineHeight: 19,
+  },
 });

@@ -9,12 +9,19 @@ import {
   View,
 } from "react-native";
 
-import {
-  Ionicons,
-  MaterialCommunityIcons,
-} from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
-const transactions = [
+import DepositModal from "@/components/forms/deposit_modal";
+
+type Transaction = {
+  id: string;
+  label: string;
+  date: string;
+  amount: string;
+  kind: "debit" | "credit";
+};
+
+const initialTransactions: Transaction[] = [
   {
     id: "TXN-1024",
     label: "Ambulance dispatch",
@@ -67,71 +74,55 @@ const methods = [
   },
 ];
 
-export default function Wallet() {
-  const [autoTopUp, setAutoTopUp] = useState(true);
-  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+const STANDARD_DISPATCH_COST = 5500;
 
-  const handleDeposit = () => {
-    Alert.alert(
-      "Deposit funds",
-      "Choose how you would like to add money to your SafeSync wallet.",
-      [
-        {
-          text: "M-PESA",
-          onPress: () => {
-            Alert.alert(
-              "M-PESA",
-              "M-PESA top-up will be connected to the backend."
-            );
-          },
-        },
-        {
-          text: "Bank Transfer",
-          onPress: () => {
-            Alert.alert(
-              "Bank Transfer",
-              "Bank transfer details will appear here."
-            );
-          },
-        },
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-      ]
-    );
+const formatAmount = (n: number) =>
+  n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+export default function Wallet() {
+  const [semiAnnualTopUp, setSemiAnnualTopUp] = useState(true);
+const [annualTopUp, setAnnualTopUp] = useState(false);
+const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+
+  // Dummy data preserved as the starting state
+  const [balance, setBalance] = useState(21800);
+  const [transactions, setTransactions] =
+    useState<Transaction[]>(initialTransactions);
+  const [depositOpen, setDepositOpen] = useState(false);
+
+  const dispatchesCovered = Math.round(balance / STANDARD_DISPATCH_COST);
+
+  const handleDeposit = () => setDepositOpen(true);
+
+  const handleDepositSuccess = (amount: number, receipt?: string | null) => {
+    setBalance((current) => current + amount);
+    setTransactions((current) => [
+      {
+        id: receipt ?? `TXN-${Date.now()}`,
+        label: "Wallet deposit",
+        date: new Date().toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        }),
+        amount: `+ KSh ${formatAmount(amount)}`,
+        kind: "credit",
+      },
+      ...current,
+    ]);
   };
 
   const handleDownloadReceipts = () => {
-    Alert.alert(
-      "Receipts",
-      "Your receipts will be prepared for download."
-    );
+    Alert.alert("Receipts", "Your receipts will be prepared for download.");
   };
 
   const handleAddPaymentMethod = () => {
-    Alert.alert(
-      "Add payment method",
-      "Choose a payment method to add.",
-      [
-        {
-          text: "M-PESA",
-          onPress: () => console.log("Add M-PESA"),
-        },
-        {
-          text: "Card",
-          onPress: () => console.log("Add card"),
-        },
-        {
-          text: "Bank",
-          onPress: () => console.log("Add bank"),
-        },
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-      ]
-    );
+    Alert.alert("Add payment method", "Choose a payment method to add.", [
+      { text: "M-PESA", onPress: () => console.log("Add M-PESA") },
+      { text: "Card", onPress: () => console.log("Add card") },
+      { text: "Bank", onPress: () => console.log("Add bank") },
+      { text: "Cancel", style: "cancel" },
+    ]);
   };
 
   return (
@@ -140,51 +131,34 @@ export default function Wallet() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* ========================================= */}
-        {/* PAGE HEADER                               */}
-        {/* ========================================= */}
-
+        {/* PAGE HEADER */}
         <View style={styles.pageHeader}>
           <Text style={styles.pageTitle}>Wallet</Text>
-
           <Text style={styles.pageSubtitle}>
             Keep a balance so dispatch is never delayed by payment.
           </Text>
         </View>
 
-        {/* ========================================= */}
-        {/* BALANCE CARD                              */}
-        {/* ========================================= */}
-
+        {/* BALANCE CARD */}
         <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>
-            CURRENT BALANCE
-          </Text>
+          <Text style={styles.balanceLabel}>CURRENT BALANCE</Text>
 
           <Text style={styles.balanceAmount}>
-            KSh 21,800
+            KSh {formatAmount(balance)}
           </Text>
 
           <Text style={styles.balanceDescription}>
-            Covers roughly 4 standard ambulance dispatches
+            Covers roughly {dispatchesCovered} standard ambulance dispatches
           </Text>
 
           <View style={styles.balanceActions}>
-
             <TouchableOpacity
               style={styles.depositButton}
               activeOpacity={0.8}
               onPress={handleDeposit}
             >
-              <Ionicons
-                name="add"
-                size={20}
-                color="#DC2626"
-              />
-
-              <Text style={styles.depositButtonText}>
-                Deposit Funds
-              </Text>
+              <Ionicons name="add" size={20} color="#DC2626" />
+              <Text style={styles.depositButtonText}>Deposit Funds</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -192,132 +166,71 @@ export default function Wallet() {
               activeOpacity={0.8}
               onPress={handleDownloadReceipts}
             >
-              <Ionicons
-                name="download-outline"
-                size={18}
-                color="#FFFFFF"
-              />
-
-              <Text style={styles.receiptButtonText}>
-                Receipts
-              </Text>
+              <Ionicons name="download-outline" size={18} color="#FFFFFF" />
+              <Text style={styles.receiptButtonText}>Receipts</Text>
             </TouchableOpacity>
-
           </View>
         </View>
 
-        {/* ========================================= */}
-        {/* AUTOMATIC TOP-UP                          */}
-        {/* ========================================= */}
-
-        <View style={styles.panel}>
-
-          <Text style={styles.panelTitle}>
-            Automatic top-up
-          </Text>
-
-          <Text style={styles.panelSubtitle}>
-            Never risk an unfunded dispatch during an emergency.
-          </Text>
-
-          {/* AUTO TOP-UP */}
-
-          <View style={styles.settingRow}>
-
-            <View style={styles.settingTextContainer}>
-              <Text style={styles.settingTitle}>
-                Auto top-up KSh 6,500
-              </Text>
-
-              <Text style={styles.settingDescription}>
-                When balance drops below KSh 3,000
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              style={[
-                styles.switch,
-                autoTopUp && styles.switchActive,
-              ]}
-              onPress={() => setAutoTopUp(!autoTopUp)}
-              activeOpacity={0.8}
-            >
-              <View
-                style={[
-                  styles.switchThumb,
-                  autoTopUp && styles.switchThumbActive,
-                ]}
-              />
-            </TouchableOpacity>
-
-          </View>
-
-          {/* LOW BALANCE */}
-
-          <View style={styles.settingRow}>
-
-            <View style={styles.settingTextContainer}>
-              <Text style={styles.settingTitle}>
-                Low balance alerts
-              </Text>
-
-              <Text style={styles.settingDescription}>
-                Push notifications and SMS
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              style={[
-                styles.switch,
-                lowBalanceAlerts && styles.switchActive,
-              ]}
-              onPress={() =>
-                setLowBalanceAlerts(!lowBalanceAlerts)
-              }
-              activeOpacity={0.8}
-            >
-              <View
-                style={[
-                  styles.switchThumb,
-                  lowBalanceAlerts &&
-                    styles.switchThumbActive,
-                ]}
-              />
-            </TouchableOpacity>
-
-          </View>
-
-        </View>
-
-        {/* ========================================= */}
-        {/* TRANSACTION HISTORY                       */}
-        {/* ========================================= */}
-
-        <View style={styles.panel}>
-
-          <View style={styles.sectionHeader}>
-            <Text style={styles.panelTitle}>
-              Transaction history
+        {/* SEMI-ANNUAL TOP-UP */}
+        <View style={styles.settingRow}>
+          <View style={styles.settingTextContainer}>
+            <Text style={styles.settingTitle}>Semi-annual top-up</Text>
+            <Text style={styles.settingDescription}>
+              KSh 6,000 added every 6 months
             </Text>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.switch, semiAnnualTopUp && styles.switchActive]}
+            onPress={() => setSemiAnnualTopUp(!semiAnnualTopUp)}
+            activeOpacity={0.8}
+          >
+            <View
+              style={[
+                styles.switchThumb,
+                semiAnnualTopUp && styles.switchThumbActive,
+              ]}
+            />
+          </TouchableOpacity>
+        </View>
+
+        {/* ANNUAL TOP-UP */}
+        <View style={styles.settingRow}>
+          <View style={styles.settingTextContainer}>
+            <Text style={styles.settingTitle}>Annual top-up</Text>
+            <Text style={styles.settingDescription}>
+              KSh 12,000 added every year
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.switch, annualTopUp && styles.switchActive]}
+            onPress={() => setAnnualTopUp(!annualTopUp)}
+            activeOpacity={0.8}
+          >
+            <View
+              style={[
+                styles.switchThumb,
+                annualTopUp && styles.switchThumbActive,
+              ]}
+            />
+          </TouchableOpacity>
+        </View>
+
+        {/* TRANSACTION HISTORY */}
+        <View style={styles.panel}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.panelTitle}>Transaction history</Text>
 
             <TouchableOpacity>
-              <Text style={styles.viewAllText}>
-                View all
-              </Text>
+              <Text style={styles.viewAllText}>View all</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.transactionList}>
-
             {transactions.map((transaction) => (
-
-              <View
-                key={transaction.id}
-                style={styles.transactionRow}
-              >
-
-                {/* TRANSACTION ICON */}
-
+              <View key={transaction.id} style={styles.transactionRow}>
                 <View
                   style={[
                     styles.transactionIcon,
@@ -328,87 +241,50 @@ export default function Wallet() {
                 >
                   <Ionicons
                     name={
-                      transaction.kind === "credit"
-                        ? "arrow-down"
-                        : "arrow-up"
+                      transaction.kind === "credit" ? "arrow-down" : "arrow-up"
                     }
                     size={18}
-                    color={
-                      transaction.kind === "credit"
-                        ? "#059669"
-                        : "#DC2626"
-                    }
+                    color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
                   />
                 </View>
 
-                {/* DETAILS */}
-
                 <View style={styles.transactionDetails}>
-
-                  <Text
-                    style={styles.transactionLabel}
-                    numberOfLines={1}
-                  >
+                  <Text style={styles.transactionLabel} numberOfLines={1}>
                     {transaction.label}
                   </Text>
-
-                  <Text
-                    style={styles.transactionDate}
-                    numberOfLines={1}
-                  >
+                  <Text style={styles.transactionDate} numberOfLines={1}>
                     {transaction.date} · {transaction.id}
                   </Text>
-
                 </View>
-
-                {/* AMOUNT */}
 
                 <Text
                   style={[
                     styles.transactionAmount,
-                    transaction.kind === "credit" &&
-                      styles.creditAmount,
+                    transaction.kind === "credit" && styles.creditAmount,
                   ]}
                 >
                   {transaction.amount}
                 </Text>
-
               </View>
-
             ))}
-
           </View>
-
         </View>
 
-        {/* ========================================= */}
-        {/* SAVED PAYMENT METHODS                     */}
-        {/* ========================================= */}
-
+        {/* SAVED PAYMENT METHODS */}
         <View style={styles.panel}>
-
-          <Text style={styles.panelTitle}>
-            Saved payment methods
-          </Text>
-
+          <Text style={styles.panelTitle}>Saved payment methods</Text>
           <Text style={styles.panelSubtitle}>
             Manage the accounts you use for SafeSync payments.
           </Text>
 
           <View style={styles.methodsList}>
-
             {methods.map((method) => (
-
               <TouchableOpacity
                 key={method.id}
                 style={styles.paymentMethod}
                 activeOpacity={0.75}
               >
-
-                {/* ICON */}
-
                 <View style={styles.paymentIcon}>
-
                   {method.icon === "phone" && (
                     <Ionicons
                       name="phone-portrait-outline"
@@ -416,15 +292,9 @@ export default function Wallet() {
                       color="#DC2626"
                     />
                   )}
-
                   {method.icon === "card" && (
-                    <Ionicons
-                      name="card-outline"
-                      size={20}
-                      color="#DC2626"
-                    />
+                    <Ionicons name="card-outline" size={20} color="#DC2626" />
                   )}
-
                   {method.icon === "bank" && (
                     <MaterialCommunityIcons
                       name="bank-outline"
@@ -432,70 +302,45 @@ export default function Wallet() {
                       color="#DC2626"
                     />
                   )}
-
                 </View>
-
-                {/* DETAILS */}
 
                 <View style={styles.methodDetails}>
-
-                  <Text style={styles.methodLabel}>
-                    {method.label}
-                  </Text>
-
-                  <Text style={styles.methodDetail}>
-                    {method.detail}
-                  </Text>
-
+                  <Text style={styles.methodLabel}>{method.label}</Text>
+                  <Text style={styles.methodDetail}>{method.detail}</Text>
                 </View>
-
-                {/* DEFAULT BADGE */}
 
                 {method.badge && (
                   <View style={styles.defaultBadge}>
-                    <Text style={styles.defaultBadgeText}>
-                      {method.badge}
-                    </Text>
+                    <Text style={styles.defaultBadgeText}>{method.badge}</Text>
                   </View>
                 )}
 
-                <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color="#94A3B8"
-                />
-
+                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
               </TouchableOpacity>
-
             ))}
-
           </View>
-
-          {/* ADD PAYMENT METHOD */}
 
           <TouchableOpacity
             style={styles.addPaymentButton}
             activeOpacity={0.8}
             onPress={handleAddPaymentMethod}
           >
-            <Ionicons
-              name="add"
-              size={20}
-              color="#DC2626"
-            />
-
-            <Text style={styles.addPaymentText}>
-              Add payment method
-            </Text>
+            <Ionicons name="add" size={20} color="#DC2626" />
+            <Text style={styles.addPaymentText}>Add payment method</Text>
           </TouchableOpacity>
-
         </View>
 
         {/* BOTTOM SPACE FOR GLOBAL EMERGENCY BUTTON */}
-
         <View style={{ height: 120 }} />
-
       </ScrollView>
+
+      {/* DEPOSIT FORM */}
+      <DepositModal
+        visible={depositOpen}
+        onClose={() => setDepositOpen(false)}
+        onSuccess={handleDepositSuccess}
+        defaultPhone={methods[0].detail}
+      />
     </SafeAreaView>
   );
 }
@@ -511,9 +356,7 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
 
-  /* ========================================= */
-  /* HEADER                                    */
-  /* ========================================= */
+  /* HEADER */
 
   pageHeader: {
     marginBottom: 20,
@@ -532,9 +375,7 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
 
-  /* ========================================= */
-  /* BALANCE CARD                              */
-  /* ========================================= */
+  /* BALANCE CARD */
 
   balanceCard: {
     backgroundColor: "#DC2626",
@@ -543,10 +384,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
 
     shadowColor: "#DC2626",
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25,
     shadowRadius: 14,
 
@@ -617,9 +455,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  /* ========================================= */
-  /* PANELS                                    */
-  /* ========================================= */
+  /* PANELS */
 
   panel: {
     backgroundColor: "#FFFFFF",
@@ -644,18 +480,13 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  /* ========================================= */
-  /* SETTINGS                                  */
-  /* ========================================= */
+  /* SETTINGS */
 
   settingRow: {
     marginTop: 16,
     padding: 14,
-
     borderRadius: 15,
-
     backgroundColor: "#F8FAFC",
-
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -679,20 +510,14 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 
-  /* ========================================= */
-  /* CUSTOM SWITCH                             */
-  /* ========================================= */
+  /* CUSTOM SWITCH */
 
   switch: {
     width: 48,
     height: 28,
-
     borderRadius: 20,
-
     backgroundColor: "#CBD5E1",
-
     justifyContent: "center",
-
     paddingHorizontal: 3,
   },
 
@@ -703,9 +528,7 @@ const styles = StyleSheet.create({
   switchThumb: {
     width: 22,
     height: 22,
-
     borderRadius: 11,
-
     backgroundColor: "#FFFFFF",
   },
 
@@ -713,9 +536,7 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
   },
 
-  /* ========================================= */
-  /* SECTION HEADER                            */
-  /* ========================================= */
+  /* SECTION HEADER */
 
   sectionHeader: {
     flexDirection: "row",
@@ -729,9 +550,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  /* ========================================= */
-  /* TRANSACTIONS                              */
-  /* ========================================= */
+  /* TRANSACTIONS */
 
   transactionList: {
     marginTop: 10,
@@ -740,9 +559,7 @@ const styles = StyleSheet.create({
   transactionRow: {
     flexDirection: "row",
     alignItems: "center",
-
     paddingVertical: 13,
-
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
   },
@@ -750,12 +567,9 @@ const styles = StyleSheet.create({
   transactionIcon: {
     width: 40,
     height: 40,
-
     borderRadius: 13,
-
     alignItems: "center",
     justifyContent: "center",
-
     marginRight: 12,
   },
 
@@ -795,9 +609,7 @@ const styles = StyleSheet.create({
     color: "#059669",
   },
 
-  /* ========================================= */
-  /* PAYMENT METHODS                           */
-  /* ========================================= */
+  /* PAYMENT METHODS */
 
   methodsList: {
     marginTop: 14,
@@ -806,14 +618,10 @@ const styles = StyleSheet.create({
 
   paymentMethod: {
     minHeight: 68,
-
     borderWidth: 1,
     borderColor: "#E2E8F0",
-
     borderRadius: 15,
-
     paddingHorizontal: 12,
-
     flexDirection: "row",
     alignItems: "center",
   },
@@ -821,14 +629,10 @@ const styles = StyleSheet.create({
   paymentIcon: {
     width: 40,
     height: 40,
-
     borderRadius: 12,
-
     backgroundColor: "#FEF2F2",
-
     alignItems: "center",
     justifyContent: "center",
-
     marginRight: 11,
   },
 
@@ -862,24 +666,17 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
 
-  /* ========================================= */
-  /* ADD PAYMENT                               */
-  /* ========================================= */
+  /* ADD PAYMENT */
 
   addPaymentButton: {
     height: 48,
-
     marginTop: 14,
-
     borderWidth: 1,
     borderColor: "#DC2626",
-
     borderRadius: 14,
-
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-
     gap: 7,
   },
 
