@@ -95,7 +95,7 @@ export default function AdminScreen() {
         </View>
 
         <TouchableOpacity
-          onPress={() => router.replace("/(auth)/signin")}
+          onPress={() => router.replace("/signin")}
           className="w-10 h-10 rounded-xl border border-slate-200 bg-white items-center justify-center active:bg-slate-50"
         >
           <LogOut size={16} color="#334155" />
