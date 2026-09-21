@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   SafeAreaView,
@@ -12,6 +12,15 @@ import {
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
 import DepositModal from "@/components/forms/deposit_modal";
+import {
+  getWallet,
+  getWalletTransactions,
+  type LedgerEntry,
+} from "@/lib/payments_api";
+
+// true: load the real wallet from the backend (dummy data stays as the fallback on errors)
+// false: dummy data only, with local optimistic updates
+const USE_LIVE_WALLET = true;
 
 type Transaction = {
   id: string;
@@ -20,6 +29,8 @@ type Transaction = {
   amount: string;
   kind: "debit" | "credit";
 };
+
+const DUMMY_BALANCE = 21800;
 
 const initialTransactions: Transaction[] = [
   {
@@ -77,34 +88,72 @@ const methods = [
 const STANDARD_DISPATCH_COST = 5500;
 
 const formatAmount = (n: number) =>
-  n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+const formatDate = (d: Date | string) =>
+  new Date(d).toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+
+const ledgerToRow = (e: LedgerEntry): Transaction => ({
+  id: e.reference ?? e.id.slice(0, 8).toUpperCase(),
+  label: e.label,
+  date: formatDate(e.created_at),
+  amount: `${e.kind === "credit" ? "+" : "-"} KSh ${formatAmount(e.amount)}`,
+  kind: e.kind,
+});
 
 export default function Wallet() {
   const [semiAnnualTopUp, setSemiAnnualTopUp] = useState(true);
-const [annualTopUp, setAnnualTopUp] = useState(false);
-const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+  const [annualTopUp, setAnnualTopUp] = useState(false);
+  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
 
-  // Dummy data preserved as the starting state
-  const [balance, setBalance] = useState(21800);
+  const [balance, setBalance] = useState(DUMMY_BALANCE);
   const [transactions, setTransactions] =
     useState<Transaction[]>(initialTransactions);
   const [depositOpen, setDepositOpen] = useState(false);
 
   const dispatchesCovered = Math.round(balance / STANDARD_DISPATCH_COST);
 
+  // Returns true when live data was loaded; on failure the current (dummy) data stays
+  const loadWallet = useCallback(async (): Promise<boolean> => {
+    if (!USE_LIVE_WALLET) return false;
+    try {
+      const [wallet, ledger] = await Promise.all([
+        getWallet(),
+        getWalletTransactions(20),
+      ]);
+      setBalance(wallet.balance);
+      setTransactions(ledger.map(ledgerToRow));
+      return true;
+    } catch (e) {
+      console.log("Wallet load failed, keeping current data:", e);
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    loadWallet();
+  }, [loadWallet]);
+
   const handleDeposit = () => setDepositOpen(true);
 
-  const handleDepositSuccess = (amount: number, receipt?: string | null) => {
+  const handleDepositSuccess = async (
+    amount: number,
+    receipt?: string | null
+  ) => {
+    const refreshed = await loadWallet();
+    if (refreshed) return;
+
+    // Backend unreachable or dummy mode: update locally so the UI still reflects it
     setBalance((current) => current + amount);
     setTransactions((current) => [
       {
         id: receipt ?? `TXN-${Date.now()}`,
         label: "Wallet deposit",
-        date: new Date().toLocaleDateString("en-GB", {
-          day: "2-digit",
-          month: "short",
-          year: "numeric",
-        }),
+        date: formatDate(new Date()),
         amount: `+ KSh ${formatAmount(amount)}`,
         kind: "credit",
       },
@@ -172,50 +221,78 @@ const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
           </View>
         </View>
 
-        {/* SEMI-ANNUAL TOP-UP */}
-        <View style={styles.settingRow}>
-          <View style={styles.settingTextContainer}>
-            <Text style={styles.settingTitle}>Semi-annual top-up</Text>
-            <Text style={styles.settingDescription}>
-              KSh 6,000 added every 6 months
-            </Text>
+        {/* AUTOMATIC TOP-UP */}
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Automatic top-up</Text>
+          <Text style={styles.panelSubtitle}>
+            Never risk an unfunded dispatch during an emergency.
+          </Text>
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingTitle}>Semi-annual top-up</Text>
+              <Text style={styles.settingDescription}>
+                KSh 6,000 added every 6 months
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.switch, semiAnnualTopUp && styles.switchActive]}
+              onPress={() => setSemiAnnualTopUp(!semiAnnualTopUp)}
+              activeOpacity={0.8}
+            >
+              <View
+                style={[
+                  styles.switchThumb,
+                  semiAnnualTopUp && styles.switchThumbActive,
+                ]}
+              />
+            </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={[styles.switch, semiAnnualTopUp && styles.switchActive]}
-            onPress={() => setSemiAnnualTopUp(!semiAnnualTopUp)}
-            activeOpacity={0.8}
-          >
-            <View
-              style={[
-                styles.switchThumb,
-                semiAnnualTopUp && styles.switchThumbActive,
-              ]}
-            />
-          </TouchableOpacity>
-        </View>
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingTitle}>Annual top-up</Text>
+              <Text style={styles.settingDescription}>
+                KSh 12,000 added every year
+              </Text>
+            </View>
 
-        {/* ANNUAL TOP-UP */}
-        <View style={styles.settingRow}>
-          <View style={styles.settingTextContainer}>
-            <Text style={styles.settingTitle}>Annual top-up</Text>
-            <Text style={styles.settingDescription}>
-              KSh 12,000 added every year
-            </Text>
+            <TouchableOpacity
+              style={[styles.switch, annualTopUp && styles.switchActive]}
+              onPress={() => setAnnualTopUp(!annualTopUp)}
+              activeOpacity={0.8}
+            >
+              <View
+                style={[
+                  styles.switchThumb,
+                  annualTopUp && styles.switchThumbActive,
+                ]}
+              />
+            </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={[styles.switch, annualTopUp && styles.switchActive]}
-            onPress={() => setAnnualTopUp(!annualTopUp)}
-            activeOpacity={0.8}
-          >
-            <View
-              style={[
-                styles.switchThumb,
-                annualTopUp && styles.switchThumbActive,
-              ]}
-            />
-          </TouchableOpacity>
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingTitle}>Low balance alerts</Text>
+              <Text style={styles.settingDescription}>
+                Push notifications and SMS
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.switch, lowBalanceAlerts && styles.switchActive]}
+              onPress={() => setLowBalanceAlerts(!lowBalanceAlerts)}
+              activeOpacity={0.8}
+            >
+              <View
+                style={[
+                  styles.switchThumb,
+                  lowBalanceAlerts && styles.switchThumbActive,
+                ]}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* TRANSACTION HISTORY */}
