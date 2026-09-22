@@ -1,5 +1,5 @@
 import { AppState, AppStateStatus } from "react-native";
-import { supabase } from "@/lib/supabase"; // ADAPT: your Supabase client
+import { supabase } from "@/lib/supabase"; 
 
 import {
   COMMAND_TIMEOUT_MS,

@@ -21,9 +21,6 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     realtimeClient.connect();
     return () => {
       off();
-      // Do not disconnect on unmount in most apps — this provider usually
-      // wraps the whole tree. If you do want teardown on logout, call
-      // realtimeClient.disconnect() explicitly from your sign-out handler.
     };
   }, []);
 
