@@ -1,455 +1,230 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Modal,
   ActivityIndicator,
   Alert,
-  TextInput,
-  Keyboard,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
-import MapView, {
-  Marker,
-  Region,
-  PROVIDER_GOOGLE,
-} from "react-native-maps";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
-import * as Location from "expo-location";
-
+import DepositModal from "@/components/forms/deposit_modal";
+import SubscriptionView from "@/components/subscription/subscription_view";
 import {
-  Ionicons,
-  FontAwesome5,
-} from "@expo/vector-icons";
+  createDeposit,
+  getPaymentProfile,
+  getWallet,
+  getWalletTransactions,
+  type LedgerEntry,
+  type PaymentProfile,
+} from "@/lib/payments_api";
 
-import { useRouter } from "expo-router";
+// true: load the real profile/wallet from the backend (dummy data stays if the API is unreachable)
+// false: dummy data only
+const USE_LIVE_WALLET = true;
 
-/* ========================================= */
-/* GOOGLE MAPS / GEOCODING API KEY           */
-/* ========================================= */
-
-/*
- * This is read from your .env file. It must be
- * prefixed with EXPO_PUBLIC_ so Expo exposes it
- * to the JS bundle. The SAME key is also required
- * in app.json (android.config.googleMaps.apiKey and
- * ios.config.googleMapsApiKey) for the native map
- * tiles to render — that part cannot be done from
- * this file, since it's native config, not JS.
- */
-const GOOGLE_MAPS_API_KEY =
-  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
-
-/* ========================================= */
-/* TYPES                                     */
-/* ========================================= */
-
-type LocationData = {
-  latitude: number;
-  longitude: number;
-  address: string;
+type Transaction = {
+  id: string;
+  label: string;
+  date: string;
+  amount: string;
+  kind: "debit" | "credit";
 };
 
-type EmergencyType = "ambulance" | "fire";
+const DUMMY_BALANCE = 21800;
+
+const initialTransactions: Transaction[] = [
+  {
+    id: "TXN-1024",
+    label: "Ambulance dispatch",
+    date: "18 Aug 2026",
+    amount: "- KSh 5,500",
+    kind: "debit",
+  },
+  {
+    id: "TXN-1023",
+    label: "Wallet deposit",
+    date: "16 Aug 2026",
+    amount: "+ KSh 10,000",
+    kind: "credit",
+  },
+  {
+    id: "TXN-1022",
+    label: "Emergency response",
+    date: "12 Aug 2026",
+    amount: "- KSh 4,200",
+    kind: "debit",
+  },
+  {
+    id: "TXN-1021",
+    label: "Wallet deposit",
+    date: "08 Aug 2026",
+    amount: "+ KSh 15,000",
+    kind: "credit",
+  },
+];
+
+const methods = [
+  {
+    id: "mpesa",
+    label: "M-PESA",
+    detail: "+254 712 345 678",
+    badge: "Default",
+    icon: "phone",
+  },
+  {
+    id: "visa",
+    label: "Visa",
+    detail: "•••• 4412 · 09/29",
+    icon: "card",
+  },
+  {
+    id: "bank",
+    label: "Bank Transfer",
+    detail: "KCB Bank · •••• 8871",
+    icon: "bank",
+  },
+];
+
+const DEFAULT_PROFILE: PaymentProfile = {
+  account_kind: "public",
+  organization_id: null,
+  first_deposit_required: false,
+  first_deposit_amount: 500,
+  min_topup: 10,
+};
+
+const STANDARD_DISPATCH_COST = 5500;
+
+const formatAmount = (n: number) =>
+  Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+const formatDate = (d: Date | string) =>
+  new Date(d).toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+
+const ledgerToRow = (e: LedgerEntry): Transaction => ({
+  id: e.reference ?? e.id.slice(0, 8).toUpperCase(),
+  label: e.label,
+  date: formatDate(e.created_at),
+  amount: `${e.kind === "credit" ? "+" : "-"} KSh ${formatAmount(e.amount)}`,
+  kind: e.kind,
+});
 
 /* ========================================= */
-/* COMPONENT                                 */
+/* ENTRY: personal wallet vs organisation    */
 /* ========================================= */
 
-export default function Home() {
-  const router = useRouter();
+export default function Wallet() {
+  const [profile, setProfile] = useState<PaymentProfile | null>(null);
 
-  const mapRef = useRef<MapView | null>(null);
-
-  /* ----------------------------------------- */
-  /* LOCATION STATE                             */
-  /* ----------------------------------------- */
-
-  const [locationModalVisible, setLocationModalVisible] =
-    useState(true);
-
-  const [locationLoading, setLocationLoading] =
-    useState(false);
-
-  const [locationConfirmed, setLocationConfirmed] =
-    useState(false);
-
-  const [clientLocation, setClientLocation] =
-    useState<LocationData | null>(null);
-
-  const [mapRegion, setMapRegion] =
-    useState<Region | null>(null);
-
-  /* ----------------------------------------- */
-  /* SEARCH STATE                               */
-  /* ----------------------------------------- */
-
-  const [searchQuery, setSearchQuery] =
-    useState("");
-
-  const [searchLoading, setSearchLoading] =
-    useState(false);
-
-  const [searchedLocation, setSearchedLocation] =
-    useState<LocationData | null>(null);
-
-  /* ----------------------------------------- */
-  /* EMERGENCY STATE                            */
-  /* ----------------------------------------- */
-
-  const [selectedEmergency, setSelectedEmergency] =
-    useState<EmergencyType | null>(null);
-
-  /*
-   * Temporary responder data.
-   *
-   * This will later come from the SafeSync backend
-   * based on the confirmed client coordinates.
-   */
-  const nearbyUnits = [
-    {
-      id: "ambulance-001",
-      name: "Nearest Ambulance",
-      kind: "Ambulance",
-      station: "Nairobi Hospital Station, Upper Hill",
-      status: "Available",
-      eta: "5 min",
-      distance: "1.5 km",
-      crew: 3,
-      vehicle: "KDA 241X",
-      latitude: -1.2864,
-      longitude: 36.8172,
-    },
-    {
-      id: "fire-001",
-      name: "Nearest Fire Engine",
-      kind: "Fire Engine",
-      station: "Fire Station 4 — Westlands",
-      status: "Available",
-      eta: "10 min",
-      distance: "2.0 km",
-      crew: 6,
-      vehicle: "KDB 912F",
-      latitude: -1.2676,
-      longitude: 36.8108,
-    },
-  ];
-
-  /* ========================================= */
-  /* INITIAL LOCATION                          */
-  /* ========================================= */
-
-  useEffect(() => {
-    requestLocation();
+  const loadProfile = useCallback(async () => {
+    if (!USE_LIVE_WALLET) {
+      setProfile(DEFAULT_PROFILE);
+      return;
+    }
+    try {
+      setProfile(await getPaymentProfile());
+    } catch (e) {
+      console.log("Profile load failed, assuming personal wallet:", e);
+      setProfile((current) => current ?? DEFAULT_PROFILE);
+    }
   }, []);
 
-  /* ========================================= */
-  /* REVERSE GEOCODING (Google Geocoding API)  */
-  /* ========================================= */
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
 
-  const getAddressFromCoordinates = async (
-    latitude: number,
-    longitude: number
-  ): Promise<string> => {
-    if (!GOOGLE_MAPS_API_KEY) {
-      return "Current GPS location";
-    }
+  if (!profile) {
+    return (
+      <SafeAreaView style={[styles.safeArea, styles.centered]}>
+        <ActivityIndicator size="large" color="#DC2626" />
+      </SafeAreaView>
+    );
+  }
 
+  // Organisations (client or service provider) subscribe to a plan; they have no wallet
+  if (profile.account_kind !== "public") {
+    return <SubscriptionView />;
+  }
+
+  return <PersonalWallet profile={profile} onDeposited={loadProfile} />;
+}
+
+/* ========================================= */
+/* PERSONAL WALLET                           */
+/* ========================================= */
+
+function PersonalWallet({
+  profile,
+  onDeposited,
+}: {
+  profile: PaymentProfile;
+  onDeposited: () => void;
+}) {
+  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+  const [balance, setBalance] = useState(DUMMY_BALANCE);
+  const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
+  const [depositOpen, setDepositOpen] = useState(false);
+
+  const firstDeposit = profile.first_deposit_required;
+  const dispatchesCovered = Math.round(balance / STANDARD_DISPATCH_COST);
+
+  // Returns true when live data was loaded; on failure the current (dummy) data stays
+  const loadWallet = useCallback(async (): Promise<boolean> => {
+    if (!USE_LIVE_WALLET) return false;
     try {
-      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${GOOGLE_MAPS_API_KEY}`;
-
-      const response = await fetch(url);
-      const data = await response.json();
-
-      if (
-        data.status === "OK" &&
-        data.results.length > 0
-      ) {
-        return data.results[0].formatted_address;
-      }
-    } catch {
-      // Coordinates remain valid even if reverse geocoding fails.
+      const [wallet, ledger] = await Promise.all([getWallet(), getWalletTransactions(20)]);
+      setBalance(wallet.balance);
+      setTransactions(ledger.map(ledgerToRow));
+      return true;
+    } catch (e) {
+      console.log("Wallet load failed, keeping current data:", e);
+      return false;
     }
+  }, []);
 
-    return "Current GPS location";
-  };
+  useEffect(() => {
+    loadWallet();
+  }, [loadWallet]);
 
-  /* ========================================= */
-  /* CURRENT GPS LOCATION                      */
-  /* ========================================= */
+  const handleDepositSuccess = async (amount: number, receipt?: string | null) => {
+    onDeposited(); // refreshes the profile, so the first-deposit rule is lifted
+    const refreshed = await loadWallet();
+    if (refreshed) return;
 
-  const requestLocation = async () => {
-    try {
-      setLocationLoading(true);
-
-      const { status } =
-        await Location.requestForegroundPermissionsAsync();
-
-      if (status !== "granted") {
-        setLocationLoading(false);
-
-        Alert.alert(
-          "Location Required",
-          "SafeSync needs your location to show the area where emergency assistance is required.",
-          [
-            {
-              text: "Try Again",
-              onPress: () => requestLocation(),
-            },
-            {
-              text: "Search Location",
-              onPress: () => {
-                setLocationModalVisible(true);
-              },
-            },
-          ]
-        );
-
-        return;
-      }
-
-      const location =
-        await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
-
-      const latitude = location.coords.latitude;
-      const longitude = location.coords.longitude;
-
-      const address =
-        await getAddressFromCoordinates(
-          latitude,
-          longitude
-        );
-
-      const locationData: LocationData = {
-        latitude,
-        longitude,
-        address,
-      };
-
-      const region: Region = {
-        latitude,
-        longitude,
-        latitudeDelta: 0.025,
-        longitudeDelta: 0.025,
-      };
-
-      setClientLocation(locationData);
-      setMapRegion(region);
-      setLocationConfirmed(true);
-
-      /*
-       * Clear any previous search.
-       */
-      setSearchQuery("");
-      setSearchedLocation(null);
-
-      setLocationLoading(false);
-      setLocationModalVisible(false);
-
-      /*
-       * Wait for the map to render before
-       * animating to the user's location.
-       */
-      setTimeout(() => {
-        mapRef.current?.animateToRegion(
-          region,
-          500
-        );
-      }, 300);
-    } catch (error) {
-      setLocationLoading(false);
-
-      Alert.alert(
-        "Unable to Get Location",
-        "We could not determine your current location. You can try again or search for the location manually."
-      );
-    }
-  };
-
-  /* ========================================= */
-  /* SEARCH LOCATION (Google Geocoding API)    */
-  /* ========================================= */
-
-  const searchForLocation = async () => {
-    const query = searchQuery.trim();
-
-    if (!query) {
-      Alert.alert(
-        "Enter a Location",
-        "Search for a street, building, hospital, estate, landmark or other location."
-      );
-
-      return;
-    }
-
-    if (!GOOGLE_MAPS_API_KEY) {
-      Alert.alert(
-        "Missing API Key",
-        "No Google Maps API key was found. Check your .env file and restart the app."
-      );
-
-      return;
-    }
-
-    try {
-      Keyboard.dismiss();
-
-      setSearchLoading(true);
-      setSearchedLocation(null);
-
-      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-        query
-      )}&key=${GOOGLE_MAPS_API_KEY}`;
-
-      const response = await fetch(url);
-      const data = await response.json();
-
-      if (
-        data.status !== "OK" ||
-        !data.results.length
-      ) {
-        setSearchLoading(false);
-
-        Alert.alert(
-          "Location Not Found",
-          "We could not find that location. Try using a more specific address, building, street or landmark."
-        );
-
-        return;
-      }
-
-      const result = data.results[0];
-
-      const latitude =
-        result.geometry.location.lat;
-      const longitude =
-        result.geometry.location.lng;
-      const address =
-        result.formatted_address ?? query;
-
-      const locationData: LocationData = {
-        latitude,
-        longitude,
-        address,
-      };
-
-      const region: Region = {
-        latitude,
-        longitude,
-        latitudeDelta: 0.012,
-        longitudeDelta: 0.012,
-      };
-
-      setSearchedLocation(locationData);
-      setMapRegion(region);
-
-      /*
-       * Move the main map when it exists.
-       */
-      setTimeout(() => {
-        mapRef.current?.animateToRegion(
-          region,
-          600
-        );
-      }, 100);
-
-      setSearchLoading(false);
-    } catch (error) {
-      setSearchLoading(false);
-
-      Alert.alert(
-        "Search Failed",
-        "We could not search for that location. Please check your internet connection and try again."
-      );
-    }
-  };
-
-  /* ========================================= */
-  /* CONFIRM SEARCHED LOCATION                 */
-  /* ========================================= */
-
-  const confirmSearchedLocation = () => {
-    if (!searchedLocation) {
-      Alert.alert(
-        "Select a Location",
-        "Search for the location where emergency assistance is needed first."
-      );
-
-      return;
-    }
-
-    const region: Region = {
-      latitude: searchedLocation.latitude,
-      longitude: searchedLocation.longitude,
-      latitudeDelta: 0.025,
-      longitudeDelta: 0.025,
-    };
-
-    setClientLocation(searchedLocation);
-    setMapRegion(region);
-    setLocationConfirmed(true);
-
-    setLocationModalVisible(false);
-
-    /*
-     * Clear temporary search state.
-     */
-    setSearchQuery("");
-    setSearchedLocation(null);
-
-    setTimeout(() => {
-      mapRef.current?.animateToRegion(
-        region,
-        500
-      );
-    }, 300);
-  };
-
-  /* ========================================= */
-  /* CHANGE LOCATION                           */
-  /* ========================================= */
-
-  const changeLocation = () => {
-    setSearchQuery("");
-    setSearchedLocation(null);
-    setLocationModalVisible(true);
-  };
-
-  /* ========================================= */
-  /* EMERGENCY REQUEST                         */
-  /* ========================================= */
-
-  const requestEmergency = (
-    type: EmergencyType
-  ) => {
-    /*
-     * Emergency requests can never proceed
-     * without a confirmed location.
-     */
-    if (!clientLocation || !locationConfirmed) {
-      setLocationModalVisible(true);
-      return;
-    }
-
-    setSelectedEmergency(type);
-
-    router.push({
-      pathname: "/emergency",
-      params: {
-        type,
-        latitude:
-          clientLocation.latitude.toString(),
-        longitude:
-          clientLocation.longitude.toString(),
-        address:
-          clientLocation.address,
+    // Backend unreachable or dummy mode: update locally so the UI still reflects it
+    setBalance((current) => current + amount);
+    setTransactions((current) => [
+      {
+        id: receipt ?? `TXN-${Date.now()}`,
+        label: "Wallet deposit",
+        date: formatDate(new Date()),
+        amount: `+ KSh ${formatAmount(amount)}`,
+        kind: "credit",
       },
-    });
+      ...current,
+    ]);
+  };
+
+  const handleDownloadReceipts = () => {
+    Alert.alert("Receipts", "Your receipts will be prepared for download.");
+  };
+
+  const handleAddPaymentMethod = () => {
+    Alert.alert("Add payment method", "Choose a payment method to add.", [
+      { text: "M-PESA", onPress: () => console.log("Add M-PESA") },
+      { text: "Card", onPress: () => console.log("Add card") },
+      { text: "Bank", onPress: () => console.log("Add bank") },
+      { text: "Cancel", style: "cancel" },
+    ]);
   };
 
   /* ========================================= */
@@ -457,306 +232,49 @@ export default function Home() {
   /* ========================================= */
 
   return (
-    <View style={styles.container}>
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
-        {/* ===================================== */}
-        {/* GREETING                              */}
-        {/* ===================================== */}
-
-        <View style={styles.greetingSection}>
-          <Text style={styles.userName}>
-            SafeSync
-          </Text>
-
-          <Text style={styles.userLocation}>
-            {locationConfirmed && clientLocation
-              ? `Emergency location · ${clientLocation.address}`
-              : "Set your emergency location to continue"}
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        {/* PAGE HEADER */}
+        <View style={styles.pageHeader}>
+          <Text style={styles.pageTitle}>Wallet</Text>
+          <Text style={styles.pageSubtitle}>
+            Keep a balance so dispatch is never delayed by payment.
           </Text>
         </View>
 
-        {/* ===================================== */}
-        {/* LOCATION BANNER                       */}
-        {/* ===================================== */}
+        {/* BALANCE CARD */}
+        <View style={styles.balanceCard}>
+          <Text style={styles.balanceLabel}>CURRENT BALANCE</Text>
 
-        {locationConfirmed && clientLocation && (
-          <TouchableOpacity
-            style={styles.locationBanner}
-            activeOpacity={0.8}
-            onPress={changeLocation}
-          >
-            <View style={styles.locationBannerIcon}>
-              <Ionicons
-                name="location"
-                size={20}
-                color="#DC2626"
-              />
-            </View>
+          <Text style={styles.balanceAmount}>KSh {formatAmount(balance)}</Text>
 
-            <View
-              style={styles.locationBannerContent}
-            >
-              <Text
-                style={styles.locationBannerLabel}
-              >
-                EMERGENCY LOCATION
-              </Text>
+          <Text style={styles.balanceDescription}>
+            {firstDeposit
+              ? `Make your first deposit of KSh ${formatAmount(profile.first_deposit_amount)} to activate your wallet`
+              : `Covers roughly ${dispatchesCovered} standard ambulance dispatches`}
+          </Text>
 
-              <Text
-                style={styles.locationBannerAddress}
-                numberOfLines={2}
-              >
-                {clientLocation.address}
-              </Text>
-            </View>
-
-            <Ionicons
-              name="chevron-forward"
-              size={20}
-              color="#64748B"
-            />
-          </TouchableOpacity>
-        )}
-
-        {/* ===================================== */}
-        {/* MAP                                   */}
-        {/* ===================================== */}
-
-        {locationConfirmed && mapRegion ? (
-          <View style={styles.mapCard}>
-            <View style={styles.mapWrapper}>
-              <MapView
-                ref={mapRef}
-                style={styles.map}
-                provider={PROVIDER_GOOGLE}
-                initialRegion={mapRegion}
-                showsMyLocationButton
-                showsCompass
-                mapType="standard"
-              >
-                {/* -------------------------------- */}
-                {/* CLIENT LOCATION                    */}
-                {/* -------------------------------- */}
-
-                {clientLocation && (
-                  <Marker
-                    coordinate={{
-                      latitude:
-                        clientLocation.latitude,
-                      longitude:
-                        clientLocation.longitude,
-                    }}
-                    title="Emergency location"
-                    description={
-                      clientLocation.address
-                    }
-                  >
-                    <View
-                      style={styles.userMarker}
-                    >
-                      <Ionicons
-                        name="location"
-                        size={18}
-                        color="#FFFFFF"
-                      />
-                    </View>
-                  </Marker>
-                )}
-
-                {/* -------------------------------- */}
-                {/* RESPONDER MARKERS                 */}
-                {/* -------------------------------- */}
-
-                {nearbyUnits.map((unit) => (
-                  <Marker
-                    key={unit.id}
-                    coordinate={{
-                      latitude: unit.latitude,
-                      longitude: unit.longitude,
-                    }}
-                    title={unit.name}
-                    description={`${unit.eta} · ${unit.distance}`}
-                  >
-                    <View
-                      style={
-                        styles.responderMarker
-                      }
-                    >
-                      {unit.kind ===
-                      "Ambulance" ? (
-                        <FontAwesome5
-                          name="ambulance"
-                          size={16}
-                          color="#FFFFFF"
-                        />
-                      ) : (
-                        <Ionicons
-                          name="flame"
-                          size={18}
-                          color="#FFFFFF"
-                        />
-                      )}
-                    </View>
-                  </Marker>
-                ))}
-              </MapView>
-
-              {/* -------------------------------- */}
-              {/* MAP STATUS                        */}
-              {/* -------------------------------- */}
-
-              <View
-                style={styles.mapOverlay}
-              >
-                <View
-                  style={
-                    styles.locationVerifiedBadge
-                  }
-                >
-                  <Ionicons
-                    name="checkmark-circle"
-                    size={15}
-                    color="#059669"
-                  />
-
-                  <Text
-                    style={
-                      styles.locationVerifiedText
-                    }
-                  >
-                    Location confirmed
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            {/* -------------------------------- */}
-            {/* MAP FOOTER                         */}
-            {/* -------------------------------- */}
-
-            <View style={styles.mapFooter}>
-              <View
-                style={styles.mapFooterInfo}
-              >
-                <Text
-                  style={styles.mapFooterTitle}
-                >
-                  Your emergency location
-                </Text>
-
-                <Text
-                  style={styles.mapFooterSubtitle}
-                >
-                  Responders will be dispatched here
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                style={
-                  styles.changeLocationButton
-                }
-                onPress={changeLocation}
-              >
-                <Ionicons
-                  name="location-outline"
-                  size={15}
-                  color="#DC2626"
-                />
-
-                <Text
-                  style={
-                    styles.changeLocationText
-                  }
-                >
-                  Change
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        ) : (
-          /* ===================================== */
-          /* LOCATION REQUIRED                     */
-          /* ===================================== */
-
-          <View
-            style={styles.locationRequiredCard}
-          >
-            <View
-              style={
-                styles.locationRequiredIcon
-              }
-            >
-              <Ionicons
-                name="location-outline"
-                size={34}
-                color="#DC2626"
-              />
-            </View>
-
-            <Text
-              style={styles.locationRequiredTitle}
-            >
-              Set your emergency location
-            </Text>
-
-            <Text
-              style={styles.locationRequiredText}
-            >
-              SafeSync needs to know where help is
-              required before showing available
-              emergency responders.
-            </Text>
-
+          <View style={styles.balanceActions}>
             <TouchableOpacity
-              style={
-                styles.primaryLocationButton
-              }
-              onPress={requestLocation}
-              disabled={locationLoading}
+              style={styles.depositButton}
+              activeOpacity={0.8}
+              onPress={() => setDepositOpen(true)}
             >
-              {locationLoading ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <>
-                  <Ionicons
-                    name="locate"
-                    size={19}
-                    color="#FFFFFF"
-                  />
-
-                  <Text
-                    style={
-                      styles.primaryLocationButtonText
-                    }
-                  >
-                    Use My Current Location
-                  </Text>
-                </>
-              )}
+              <Ionicons name="add" size={20} color="#DC2626" />
+              <Text style={styles.depositButtonText}>
+                {firstDeposit
+                  ? `Deposit KSh ${formatAmount(profile.first_deposit_amount)}`
+                  : "Deposit Funds"}
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.searchInsteadButton}
-              onPress={() => {
-                setLocationModalVisible(true);
-              }}
+              style={styles.receiptButton}
+              activeOpacity={0.8}
+              onPress={handleDownloadReceipts}
             >
-              <Ionicons
-                name="search"
-                size={17}
-                color="#DC2626"
-              />
-
-              <Text
-                style={
-                  styles.searchInsteadButtonText
-                }
-              >
-                Search for a location instead
-              </Text>
+              <Ionicons name="download-outline" size={18} color="#FFFFFF" />
+              <Text style={styles.receiptButtonText}>Receipts</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -805,663 +323,301 @@ export default function Home() {
                 />
               </View>
 
-              <View
-                style={
-                  styles.emergencyCardContent
-                }
-              >
-                <Text
-                  style={
-                    styles.emergencyCardTitle
-                  }
-                >
-                  Request Ambulance
-                </Text>
+        {/* ALERTS */}
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Alerts</Text>
+          <Text style={styles.panelSubtitle}>
+            Never risk an unfunded dispatch during an emergency.
+          </Text>
 
-                <Text
-                  style={
-                    styles.emergencyCardText
-                  }
-                >
-                  Medical emergency, accident or
-                  urgent medical assistance.
-                </Text>
-
-                <View
-                  style={
-                    styles.emergencyCardMeta
-                  }
-                >
-                  <Ionicons
-                    name="navigate-outline"
-                    size={14}
-                    color="#64748B"
-                  />
-
-                  <Text
-                    style={
-                      styles.emergencyCardMetaText
-                    }
-                  >
-                    Dispatch to confirmed location
-                  </Text>
-                </View>
-              </View>
-
-              <Ionicons
-                name="chevron-forward"
-                size={22}
-                color="#94A3B8"
-              />
-            </TouchableOpacity>
-
-            {/* -------------------------------- */}
-            {/* FIRE                              */}
-            {/* -------------------------------- */}
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingTitle}>Low balance alerts</Text>
+              <Text style={styles.settingDescription}>Push notifications and SMS</Text>
+            </View>
 
             <TouchableOpacity
-              style={[
-                styles.emergencyCard,
-                selectedEmergency === "fire" &&
-                  styles.emergencyCardSelected,
-              ]}
-              activeOpacity={0.85}
-              onPress={() =>
-                requestEmergency("fire")
-              }
+              style={[styles.switch, lowBalanceAlerts && styles.switchActive]}
+              onPress={() => setLowBalanceAlerts(!lowBalanceAlerts)}
+              activeOpacity={0.8}
             >
               <View
-                style={[
-                  styles.emergencyIcon,
-                  styles.fireIcon,
-                ]}
-              >
-                <Ionicons
-                  name="flame"
-                  size={27}
-                  color="#FFFFFF"
-                />
-              </View>
-
-              <View
-                style={
-                  styles.emergencyCardContent
-                }
-              >
-                <Text
-                  style={
-                    styles.emergencyCardTitle
-                  }
-                >
-                  Request Fire Response
-                </Text>
-
-                <Text
-                  style={
-                    styles.emergencyCardText
-                  }
-                >
-                  Fire, smoke, building fire or other
-                  fire-related emergency.
-                </Text>
-
-                <View
-                  style={
-                    styles.emergencyCardMeta
-                  }
-                >
-                  <Ionicons
-                    name="navigate-outline"
-                    size={14}
-                    color="#64748B"
-                  />
-
-                  <Text
-                    style={
-                      styles.emergencyCardMetaText
-                    }
-                  >
-                    Dispatch to confirmed location
-                  </Text>
-                </View>
-              </View>
-
-              <Ionicons
-                name="chevron-forward"
-                size={22}
-                color="#94A3B8"
+                style={[styles.switchThumb, lowBalanceAlerts && styles.switchThumbActive]}
               />
             </TouchableOpacity>
           </View>
-        )}
+        </View>
 
-        {/* ===================================== */}
-        {/* NEARBY RESPONDERS                     */}
-        {/* ===================================== */}
+        {/* TRANSACTION HISTORY */}
+        <View style={styles.panel}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.panelTitle}>Transaction history</Text>
+            <TouchableOpacity>
+              <Text style={styles.viewAllText}>View all</Text>
+            </TouchableOpacity>
+          </View>
 
-        {locationConfirmed && (
-          <View style={styles.respondersSection}>
-            <View
-              style={styles.sectionHeaderRow}
-            >
-              <View style={styles.sectionHeaderInfo}>
-                <Text
-                  style={styles.sectionTitle}
-                >
-                  Nearby Responders
-                </Text>
-
-                <Text
-                  style={styles.sectionSubtitle}
-                >
-                  Based on your confirmed location
-                </Text>
-              </View>
-
-              <View
-                style={styles.coverageBadge}
-              >
+          <View style={styles.transactionList}>
+            {transactions.map((transaction) => (
+              <View key={transaction.id} style={styles.transactionRow}>
                 <View
-                  style={styles.coverageDot}
-                />
-
-                <Text
-                  style={styles.coverageText}
+                  style={[
+                    styles.transactionIcon,
+                    transaction.kind === "credit" ? styles.creditIcon : styles.debitIcon,
+                  ]}
                 >
-                  Covered
-                </Text>
-              </View>
-            </View>
-
-            {nearbyUnits.map((unit) => (
-              <View
-                key={unit.id}
-                style={styles.responderCard}
-              >
-                <View
-                  style={styles.cardHeader}
-                >
-                  <View
-                    style={styles.cardHeaderLeft}
-                  >
-                    <View
-                      style={styles.iconBadge}
-                    >
-                      {unit.kind ===
-                      "Ambulance" ? (
-                        <FontAwesome5
-                          name="ambulance"
-                          size={21}
-                          color="#DC2626"
-                        />
-                      ) : (
-                        <Ionicons
-                          name="flame"
-                          size={25}
-                          color="#DC2626"
-                        />
-                      )}
-                    </View>
-
-                    <View
-                      style={styles.cardTitleBox}
-                    >
-                      <Text
-                        style={
-                          styles.responderTitle
-                        }
-                        numberOfLines={1}
-                      >
-                        {unit.name}
-                      </Text>
-
-                      <Text
-                        style={
-                          styles.responderLocation
-                        }
-                        numberOfLines={1}
-                      >
-                        {unit.station}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View
-                    style={styles.availableBadge}
-                  >
-                    <Text
-                      style={
-                        styles.availableBadgeText
-                      }
-                    >
-                      {unit.status}
-                    </Text>
-                  </View>
+                  <Ionicons
+                    name={transaction.kind === "credit" ? "arrow-down" : "arrow-up"}
+                    size={18}
+                    color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
+                  />
                 </View>
 
-                <View
-                  style={styles.metricsGrid}
-                >
-                  <Stat
-                    label="ETA"
-                    value={unit.eta}
-                    emphasis
-                  />
-
-                  <Stat
-                    label="DISTANCE"
-                    value={unit.distance}
-                  />
-
-                  <Stat
-                    label="CREW SIZE"
-                    value={`${unit.crew}`}
-                  />
-
-                  <Stat
-                    label="VEHICLE"
-                    value={unit.vehicle}
-                  />
+                <View style={styles.transactionDetails}>
+                  <Text style={styles.transactionLabel} numberOfLines={1}>
+                    {transaction.label}
+                  </Text>
+                  <Text style={styles.transactionDate} numberOfLines={1}>
+                    {transaction.date} · {transaction.id}
+                  </Text>
                 </View>
+
+                <Text
+                  style={[
+                    styles.transactionAmount,
+                    transaction.kind === "credit" && styles.creditAmount,
+                  ]}
+                >
+                  {transaction.amount}
+                </Text>
               </View>
             ))}
           </View>
-        )}
+        </View>
 
-        <View style={styles.bottomSpacing} />
+        {/* SAVED PAYMENT METHODS */}
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Saved payment methods</Text>
+          <Text style={styles.panelSubtitle}>
+            Manage the accounts you use for SafeSync payments.
+          </Text>
+
+          <View style={styles.methodsList}>
+            {methods.map((method) => (
+              <TouchableOpacity key={method.id} style={styles.paymentMethod} activeOpacity={0.75}>
+                <View style={styles.paymentIcon}>
+                  {method.icon === "phone" && (
+                    <Ionicons name="phone-portrait-outline" size={20} color="#DC2626" />
+                  )}
+                  {method.icon === "card" && (
+                    <Ionicons name="card-outline" size={20} color="#DC2626" />
+                  )}
+                  {method.icon === "bank" && (
+                    <MaterialCommunityIcons name="bank-outline" size={20} color="#DC2626" />
+                  )}
+                </View>
+
+                <View style={styles.methodDetails}>
+                  <Text style={styles.methodLabel}>{method.label}</Text>
+                  <Text style={styles.methodDetail}>{method.detail}</Text>
+                </View>
+
+                {method.badge && (
+                  <View style={styles.defaultBadge}>
+                    <Text style={styles.defaultBadgeText}>{method.badge}</Text>
+                  </View>
+                )}
+
+                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <TouchableOpacity
+            style={styles.addPaymentButton}
+            activeOpacity={0.8}
+            onPress={handleAddPaymentMethod}
+          >
+            <Ionicons name="add" size={20} color="#DC2626" />
+            <Text style={styles.addPaymentText}>Add payment method</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* BOTTOM SPACE FOR GLOBAL EMERGENCY BUTTON */}
+        <View style={{ height: 120 }} />
       </ScrollView>
 
-      {/* ======================================= */}
-      {/* LOCATION MODAL                          */}
-      {/* ======================================= */}
-
-      <Modal
-        visible={locationModalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => {
-          /*
-           * Location selection cannot be dismissed
-           * if the user has not yet confirmed a location.
-           */
-          if (locationConfirmed) {
-            setLocationModalVisible(false);
-          }
-        }}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.locationModal}>
-            <View style={styles.modalHandle} />
-
-            <View style={styles.modalIcon}>
-              <Ionicons
-                name="location"
-                size={30}
-                color="#DC2626"
-              />
-            </View>
-
-            <Text style={styles.modalTitle}>
-              Where do you need help?
-            </Text>
-
-            <Text
-              style={styles.modalDescription}
-            >
-              Before requesting emergency assistance,
-              confirm the exact location where help is
-              needed.
-            </Text>
-
-            {/* ================================= */}
-            {/* CURRENT LOCATION                  */}
-            {/* ================================= */}
-
-            <TouchableOpacity
-              style={styles.useLocationButton}
-              onPress={requestLocation}
-              disabled={locationLoading}
-              activeOpacity={0.8}
-            >
-              {locationLoading ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <>
-                  <Ionicons
-                    name="navigate"
-                    size={20}
-                    color="#FFFFFF"
-                  />
-
-                  <Text
-                    style={
-                      styles.useLocationButtonText
-                    }
-                  >
-                    Use My Current Location
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            {/* ================================= */}
-            {/* SEARCH                             */}
-            {/* ================================= */}
-
-            <View style={styles.manualSection}>
-              <View style={styles.divider} />
-
-              <Text
-                style={styles.manualTitle}
-              >
-                Search for another location
-              </Text>
-
-              <View
-                style={styles.searchContainer}
-              >
-                <Ionicons
-                  name="search"
-                  size={19}
-                  color="#64748B"
-                />
-
-                <TextInput
-                  value={searchQuery}
-                  onChangeText={(value) => {
-                    setSearchQuery(value);
-                    setSearchedLocation(null);
-                  }}
-                  placeholder="Search address, building or landmark"
-                  placeholderTextColor="#94A3B8"
-                  style={styles.searchInput}
-                  returnKeyType="search"
-                  autoCorrect={false}
-                  autoCapitalize="words"
-                  onSubmitEditing={
-                    searchForLocation
-                  }
-                />
-
-                {searchQuery.length > 0 && (
-                  <TouchableOpacity
-                    onPress={() => {
-                      setSearchQuery("");
-                      setSearchedLocation(null);
-                    }}
-                  >
-                    <Ionicons
-                      name="close-circle"
-                      size={20}
-                      color="#94A3B8"
-                    />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* SEARCH BUTTON */}
-
-              <TouchableOpacity
-                style={[
-                  styles.searchButton,
-                  !searchQuery.trim() &&
-                    styles.searchButtonDisabled,
-                ]}
-                disabled={
-                  !searchQuery.trim() ||
-                  searchLoading
-                }
-                onPress={
-                  searchForLocation
-                }
-                activeOpacity={0.8}
-              >
-                {searchLoading ? (
-                  <ActivityIndicator
-                    color="#FFFFFF"
-                  />
-                ) : (
-                  <>
-                    <Ionicons
-                      name="search"
-                      size={18}
-                      color="#FFFFFF"
-                    />
-
-                    <Text
-                      style={
-                        styles.searchButtonText
-                      }
-                    >
-                      Search Location
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-
-              {/* ================================= */}
-              {/* SEARCH RESULT                     */}
-              {/* ================================= */}
-
-              {searchedLocation && (
-                <View
-                  style={
-                    styles.searchResultContainer
-                  }
-                >
-                  <View
-                    style={
-                      styles.searchResultHeader
-                    }
-                  >
-                    <View
-                      style={
-                        styles.searchResultIcon
-                      }
-                    >
-                      <Ionicons
-                        name="location"
-                        size={18}
-                        color="#DC2626"
-                      />
-                    </View>
-
-                    <View
-                      style={
-                        styles.searchResultContent
-                      }
-                    >
-                      <Text
-                        style={
-                          styles.searchResultLabel
-                        }
-                      >
-                        LOCATION FOUND
-                      </Text>
-
-                      <Text
-                        style={
-                          styles.searchResultAddress
-                        }
-                        numberOfLines={2}
-                      >
-                        {searchedLocation.address}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* -------------------------------- */}
-                  {/* SEARCH PREVIEW MAP               */}
-                  {/* -------------------------------- */}
-
-                  <View
-                    style={
-                      styles.searchPreviewMap
-                    }
-                  >
-                    <MapView
-                      style={styles.miniMap}
-                      provider={PROVIDER_GOOGLE}
-                      region={{
-                        latitude:
-                          searchedLocation.latitude,
-                        longitude:
-                          searchedLocation.longitude,
-                        latitudeDelta: 0.012,
-                        longitudeDelta: 0.012,
-                      }}
-                      scrollEnabled={false}
-                      zoomEnabled={false}
-                      rotateEnabled={false}
-                      pitchEnabled={false}
-                      toolbarEnabled={false}
-                    >
-                      <Marker
-                        coordinate={{
-                          latitude:
-                            searchedLocation.latitude,
-                          longitude:
-                            searchedLocation.longitude,
-                        }}
-                      >
-                        <View
-                          style={
-                            styles.selectedLocationMarker
-                          }
-                        >
-                          <Ionicons
-                            name="location"
-                            size={17}
-                            color="#FFFFFF"
-                          />
-                        </View>
-                      </Marker>
-                    </MapView>
-                  </View>
-
-                  {/* -------------------------------- */}
-                  {/* CONFIRM                          */}
-                  {/* -------------------------------- */}
-
-                  <TouchableOpacity
-                    style={
-                      styles.confirmLocationButton
-                    }
-                    onPress={
-                      confirmSearchedLocation
-                    }
-                    activeOpacity={0.8}
-                  >
-                    <Text
-                      style={
-                        styles.confirmLocationButtonText
-                      }
-                    >
-                      Confirm This Location
-                    </Text>
-
-                    <Ionicons
-                      name="checkmark"
-                      size={19}
-                      color="#FFFFFF"
-                    />
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-          </View>
-        </View>
-      </Modal>
-    </View>
+      {/* DEPOSIT FORM */}
+      <DepositModal
+        visible={depositOpen}
+        onClose={() => setDepositOpen(false)}
+        onSubmit={(phone, amount) => createDeposit(phone, amount)}
+        onSuccess={handleDepositSuccess}
+        defaultPhone={methods[0].detail}
+        title="Deposit Funds"
+        subtitle={
+          firstDeposit ? "Your first deposit activates your wallet" : "Pay securely with M-PESA"
+        }
+        submitLabel={
+          firstDeposit
+            ? `Pay KSh ${formatAmount(profile.first_deposit_amount)}`
+            : "Pay with M-PESA"
+        }
+        fixedAmount={firstDeposit ? profile.first_deposit_amount : null}
+        quickAmounts={firstDeposit ? [] : [500, 1000, 2000, 5000]}
+        hint={
+          firstDeposit
+            ? `Your first deposit is KSh ${formatAmount(profile.first_deposit_amount)}. After that you can add any amount you like.`
+            : undefined
+        }
+        minAmount={profile.min_topup}
+      />
+    </SafeAreaView>
   );
 }
-
-/* ========================================= */
-/* STAT COMPONENT                            */
-/* ========================================= */
-
-function Stat({
-  label,
-  value,
-  emphasis = false,
-}: {
-  label: string;
-  value: string;
-  emphasis?: boolean;
-}) {
-  return (
-    <View style={styles.metricBox}>
-      <Text style={styles.metricLabel}>
-        {label}
-      </Text>
-
-      <Text
-        style={[
-          styles.metricValue,
-          emphasis &&
-            styles.metricValueEmphasis,
-        ]}
-        numberOfLines={1}
-      >
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-/* ========================================= */
-/* STYLES                                    */
-/* ========================================= */
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F8FAFC",
-  },
+  safeArea: { flex: 1, backgroundColor: "#F8FAFC" },
+  centered: { alignItems: "center", justifyContent: "center" },
+  scrollContent: { padding: 20, paddingBottom: 30 },
 
-  scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 120,
-  },
+  /* HEADER */
+  pageHeader: { marginBottom: 20 },
+  pageTitle: { fontSize: 30, fontWeight: "900", color: "#0F172A" },
+  pageSubtitle: { fontSize: 13, lineHeight: 19, color: "#64748B", marginTop: 5 },
 
-  /* ========================================= */
-  /* GREETING                                  */
-  /* ========================================= */
-
-  greetingSection: {
+  /* BALANCE CARD */
+  balanceCard: {
+    backgroundColor: "#DC2626",
+    borderRadius: 26,
+    padding: 22,
     marginBottom: 16,
+    shadowColor: "#DC2626",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    elevation: 7,
   },
-
-  userName: {
-    fontSize: 30,
+  balanceLabel: {
+    color: "#FFFFFF",
+    opacity: 0.75,
+    fontSize: 11,
     fontWeight: "800",
-    color: "#0F172A",
+    letterSpacing: 2,
   },
-
-  userLocation: {
-    marginTop: 5,
+  balanceAmount: { color: "#FFFFFF", fontSize: 40, fontWeight: "900", marginTop: 10 },
+  balanceDescription: {
+    color: "#FFFFFF",
+    opacity: 0.85,
     fontSize: 13,
-    color: "#64748B",
     lineHeight: 19,
+    marginTop: 5,
   },
-
-  /* ========================================= */
-  /* LOCATION BANNER                           */
-  /* ========================================= */
-
-  locationBanner: {
+  balanceActions: { flexDirection: "row", gap: 10, marginTop: 22 },
+  depositButton: {
+    flex: 1,
+    minHeight: 46,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  depositButtonText: { color: "#DC2626", fontSize: 13, fontWeight: "800" },
+  receiptButton: {
+    flex: 0.8,
+    minHeight: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.45)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  receiptButtonText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
+
+  /* PANELS */
+  panel: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 17,
+    borderRadius: 22,
+    padding: 18,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: "#E2E8F0",
-    padding: 12,
-    marginBottom: 16,
   },
+  panelTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
+  panelSubtitle: { fontSize: 12, color: "#64748B", lineHeight: 18, marginTop: 4 },
 
-  locationBannerIcon: {
+  /* SETTINGS */
+  settingRow: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 15,
+    backgroundColor: "#F8FAFC",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  settingTextContainer: { flex: 1, paddingRight: 15 },
+  settingTitle: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
+  settingDescription: { fontSize: 11, color: "#64748B", marginTop: 3, lineHeight: 16 },
+
+  /* CUSTOM SWITCH */
+  switch: {
+    width: 48,
+    height: 28,
+    borderRadius: 20,
+    backgroundColor: "#CBD5E1",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+  },
+  switchActive: { backgroundColor: "#DC2626" },
+  switchThumb: { width: 22, height: 22, borderRadius: 11, backgroundColor: "#FFFFFF" },
+  switchThumbActive: { alignSelf: "flex-end" },
+
+  /* SECTION HEADER */
+  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  viewAllText: { color: "#DC2626", fontSize: 12, fontWeight: "700" },
+
+  /* TRANSACTIONS */
+  transactionList: { marginTop: 10 },
+  transactionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+  transactionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  creditIcon: { backgroundColor: "#ECFDF5" },
+  debitIcon: { backgroundColor: "#FEF2F2" },
+  transactionDetails: { flex: 1, minWidth: 0 },
+  transactionLabel: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
+  transactionDate: { fontSize: 10, color: "#94A3B8", marginTop: 3 },
+  transactionAmount: { fontSize: 13, fontWeight: "800", color: "#0F172A", marginLeft: 8 },
+  creditAmount: { color: "#059669" },
+
+  /* PAYMENT METHODS */
+  methodsList: { marginTop: 14, gap: 10 },
+  paymentMethod: {
+    minHeight: 68,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 15,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  paymentIcon: {
     width: 40,
     height: 40,
     borderRadius: 12,
@@ -1470,718 +626,29 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginRight: 11,
   },
-
-  locationBannerContent: {
-    flex: 1,
-  },
-
-  locationBannerLabel: {
-    fontSize: 9,
-    fontWeight: "800",
-    color: "#64748B",
-    letterSpacing: 0.6,
-  },
-
-  locationBannerAddress: {
-    marginTop: 3,
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#0F172A",
-  },
-
-  /* ========================================= */
-  /* MAP                                       */
-  /* ========================================= */
-
-  mapCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    overflow: "hidden",
-  },
-
-  mapWrapper: {
-    height: 250,
-    width: "100%",
-    position: "relative",
-  },
-
-  map: {
-    width: "100%",
-    height: "100%",
-  },
-
-  mapOverlay: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-  },
-
-  locationVerifiedBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 20,
-
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-
-  locationVerifiedText: {
-    marginLeft: 5,
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#059669",
-  },
-
-  /* ========================================= */
-  /* CLIENT LOCATION MARKER                    */
-  /* ========================================= */
-
-  userMarker: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: "#DC2626",
-    borderWidth: 3,
-    borderColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-
-  /* ========================================= */
-  /* RESPONDER MARKER                          */
-  /* ========================================= */
-
-  responderMarker: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: "#DC2626",
-    borderWidth: 3,
-    borderColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-
-  /* ========================================= */
-  /* MAP FOOTER                                */
-  /* ========================================= */
-
-  mapFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-
-  mapFooterInfo: {
-    flex: 1,
-  },
-
-  mapFooterTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  mapFooterSubtitle: {
-    marginTop: 3,
-    fontSize: 11,
-    color: "#64748B",
-  },
-
-  changeLocationButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FEF2F2",
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    borderRadius: 12,
-    marginLeft: 10,
-  },
-
-  changeLocationText: {
-    marginLeft: 4,
-    color: "#DC2626",
-    fontSize: 11,
-    fontWeight: "800",
-  },
-
-  /* ========================================= */
-  /* LOCATION REQUIRED                         */
-  /* ========================================= */
-
-  locationRequiredCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    padding: 25,
-    alignItems: "center",
-  },
-
-  locationRequiredIcon: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: "#FEF2F2",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 15,
-  },
-
-  locationRequiredTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#0F172A",
-    textAlign: "center",
-  },
-
-  locationRequiredText: {
-    marginTop: 8,
-    fontSize: 13,
-    lineHeight: 20,
-    color: "#64748B",
-    textAlign: "center",
-  },
-
-  primaryLocationButton: {
-    width: "100%",
-    height: 50,
-    marginTop: 18,
-    borderRadius: 14,
-    backgroundColor: "#DC2626",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  primaryLocationButtonText: {
-    marginLeft: 8,
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "800",
-  },
-
-  searchInsteadButton: {
-    marginTop: 13,
-    height: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  searchInsteadButtonText: {
-    marginLeft: 6,
-    color: "#DC2626",
-    fontSize: 12,
-    fontWeight: "800",
-  },
-
-  /* ========================================= */
-  /* EMERGENCY                                 */
-  /* ========================================= */
-
-  emergencySection: {
-    marginTop: 26,
-  },
-
-  sectionTitle: {
-    fontSize: 19,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  sectionSubtitle: {
-    marginTop: 4,
-    marginBottom: 14,
-    fontSize: 12,
-    color: "#64748B",
-    lineHeight: 18,
-  },
-
-  emergencyCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    padding: 15,
-    marginBottom: 12,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-
-  emergencyCardSelected: {
-    borderColor: "#DC2626",
-  },
-
-  emergencyIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 13,
-  },
-
-  ambulanceIcon: {
-    backgroundColor: "#DC2626",
-  },
-
-  fireIcon: {
-    backgroundColor: "#EA580C",
-  },
-
-  emergencyCardContent: {
-    flex: 1,
-    marginRight: 8,
-  },
-
-  emergencyCardTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  emergencyCardText: {
-    marginTop: 3,
-    fontSize: 11,
-    lineHeight: 16,
-    color: "#64748B",
-  },
-
-  emergencyCardMeta: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 7,
-  },
-
-  emergencyCardMetaText: {
-    marginLeft: 4,
-    fontSize: 10,
-    color: "#64748B",
-    fontWeight: "600",
-  },
-
-  /* ========================================= */
-  /* RESPONDERS                                */
-  /* ========================================= */
-
-  respondersSection: {
-    marginTop: 27,
-  },
-
-  sectionHeaderRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginBottom: 14,
-  },
-
-  sectionHeaderInfo: {
-    flex: 1,
-  },
-
-  coverageBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#ECFDF5",
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 15,
-    marginLeft: 10,
-  },
-
-  coverageDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#059669",
-    marginRight: 5,
-  },
-
-  coverageText: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#059669",
-  },
-
-  responderCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    padding: 17,
-    marginBottom: 14,
-  },
-
-  cardHeader: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-  },
-
-  cardHeaderLeft: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    marginRight: 10,
-  },
-
-  iconBadge: {
-    width: 48,
-    height: 48,
-    borderRadius: 15,
-    backgroundColor: "#FEF2F2",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-
-  cardTitleBox: {
-    flex: 1,
-  },
-
-  responderTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  responderLocation: {
-    marginTop: 3,
-    fontSize: 11,
-    color: "#64748B",
-  },
-
-  availableBadge: {
-    backgroundColor: "#059669",
+  methodDetails: { flex: 1 },
+  methodLabel: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
+  methodDetail: { fontSize: 11, color: "#64748B", marginTop: 3 },
+  defaultBadge: {
+    backgroundColor: "#F1F5F9",
     paddingHorizontal: 9,
     paddingVertical: 5,
-    borderRadius: 14,
+    borderRadius: 10,
+    marginRight: 8,
   },
+  defaultBadgeText: { fontSize: 9, fontWeight: "800", color: "#475569" },
 
-  availableBadgeText: {
-    color: "#FFFFFF",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-
-  /* ========================================= */
-  /* METRICS                                   */
-  /* ========================================= */
-
-  metricsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginTop: 16,
-    marginHorizontal: -4,
-  },
-
-  metricBox: {
-    width: "50%",
-    padding: 4,
-  },
-
-  metricLabel: {
-    backgroundColor: "#F8FAFC",
-    paddingHorizontal: 10,
-    paddingTop: 9,
-    fontSize: 9,
-    fontWeight: "700",
-    color: "#64748B",
-  },
-
-  metricValue: {
-    backgroundColor: "#F8FAFC",
-    paddingHorizontal: 10,
-    paddingBottom: 9,
-    paddingTop: 3,
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  metricValueEmphasis: {
-    color: "#DC2626",
-  },
-
-  /* ========================================= */
-  /* MODAL                                     */
-  /* ========================================= */
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
-    justifyContent: "flex-end",
-  },
-
-  locationModal: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 28,
-    maxHeight: "92%",
-  },
-
-  modalHandle: {
-    width: 42,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#CBD5E1",
-    alignSelf: "center",
-    marginBottom: 18,
-  },
-
-  modalIcon: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: "#FEF2F2",
-    alignItems: "center",
-    justifyContent: "center",
-    alignSelf: "center",
-  },
-
-  modalTitle: {
-    marginTop: 14,
-    fontSize: 23,
-    fontWeight: "800",
-    color: "#0F172A",
-    textAlign: "center",
-  },
-
-  modalDescription: {
-    marginTop: 7,
-    fontSize: 13,
-    lineHeight: 19,
-    color: "#64748B",
-    textAlign: "center",
-    paddingHorizontal: 10,
-  },
-
-  /* ========================================= */
-  /* CURRENT LOCATION BUTTON                   */
-  /* ========================================= */
-
-  useLocationButton: {
-    height: 50,
-    borderRadius: 14,
-    backgroundColor: "#DC2626",
-    marginTop: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  useLocationButtonText: {
-    marginLeft: 8,
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "800",
-  },
-
-  /* ========================================= */
-  /* SEARCH                                    */
-  /* ========================================= */
-
-  manualSection: {
-    marginTop: 18,
-  },
-
-  divider: {
-    height: 1,
-    backgroundColor: "#E2E8F0",
-    marginBottom: 15,
-  },
-
-  manualTitle: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#475569",
-    marginBottom: 9,
-  },
-
-  searchContainer: {
-    height: 52,
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 14,
-    backgroundColor: "#FFFFFF",
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 14,
-  },
-
-  searchInput: {
-    flex: 1,
-    height: "100%",
-    marginLeft: 9,
-    fontSize: 13,
-    color: "#0F172A",
-  },
-
-  searchButton: {
+  /* ADD PAYMENT */
+  addPaymentButton: {
     height: 48,
-    borderRadius: 13,
-    backgroundColor: "#0F172A",
-    marginTop: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  searchButtonDisabled: {
-    backgroundColor: "#CBD5E1",
-  },
-
-  searchButtonText: {
-    marginLeft: 7,
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "800",
-  },
-
-  /* ========================================= */
-  /* SEARCH RESULT                             */
-  /* ========================================= */
-
-  searchResultContainer: {
     marginTop: 14,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 16,
-    overflow: "hidden",
-    backgroundColor: "#FFFFFF",
-  },
-
-  searchResultHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 12,
-  },
-
-  searchResultIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#FEF2F2",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 10,
-  },
-
-  searchResultContent: {
-    flex: 1,
-  },
-
-  searchResultLabel: {
-    fontSize: 9,
-    fontWeight: "800",
-    color: "#64748B",
-    letterSpacing: 0.5,
-  },
-
-  searchResultAddress: {
-    marginTop: 3,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "700",
-    color: "#0F172A",
-  },
-
-  /* ========================================= */
-  /* SEARCH PREVIEW MAP                        */
-  /* ========================================= */
-
-  searchPreviewMap: {
-    height: 130,
-    width: "100%",
-  },
-
-  miniMap: {
-    width: "100%",
-    height: "100%",
-  },
-
-  selectedLocationMarker: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#DC2626",
-    borderWidth: 3,
-    borderColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-
-  /* ========================================= */
-  /* CONFIRM LOCATION                          */
-  /* ========================================= */
-
-  confirmLocationButton: {
-    height: 50,
-    borderRadius: 13,
-    backgroundColor: "#059669",
-    margin: 12,
-    marginTop: 10,
+    borderColor: "#DC2626",
+    borderRadius: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 7,
   },
-
-  confirmLocationButtonText: {
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "800",
-    marginRight: 7,
-  },
-
-  /* ========================================= */
-  /* BOTTOM                                    */
-  /* ========================================= */
-
-  bottomSpacing: {
-    height: 100,
-  },
+  addPaymentText: { color: "#DC2626", fontSize: 13, fontWeight: "800" },
 });

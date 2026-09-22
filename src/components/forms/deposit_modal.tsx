@@ -14,27 +14,47 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { createDeposit, getDepositStatus } from "@/lib/payments_api";
+import { getDepositStatus } from "@/lib/payments_api";
 
 type Step = "form" | "waiting" | "success" | "failed";
 
 type Props = {
   visible: boolean;
   onClose: () => void;
+  /** Starts the payment. Must resolve with the payment reference to poll. */
+  onSubmit: (phone: string, amount: number) => Promise<{ reference: string }>;
   onSuccess?: (amount: number, receipt?: string | null) => void;
   defaultPhone?: string;
+  title?: string;
+  subtitle?: string;
+  submitLabel?: string;
+  /** Locks the amount (first deposit, plan price). */
+  fixedAmount?: number | null;
+  quickAmounts?: number[];
+  hint?: string;
+  minAmount?: number;
 };
 
-const QUICK_AMOUNTS = [500, 1000, 2000, 5000];
 const PHONE_RE = /^(?:\+?254|0)?[17]\d{8}$/;
+const MAX_AMOUNT = 150000;
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLLS = 30;
+
+const fmt = (n: number) => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 export default function DepositModal({
   visible,
   onClose,
+  onSubmit,
   onSuccess,
   defaultPhone = "",
+  title = "Deposit Funds",
+  subtitle = "Pay securely with M-PESA",
+  submitLabel = "Pay with M-PESA",
+  fixedAmount = null,
+  quickAmounts = [500, 1000, 2000, 5000],
+  hint,
+  minAmount = 10,
 }: Props) {
   const [phone, setPhone] = useState(defaultPhone);
   const [amount, setAmount] = useState("");
@@ -44,6 +64,8 @@ export default function DepositModal({
   const [receipt, setReceipt] = useState<string | null>(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const locked = fixedAmount != null;
 
   const stopPolling = () => {
     if (timer.current) clearInterval(timer.current);
@@ -71,7 +93,7 @@ export default function DepositModal({
   useEffect(() => {
     if (visible) {
       setPhone(defaultPhone);
-      setAmount("");
+      setAmount(fixedAmount != null ? String(fixedAmount) : "");
       setError("");
       setStep("form");
       setReceipt(null);
@@ -79,7 +101,7 @@ export default function DepositModal({
       stopPolling();
       setKeyboardHeight(0);
     }
-  }, [visible, defaultPhone]);
+  }, [visible, defaultPhone, fixedAmount]);
 
   const startPolling = (reference: string, amt: number) => {
     let tries = 0;
@@ -113,16 +135,19 @@ export default function DepositModal({
   const submit = async () => {
     Keyboard.dismiss();
     setError("");
-    const amt = parseInt(amount, 10);
+    const amt = locked ? (fixedAmount as number) : parseInt(amount, 10);
+
     if (!PHONE_RE.test(phone.replace(/[\s-]/g, ""))) {
       return setError("Enter a valid M-PESA number, e.g. 0712 345 678");
     }
-    if (!amt || amt < 10) return setError("Minimum deposit is KSh 10");
-    if (amt > 150000) return setError("Maximum deposit is KSh 150,000");
+    if (!amt || (!locked && amt < minAmount)) {
+      return setError(`Minimum deposit is KSh ${minAmount}`);
+    }
+    if (amt > MAX_AMOUNT) return setError(`Maximum deposit is KSh ${fmt(MAX_AMOUNT)}`);
 
     setSubmitting(true);
     try {
-      const { reference } = await createDeposit(phone, amt);
+      const { reference } = await onSubmit(phone, amt);
       setStep("waiting");
       startPolling(reference, amt);
     } catch (e: any) {
@@ -151,10 +176,7 @@ export default function DepositModal({
         <Pressable
           style={[
             styles.sheet,
-            {
-              marginBottom: keyboardHeight,
-              paddingBottom: keyboardHeight > 0 ? 16 : 32,
-            },
+            { marginBottom: keyboardHeight, paddingBottom: keyboardHeight > 0 ? 16 : 32 },
           ]}
           onPress={() => {}}
         >
@@ -166,8 +188,8 @@ export default function DepositModal({
               <Ionicons name="phone-portrait-outline" size={20} color="#DC2626" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.title}>Deposit Funds</Text>
-              <Text style={styles.subtitle}>Pay securely with M-PESA</Text>
+              <Text style={styles.title}>{title}</Text>
+              <Text style={styles.subtitle}>{subtitle}</Text>
             </View>
             {!busy && (
               <TouchableOpacity onPress={onClose} hitSlop={10}>
@@ -184,6 +206,13 @@ export default function DepositModal({
             {/* FORM */}
             {step === "form" && (
               <>
+                {!!hint && (
+                  <View style={styles.hintBox}>
+                    <Ionicons name="information-circle-outline" size={18} color="#DC2626" />
+                    <Text style={styles.hintText}>{hint}</Text>
+                  </View>
+                )}
+
                 <Text style={styles.label}>M-PESA phone number</Text>
                 <TextInput
                   style={styles.input}
@@ -196,33 +225,33 @@ export default function DepositModal({
 
                 <Text style={styles.label}>Amount (KSh)</Text>
                 <TextInput
-                  style={styles.input}
-                  value={amount}
+                  style={[styles.input, locked && styles.inputLocked]}
+                  value={locked ? fmt(fixedAmount as number) : amount}
                   onChangeText={(t) => setAmount(t.replace(/\D/g, ""))}
+                  editable={!locked}
                   keyboardType="number-pad"
                   placeholder="500"
                   placeholderTextColor="#94A3B8"
                 />
 
-                <View style={styles.chips}>
-                  {QUICK_AMOUNTS.map((a) => (
-                    <TouchableOpacity
-                      key={a}
-                      style={[styles.chip, amount === String(a) && styles.chipActive]}
-                      onPress={() => setAmount(String(a))}
-                      activeOpacity={0.8}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          amount === String(a) && styles.chipTextActive,
-                        ]}
+                {!locked && quickAmounts.length > 0 && (
+                  <View style={styles.chips}>
+                    {quickAmounts.map((a) => (
+                      <TouchableOpacity
+                        key={a}
+                        style={[styles.chip, amount === String(a) && styles.chipActive]}
+                        onPress={() => setAmount(String(a))}
+                        activeOpacity={0.8}
                       >
-                        {a.toLocaleString()}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+                        <Text
+                          style={[styles.chipText, amount === String(a) && styles.chipTextActive]}
+                        >
+                          {fmt(a)}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
 
                 {!!error && <Text style={styles.error}>{error}</Text>}
 
@@ -235,7 +264,7 @@ export default function DepositModal({
                   {submitting ? (
                     <ActivityIndicator color="#FFFFFF" />
                   ) : (
-                    <Text style={styles.primaryButtonText}>Pay with M-PESA</Text>
+                    <Text style={styles.primaryButtonText}>{submitLabel}</Text>
                   )}
                 </TouchableOpacity>
               </>
@@ -247,7 +276,7 @@ export default function DepositModal({
                 <ActivityIndicator size="large" color="#DC2626" />
                 <Text style={styles.stateTitle}>Check your phone</Text>
                 <Text style={styles.stateText}>
-                  Enter your M-PESA PIN on the prompt to complete the deposit.
+                  Enter your M-PESA PIN on the prompt to complete the payment.
                 </Text>
               </View>
             )}
@@ -258,10 +287,8 @@ export default function DepositModal({
                 <View style={[styles.stateIcon, { backgroundColor: "#ECFDF5" }]}>
                   <Ionicons name="checkmark" size={30} color="#059669" />
                 </View>
-                <Text style={styles.stateTitle}>Deposit successful</Text>
-                {!!receipt && (
-                  <Text style={styles.stateText}>M-PESA receipt: {receipt}</Text>
-                )}
+                <Text style={styles.stateTitle}>Payment successful</Text>
+                {!!receipt && <Text style={styles.stateText}>M-PESA receipt: {receipt}</Text>}
                 <TouchableOpacity
                   style={[styles.primaryButton, { alignSelf: "stretch" }]}
                   onPress={onClose}
@@ -318,12 +345,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#E2E8F0",
     marginBottom: 16,
   },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 20,
-  },
+  header: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 20 },
   headerIcon: {
     width: 40,
     height: 40,
@@ -335,13 +357,18 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: "800", color: "#0F172A" },
   subtitle: { fontSize: 12, color: "#64748B", marginTop: 2 },
 
-  label: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#0F172A",
-    marginBottom: 6,
-    marginTop: 4,
+  hintBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "#FEF2F2",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
   },
+  hintText: { flex: 1, fontSize: 12, lineHeight: 18, color: "#7F1D1D" },
+
+  label: { fontSize: 12, fontWeight: "700", color: "#0F172A", marginBottom: 6, marginTop: 4 },
   input: {
     height: 50,
     borderRadius: 14,
@@ -353,6 +380,8 @@ const styles = StyleSheet.create({
     color: "#0F172A",
     marginBottom: 10,
   },
+  inputLocked: { backgroundColor: "#F1F5F9", color: "#475569", fontWeight: "800" },
+
   chips: { flexDirection: "row", gap: 8, marginBottom: 6 },
   chip: {
     flex: 1,
@@ -387,16 +416,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  stateTitle: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#0F172A",
-    marginTop: 8,
-  },
-  stateText: {
-    fontSize: 13,
-    color: "#64748B",
-    textAlign: "center",
-    lineHeight: 19,
-  },
+  stateTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A", marginTop: 8 },
+  stateText: { fontSize: 13, color: "#64748B", textAlign: "center", lineHeight: 19 },
 });
