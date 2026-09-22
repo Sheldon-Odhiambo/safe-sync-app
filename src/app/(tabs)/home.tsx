@@ -227,6 +227,10 @@ function PersonalWallet({
     ]);
   };
 
+  /* ========================================= */
+  /* RENDER                                    */
+  /* ========================================= */
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
@@ -273,7 +277,51 @@ function PersonalWallet({
               <Text style={styles.receiptButtonText}>Receipts</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        )}
+
+        {/* ===================================== */}
+        {/* EMERGENCY ACTIONS                     */}
+        {/* ===================================== */}
+
+        {locationConfirmed && (
+          <View style={styles.emergencySection}>
+            <Text style={styles.sectionTitle}>
+              Emergency Assistance
+            </Text>
+
+            <Text style={styles.sectionSubtitle}>
+              Select the type of emergency assistance
+              you need.
+            </Text>
+
+            {/* -------------------------------- */}
+            {/* AMBULANCE                         */}
+            {/* -------------------------------- */}
+
+            <TouchableOpacity
+              style={[
+                styles.emergencyCard,
+                selectedEmergency ===
+                  "ambulance" &&
+                  styles.emergencyCardSelected,
+              ]}
+              activeOpacity={0.85}
+              onPress={() =>
+                requestEmergency("ambulance")
+              }
+            >
+              <View
+                style={[
+                  styles.emergencyIcon,
+                  styles.ambulanceIcon,
+                ]}
+              >
+                <FontAwesome5
+                  name="ambulance"
+                  size={25}
+                  color="#FFFFFF"
+                />
+              </View>
 
         {/* ALERTS */}
         <View style={styles.panel}>
