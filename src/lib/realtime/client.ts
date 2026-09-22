@@ -11,8 +11,6 @@ import {
 } from "./config";
 import { ClientEnvelope, ConnectionState, ErrorEvent, ServerEvent } from "./types";
 
-// Optional: only used if the package is installed. Falls back to
-// "assume online" if it isn't, so this file has no hard dependency on it.
 let NetInfo: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -141,11 +139,6 @@ export class RealtimeClient {
     this.rawSend({ type, payload });
   }
 
-  /**
-   * Server-authoritative command. Resolves with the matching response event
-   * (matched by request_id) or rejects on error/timeout. Safe to retry —
-   * dispatch accept/reject are idempotent server-side.
-   */
   command(type: string, payload: Record<string, any> = {}): Promise<ServerEvent> {
     const request_id = genId();
     return new Promise((resolve, reject) => {
