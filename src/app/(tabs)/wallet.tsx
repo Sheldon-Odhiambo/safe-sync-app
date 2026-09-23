@@ -10,9 +10,15 @@ import {
 } from "react-native";
 
 import {
-  Ionicons,
-  MaterialCommunityIcons,
-} from "@expo/vector-icons";
+  Plus,
+  Download,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Smartphone,
+  CreditCard,
+  Landmark,
+  ChevronRight,
+} from "lucide-react-native";
 
 const transactions = [
   {
@@ -69,7 +75,8 @@ const methods = [
 
 export default function Wallet() {
   const [autoTopUp, setAutoTopUp] = useState(true);
-  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+  const [lowBalanceAlerts, setLowBalanceAlerts] =
+    useState(true);
 
   const handleDeposit = () => {
     Alert.alert(
@@ -141,7 +148,7 @@ export default function Wallet() {
         contentContainerStyle={styles.scrollContent}
       >
         {/* ========================================= */}
-        {/* PAGE HEADER                               */}
+        {/* PAGE HEADER */}
         {/* ========================================= */}
 
         <View style={styles.pageHeader}>
@@ -153,7 +160,7 @@ export default function Wallet() {
         </View>
 
         {/* ========================================= */}
-        {/* BALANCE CARD                              */}
+        {/* BALANCE CARD */}
         {/* ========================================= */}
 
         <View style={styles.balanceCard}>
@@ -170,16 +177,15 @@ export default function Wallet() {
           </Text>
 
           <View style={styles.balanceActions}>
-
             <TouchableOpacity
               style={styles.depositButton}
               activeOpacity={0.8}
               onPress={handleDeposit}
             >
-              <Ionicons
-                name="add"
+              <Plus
                 size={20}
                 color="#DC2626"
+                strokeWidth={2.5}
               />
 
               <Text style={styles.depositButtonText}>
@@ -192,26 +198,24 @@ export default function Wallet() {
               activeOpacity={0.8}
               onPress={handleDownloadReceipts}
             >
-              <Ionicons
-                name="download-outline"
+              <Download
                 size={18}
                 color="#FFFFFF"
+                strokeWidth={2.2}
               />
 
               <Text style={styles.receiptButtonText}>
                 Receipts
               </Text>
             </TouchableOpacity>
-
           </View>
         </View>
 
         {/* ========================================= */}
-        {/* AUTOMATIC TOP-UP                          */}
+        {/* AUTOMATIC TOP-UP */}
         {/* ========================================= */}
 
         <View style={styles.panel}>
-
           <Text style={styles.panelTitle}>
             Automatic top-up
           </Text>
@@ -223,7 +227,6 @@ export default function Wallet() {
           {/* AUTO TOP-UP */}
 
           <View style={styles.settingRow}>
-
             <View style={styles.settingTextContainer}>
               <Text style={styles.settingTitle}>
                 Auto top-up KSh 6,500
@@ -249,13 +252,11 @@ export default function Wallet() {
                 ]}
               />
             </TouchableOpacity>
-
           </View>
 
           {/* LOW BALANCE */}
 
           <View style={styles.settingRow}>
-
             <View style={styles.settingTextContainer}>
               <Text style={styles.settingTitle}>
                 Low balance alerts
@@ -284,17 +285,14 @@ export default function Wallet() {
                 ]}
               />
             </TouchableOpacity>
-
           </View>
-
         </View>
 
         {/* ========================================= */}
-        {/* TRANSACTION HISTORY                       */}
+        {/* TRANSACTION HISTORY */}
         {/* ========================================= */}
 
         <View style={styles.panel}>
-
           <View style={styles.sectionHeader}>
             <Text style={styles.panelTitle}>
               Transaction history
@@ -308,14 +306,11 @@ export default function Wallet() {
           </View>
 
           <View style={styles.transactionList}>
-
             {transactions.map((transaction) => (
-
               <View
                 key={transaction.id}
                 style={styles.transactionRow}
               >
-
                 {/* TRANSACTION ICON */}
 
                 <View
@@ -326,25 +321,24 @@ export default function Wallet() {
                       : styles.debitIcon,
                   ]}
                 >
-                  <Ionicons
-                    name={
-                      transaction.kind === "credit"
-                        ? "arrow-down"
-                        : "arrow-up"
-                    }
-                    size={18}
-                    color={
-                      transaction.kind === "credit"
-                        ? "#059669"
-                        : "#DC2626"
-                    }
-                  />
+                  {transaction.kind === "credit" ? (
+                    <ArrowDownLeft
+                      size={18}
+                      color="#059669"
+                      strokeWidth={2.3}
+                    />
+                  ) : (
+                    <ArrowUpRight
+                      size={18}
+                      color="#DC2626"
+                      strokeWidth={2.3}
+                    />
+                  )}
                 </View>
 
                 {/* DETAILS */}
 
                 <View style={styles.transactionDetails}>
-
                   <Text
                     style={styles.transactionLabel}
                     numberOfLines={1}
@@ -358,7 +352,6 @@ export default function Wallet() {
                   >
                     {transaction.date} · {transaction.id}
                   </Text>
-
                 </View>
 
                 {/* AMOUNT */}
@@ -372,21 +365,16 @@ export default function Wallet() {
                 >
                   {transaction.amount}
                 </Text>
-
               </View>
-
             ))}
-
           </View>
-
         </View>
 
         {/* ========================================= */}
-        {/* SAVED PAYMENT METHODS                     */}
+        {/* SAVED PAYMENT METHODS */}
         {/* ========================================= */}
 
         <View style={styles.panel}>
-
           <Text style={styles.panelTitle}>
             Saved payment methods
           </Text>
@@ -396,49 +384,43 @@ export default function Wallet() {
           </Text>
 
           <View style={styles.methodsList}>
-
             {methods.map((method) => (
-
               <TouchableOpacity
                 key={method.id}
                 style={styles.paymentMethod}
                 activeOpacity={0.75}
               >
-
                 {/* ICON */}
 
                 <View style={styles.paymentIcon}>
-
                   {method.icon === "phone" && (
-                    <Ionicons
-                      name="phone-portrait-outline"
+                    <Smartphone
                       size={20}
                       color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
 
                   {method.icon === "card" && (
-                    <Ionicons
-                      name="card-outline"
+                    <CreditCard
                       size={20}
                       color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
 
                   {method.icon === "bank" && (
-                    <MaterialCommunityIcons
-                      name="bank-outline"
+                    <Landmark
                       size={20}
                       color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
-
                 </View>
 
                 {/* DETAILS */}
 
                 <View style={styles.methodDetails}>
-
                   <Text style={styles.methodLabel}>
                     {method.label}
                   </Text>
@@ -446,7 +428,6 @@ export default function Wallet() {
                   <Text style={styles.methodDetail}>
                     {method.detail}
                   </Text>
-
                 </View>
 
                 {/* DEFAULT BADGE */}
@@ -459,16 +440,13 @@ export default function Wallet() {
                   </View>
                 )}
 
-                <Ionicons
-                  name="chevron-forward"
+                <ChevronRight
                   size={18}
                   color="#94A3B8"
+                  strokeWidth={2}
                 />
-
               </TouchableOpacity>
-
             ))}
-
           </View>
 
           {/* ADD PAYMENT METHOD */}
@@ -478,27 +456,29 @@ export default function Wallet() {
             activeOpacity={0.8}
             onPress={handleAddPaymentMethod}
           >
-            <Ionicons
-              name="add"
+            <Plus
               size={20}
               color="#DC2626"
+              strokeWidth={2.5}
             />
 
             <Text style={styles.addPaymentText}>
               Add payment method
             </Text>
           </TouchableOpacity>
-
         </View>
 
         {/* BOTTOM SPACE FOR GLOBAL EMERGENCY BUTTON */}
 
         <View style={{ height: 120 }} />
-
       </ScrollView>
     </SafeAreaView>
   );
 }
+
+/* ========================================= */
+/* STYLES                                    */
+/* ========================================= */
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -511,9 +491,7 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
 
-  /* ========================================= */
-  /* HEADER                                    */
-  /* ========================================= */
+  /* HEADER */
 
   pageHeader: {
     marginBottom: 20,
@@ -532,9 +510,7 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
 
-  /* ========================================= */
-  /* BALANCE CARD                              */
-  /* ========================================= */
+  /* BALANCE CARD */
 
   balanceCard: {
     backgroundColor: "#DC2626",
@@ -617,9 +593,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  /* ========================================= */
-  /* PANELS                                    */
-  /* ========================================= */
+  /* PANELS */
 
   panel: {
     backgroundColor: "#FFFFFF",
@@ -644,18 +618,13 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  /* ========================================= */
-  /* SETTINGS                                  */
-  /* ========================================= */
+  /* SETTINGS */
 
   settingRow: {
     marginTop: 16,
     padding: 14,
-
     borderRadius: 15,
-
     backgroundColor: "#F8FAFC",
-
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -679,20 +648,14 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 
-  /* ========================================= */
-  /* CUSTOM SWITCH                             */
-  /* ========================================= */
+  /* CUSTOM SWITCH */
 
   switch: {
     width: 48,
     height: 28,
-
     borderRadius: 20,
-
     backgroundColor: "#CBD5E1",
-
     justifyContent: "center",
-
     paddingHorizontal: 3,
   },
 
@@ -703,9 +666,7 @@ const styles = StyleSheet.create({
   switchThumb: {
     width: 22,
     height: 22,
-
     borderRadius: 11,
-
     backgroundColor: "#FFFFFF",
   },
 
@@ -713,9 +674,7 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
   },
 
-  /* ========================================= */
-  /* SECTION HEADER                            */
-  /* ========================================= */
+  /* SECTION HEADER */
 
   sectionHeader: {
     flexDirection: "row",
@@ -729,9 +688,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  /* ========================================= */
-  /* TRANSACTIONS                              */
-  /* ========================================= */
+  /* TRANSACTIONS */
 
   transactionList: {
     marginTop: 10,
@@ -740,9 +697,7 @@ const styles = StyleSheet.create({
   transactionRow: {
     flexDirection: "row",
     alignItems: "center",
-
     paddingVertical: 13,
-
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
   },
@@ -750,12 +705,9 @@ const styles = StyleSheet.create({
   transactionIcon: {
     width: 40,
     height: 40,
-
     borderRadius: 13,
-
     alignItems: "center",
     justifyContent: "center",
-
     marginRight: 12,
   },
 
@@ -795,9 +747,7 @@ const styles = StyleSheet.create({
     color: "#059669",
   },
 
-  /* ========================================= */
-  /* PAYMENT METHODS                           */
-  /* ========================================= */
+  /* PAYMENT METHODS */
 
   methodsList: {
     marginTop: 14,
@@ -806,14 +756,10 @@ const styles = StyleSheet.create({
 
   paymentMethod: {
     minHeight: 68,
-
     borderWidth: 1,
     borderColor: "#E2E8F0",
-
     borderRadius: 15,
-
     paddingHorizontal: 12,
-
     flexDirection: "row",
     alignItems: "center",
   },
@@ -821,14 +767,10 @@ const styles = StyleSheet.create({
   paymentIcon: {
     width: 40,
     height: 40,
-
     borderRadius: 12,
-
     backgroundColor: "#FEF2F2",
-
     alignItems: "center",
     justifyContent: "center",
-
     marginRight: 11,
   },
 
@@ -862,24 +804,17 @@ const styles = StyleSheet.create({
     color: "#475569",
   },
 
-  /* ========================================= */
-  /* ADD PAYMENT                               */
-  /* ========================================= */
+  /* ADD PAYMENT */
 
   addPaymentButton: {
     height: 48,
-
     marginTop: 14,
-
     borderWidth: 1,
     borderColor: "#DC2626",
-
     borderRadius: 14,
-
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-
     gap: 7,
   },
 

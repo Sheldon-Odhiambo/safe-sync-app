@@ -1,26 +1,107 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Platform,
-  SafeAreaView,
   Alert,
+  Platform,
+  Animated,
+  Easing,
 } from "react-native";
+
 import { Tabs, useRouter } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
+
 import {
-  Ionicons,
-  MaterialCommunityIcons,
-} from "@expo/vector-icons";
+  ShieldCheck,
+  LogOut,
+  Home,
+  History,
+  Wallet,
+  User,
+  Siren,
+} from "lucide-react-native";
+
+const PRIMARY = "#E11D48";
+const TEXT = "#0F172A";
+const MUTED = "#64748B";
+const BORDER = "#E2E8F0";
+const BACKGROUND = "#F8FAFC";
 
 export default function TabsLayout() {
   const router = useRouter();
 
+  // Alertify animation
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const glowAnim = useRef(new Animated.Value(0.18)).current;
+  const pressAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(pulseAnim, {
+            toValue: 1.035,
+            duration: 900,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(glowAnim, {
+            toValue: 0.32,
+            duration: 900,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ]),
+
+        Animated.parallel([
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 900,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(glowAnim, {
+            toValue: 0.18,
+            duration: 900,
+            easing: Easing.inOut(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+
+    pulse.start();
+
+    return () => {
+      pulse.stop();
+    };
+  }, [pulseAnim, glowAnim]);
+
+  const handleAlertifyPressIn = () => {
+    Animated.spring(pressAnim, {
+      toValue: 0.96,
+      useNativeDriver: true,
+      speed: 30,
+      bounciness: 4,
+    }).start();
+  };
+
+  const handleAlertifyPressOut = () => {
+    Animated.spring(pressAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 25,
+      bounciness: 5,
+    }).start();
+  };
+
+  // Sign out
   const handleSignOut = () => {
     Alert.alert(
       "Sign out",
-      "Are you sure you want to sign out?",
+      "Are you sure you want to sign out of SafeSync?",
       [
         {
           text: "Cancel",
@@ -37,9 +118,10 @@ export default function TabsLayout() {
     );
   };
 
-  const handleEmergency = () => {
+  // Alertify
+  const handleAlertify = () => {
     Alert.alert(
-      "Emergency assistance",
+      "Alertify",
       "Do you need emergency assistance?",
       [
         {
@@ -47,227 +129,288 @@ export default function TabsLayout() {
           style: "cancel",
         },
         {
-          text: "Continue",
+          text: "Activate Alertify",
           style: "destructive",
           onPress: () => {
-            // Later replace this with:
-            // router.push("/emergency");
-
-            console.log("Emergency request started");
+            router.replace("/emergency");
           },
         },
       ]
     );
   };
 
-  const handleSignUp = () => {
-    router.push("/signup");
-  };
-
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
       <View style={styles.container}>
 
-        {/* ================================================= */}
-        {/* GLOBAL SAFESYNC HEADER                            */}
-        {/* ================================================= */}
+        {/* ================================
+            TOP NAVIGATION
+        ================================= */}
 
         <View style={styles.header}>
-
           <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
-              <Ionicons
-                name="shield-checkmark"
-                size={18}
+              <ShieldCheck
+                size={21}
                 color="#FFFFFF"
+                strokeWidth={2.5}
               />
             </View>
 
-            <Text style={styles.brandTitle}>
-              SafeSync
-            </Text>
-          </View>
-
-          {/* HEADER ACTIONS */}
-          <View style={styles.headerActions}>
-
-            {/* SIGN UP */}
-            <TouchableOpacity
-              style={styles.signUpButton}
-              activeOpacity={0.7}
-              onPress={handleSignUp}
-            >
-              <Text style={styles.signUpText}>
-                Sign Up
+            <View>
+              <Text style={styles.brandTitle}>
+                SafeSync
               </Text>
-            </TouchableOpacity>
 
-            {/* SIGN OUT */}
-            <TouchableOpacity
-              style={styles.signOutButton}
-              activeOpacity={0.7}
-              onPress={handleSignOut}
-            >
-              <Ionicons
-                name="log-out-outline"
-                size={20}
-                color="#0F172A"
-              />
-            </TouchableOpacity>
-
+              <Text style={styles.brandSubtitle}>
+                Emergency Response
+              </Text>
+            </View>
           </View>
+
+          {/* SIGN OUT */}
+
+          <TouchableOpacity
+            style={styles.signOutButton}
+            activeOpacity={0.7}
+            onPress={handleSignOut}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+          >
+            <LogOut
+              size={20}
+              color={TEXT}
+              strokeWidth={2.2}
+            />
+          </TouchableOpacity>
         </View>
 
-        {/* ================================================= */}
-        {/* PAGE CONTENT + TAB NAVIGATION                     */}
-        {/* ================================================= */}
+        {/* ================================
+            TABS
+        ================================= */}
 
         <View style={styles.tabsContainer}>
           <Tabs
             screenOptions={{
               headerShown: false,
-              tabBarActiveTintColor: "#DC2626",
-              tabBarInactiveTintColor: "#94A3B8",
+
+              tabBarActiveTintColor: PRIMARY,
+              tabBarInactiveTintColor: MUTED,
+
               tabBarStyle: styles.tabBar,
               tabBarLabelStyle: styles.tabLabel,
               tabBarItemStyle: styles.tabItem,
+
               tabBarHideOnKeyboard: true,
+
+              sceneStyle: {
+                backgroundColor: BACKGROUND,
+              },
             }}
           >
 
             {/* HOME */}
+
             <Tabs.Screen
               name="home"
               options={{
                 title: "Home",
-                tabBarIcon: ({ color, focused }) => (
-                  <Ionicons
-                    name={
-                      focused
-                        ? "grid"
-                        : "grid-outline"
-                    }
-                    size={22}
+
+                tabBarIcon: ({
+                  color,
+                  focused,
+                }) => (
+                  <Home
+                    size={23}
                     color={color}
+                    strokeWidth={
+                      focused ? 2.6 : 2.1
+                    }
                   />
                 ),
               }}
             />
 
             {/* HISTORY */}
+
             <Tabs.Screen
               name="history"
               options={{
                 title: "History",
-                tabBarIcon: ({ color, focused }) => (
-                  <Ionicons
-                    name={
-                      focused
-                        ? "time"
-                        : "time-outline"
-                    }
-                    size={22}
+
+                tabBarIcon: ({
+                  color,
+                  focused,
+                }) => (
+                  <History
+                    size={23}
                     color={color}
+                    strokeWidth={
+                      focused ? 2.6 : 2.1
+                    }
                   />
                 ),
               }}
             />
 
             {/* WALLET */}
+
             <Tabs.Screen
               name="wallet"
               options={{
                 title: "Wallet",
-                tabBarIcon: ({ color, focused }) => (
-                  <Ionicons
-                    name={
-                      focused
-                        ? "wallet"
-                        : "wallet-outline"
-                    }
-                    size={22}
+
+                tabBarIcon: ({
+                  color,
+                  focused,
+                }) => (
+                  <Wallet
+                    size={23}
                     color={color}
+                    strokeWidth={
+                      focused ? 2.6 : 2.1
+                    }
                   />
                 ),
               }}
             />
 
             {/* PROFILE */}
+
             <Tabs.Screen
               name="profile"
               options={{
                 title: "Profile",
-                tabBarIcon: ({ color, focused }) => (
-                  <Ionicons
-                    name={
-                      focused
-                        ? "person"
-                        : "person-outline"
-                    }
-                    size={22}
+
+                tabBarIcon: ({
+                  color,
+                  focused,
+                }) => (
+                  <User
+                    size={23}
                     color={color}
+                    strokeWidth={
+                      focused ? 2.6 : 2.1
+                    }
                   />
                 ),
               }}
             />
-
           </Tabs>
 
-          {/* ================================================= */}
-          {/* GLOBAL EMERGENCY BUTTON                           */}
-          {/* ================================================= */}
+          {/* ================================
+              ALERTIFY
+          ================================= */}
 
-          <View style={styles.emergencyWrapper}>
-            <TouchableOpacity
-              style={styles.emergencyButton}
-              activeOpacity={0.85}
-              onPress={handleEmergency}
+          <View style={styles.alertifyWrapper}>
+
+            {/* Animated glow */}
+
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.alertifyGlow,
+                {
+                  opacity: glowAnim,
+                  transform: [
+                    {
+                      scale: pulseAnim,
+                    },
+                  ],
+                },
+              ]}
+            />
+
+            {/* Animated button */}
+
+            <Animated.View
+              style={{
+                transform: [
+                  {
+                    scale: Animated.multiply(
+                      pulseAnim,
+                      pressAnim
+                    ),
+                  },
+                ],
+              }}
             >
-              <View style={styles.emergencyIcon}>
-                <MaterialCommunityIcons
-                  name="alarm-light"
-                  size={21}
-                  color="#FFFFFF"
-                />
-              </View>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={handleAlertify}
+                onPressIn={handleAlertifyPressIn}
+                onPressOut={handleAlertifyPressOut}
+                style={styles.alertifyButton}
+                accessibilityRole="button"
+                accessibilityLabel="Alertify emergency button"
+              >
 
-              <Text style={styles.emergencyText}>
-                REQUEST EMERGENCY HELP
-              </Text>
-            </TouchableOpacity>
+                {/* ICON */}
+
+                <View style={styles.alertifyIcon}>
+                  <Siren
+                    size={28}
+                    color="#FFFFFF"
+                    strokeWidth={2.5}
+                  />
+                </View>
+
+                {/* TEXT */}
+
+                <View style={styles.alertifyTextContainer}>
+                  <Text style={styles.alertifyTitle}>
+                    Alertify
+                  </Text>
+
+                  <Text style={styles.alertifySubtitle}>
+                    Request immediate assistance
+                  </Text>
+                </View>
+
+              </TouchableOpacity>
+            </Animated.View>
           </View>
-
         </View>
       </View>
     </SafeAreaView>
   );
 }
 
+// ==========================================================
+// STYLES
+// ==========================================================
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: BACKGROUND,
   },
 
   container: {
     flex: 1,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: BACKGROUND,
   },
 
-  /* =============================================
-     HEADER
-  ============================================= */
+  // ========================================================
+  // TOP HEADER
+  // ========================================================
 
   header: {
     height: 64,
+    backgroundColor: "#FFFFFF",
+
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
-    backgroundColor: "#FFFFFF",
+
+    paddingHorizontal: 17,
+
     borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
-    zIndex: 10,
+    borderBottomColor: BORDER,
+
+    zIndex: 20,
+
+    elevation: 3,
   },
 
   brandContainer: {
@@ -276,101 +419,108 @@ const styles = StyleSheet.create({
   },
 
   logoBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#E11D48",
+    width: 40,
+    height: 40,
+
+    borderRadius: 12,
+
+    backgroundColor: PRIMARY,
+
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 9,
+
+    marginRight: 10,
   },
 
   brandTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "800",
-    color: "#0F172A",
+    color: TEXT,
+    letterSpacing: -0.3,
   },
 
-  /* =============================================
-     HEADER ACTIONS
-  ============================================= */
-
-  headerActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  brandSubtitle: {
+    fontSize: 10,
+    color: MUTED,
+    marginTop: 1,
   },
 
-  /* =============================================
-     SIGN UP
-  ============================================= */
-
-  signUpButton: {
-    height: 40,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: "#DC2626",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  signUpText: {
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "800",
-  },
-
-  /* =============================================
-     SIGN OUT
-  ============================================= */
+  // ========================================================
+  // SIGN OUT
+  // ========================================================
 
   signOutButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 42,
+    height: 42,
+
+    borderRadius: 13,
+
+    backgroundColor: "#F8FAFC",
+
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: BORDER,
+
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FFFFFF",
   },
 
-  /* =============================================
-     TABS CONTAINER
-  ============================================= */
+  // ========================================================
+  // TABS
+  // ========================================================
 
   tabsContainer: {
     flex: 1,
   },
 
-  /* =============================================
-     BOTTOM NAVIGATION
-  ============================================= */
-
   tabBar: {
     position: "absolute",
+
     left: 12,
     right: 12,
-    bottom: Platform.OS === "ios" ? 10 : 12,
-    height: 68,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 20,
-    paddingTop: 7,
-    paddingBottom: Platform.OS === "ios" ? 8 : 6,
 
-    shadowColor: "#000",
+    bottom:
+      Platform.OS === "ios"
+        ? 7
+        : 8,
+
+    height: 66,
+
+    backgroundColor: "#FFFFFF",
+
+    borderWidth: 1,
+    borderColor: BORDER,
+
+    borderRadius: 19,
+
+    paddingTop: 6,
+
+    paddingBottom:
+      Platform.OS === "ios"
+        ? 7
+        : 5,
+
+    paddingHorizontal: 4,
+
+    shadowColor: "#000000",
+
     shadowOffset: {
       width: 0,
       height: 4,
     },
+
     shadowOpacity: 0.08,
+
     shadowRadius: 12,
+
     elevation: 8,
   },
 
   tabItem: {
+    height: 55,
+
+    alignItems: "center",
+    justifyContent: "center",
+
     paddingVertical: 2,
   },
 
@@ -380,51 +530,106 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  /* =============================================
-     GLOBAL EMERGENCY BUTTON
-  ============================================= */
+  // ========================================================
+  // ALERTIFY
+  // ========================================================
 
-  emergencyWrapper: {
+  alertifyWrapper: {
     position: "absolute",
-    left: 20,
-    right: 20,
-    bottom: 88,
-    zIndex: 20,
+
+    left: 14,
+    right: 14,
+
+    bottom:
+      Platform.OS === "ios"
+        ? 83
+        : 84,
+
+    zIndex: 50,
   },
 
-  emergencyButton: {
-    height: 54,
-    backgroundColor: "#DC2626",
-    borderRadius: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 20,
+  // Outer glow
 
-    shadowColor: "#DC2626",
+  alertifyGlow: {
+    position: "absolute",
+
+    top: -6,
+    bottom: -6,
+    left: -5,
+    right: -5,
+
+    borderRadius: 22,
+
+    backgroundColor: PRIMARY,
+  },
+
+  // Main Alertify button
+
+  alertifyButton: {
+    height: 68,
+
+    backgroundColor: PRIMARY,
+
+    borderRadius: 19,
+
+    flexDirection: "row",
+
+    alignItems: "center",
+
+    paddingHorizontal: 17,
+
+    shadowColor: PRIMARY,
+
     shadowOffset: {
       width: 0,
-      height: 5,
+      height: 6,
     },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 8,
+
+    shadowOpacity: 0.30,
+
+    shadowRadius: 13,
+
+    elevation: 10,
   },
 
-  emergencyIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.18)",
+  // Larger icon
+
+  alertifyIcon: {
+    width: 48,
+    height: 48,
+
+    borderRadius: 15,
+
+    backgroundColor:
+      "rgba(255,255,255,0.18)",
+
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 9,
+
+    marginRight: 13,
   },
 
-  emergencyText: {
+  alertifyTextContainer: {
+    flex: 1,
+  },
+
+  alertifyTitle: {
     color: "#FFFFFF",
-    fontSize: 13,
+
+    fontSize: 18,
+
     fontWeight: "900",
-    letterSpacing: 0.4,
+
+    letterSpacing: 0.1,
+
+    marginBottom: 3,
+  },
+
+  alertifySubtitle: {
+    color: "#FFE4E6",
+
+    fontSize: 10.5,
+
+    fontWeight: "500",
   },
 });
