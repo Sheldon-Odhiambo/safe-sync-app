@@ -12,20 +12,44 @@ import {
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
+import {
+  Ambulance,
+  ArrowRight,
+  Building2,
+  Eye,
+  EyeOff,
+  LockKeyhole,
+  Mail,
+  ShieldAlert,
+  ShieldPlus,
+  User,
+} from "lucide-react-native";
 
 const COLORS = {
-  primary: "#ED111C",
-  primaryDark: "#C90D16",
-  white: "#FFFFFF",
-  black: "#111827",
-  text: "#1E293B",
+  primary: "#E11D48",        // Rose 600 (SafeSync Red)
+  primaryDark: "#BE123C",    // Rose 700
+  primaryLight: "#FFF1F2",   // Rose 50
+  slate900: "#0F172A",       // Enterprise Slate
+  slate800: "#1E293B",
+  slate700: "#334155",
+  text: "#0F172A",
   muted: "#64748B",
   placeholder: "#94A3B8",
   border: "#E2E8F0",
   background: "#F8FAFC",
+  cardBg: "#FFFFFF",
+  amber: "#D97706",
+  amberBg: "#FFFBEB",
+  green: "#059669",
+  greenBg: "#ECFDF5",
+  white: "#FFFFFF",
 };
 
+
+export type Role = "user" | "admin" | "driver" | "superadmin";
+
 type UserRole = "Client" | "Admin" | "Responder";
+
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -34,10 +58,35 @@ export default function LoginScreen() {
   const isDesktop = width >= 768;
   const isSmallPhone = width < 380;
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
+  const [identifier, setIdentifier] = useState("kevin");
+  const [password, setPassword] = useState("password123");
+  const [selectedRole, setSelectedRole] = useState<Role>("user");
   const [showPassword, setShowPassword] = useState(false);
+  const [focusedField, setFocusedField] = useState<"identifier" | "password" | null>(null);
+  const [error, setError] = useState("");
+
+
+  // ----------------------------------------
+  // NAVIGATION ROUTER
+  // ----------------------------------------
+  const routeUser = (role: Role) => {
+    setError("");
+    switch (role) {
+      // case "superadmin":
+      //   router.replace("#");
+      //   break;
+      case "admin":
+        router.replace("/admin");
+        break;
+      case "driver":
+        router.replace("/responder");
+        break;
+      case "user":
+      default:
+        router.replace("/home");
+        break;
+    }
+  };
 
   const [selectedRole, setSelectedRole] = useState<UserRole>("Client");
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
@@ -46,13 +95,17 @@ export default function LoginScreen() {
     "email" | "password" | null
   >(null);
 
-  const [error, setError] = useState("");
 
-  const handleLogin = () => {
+  const handleQuickLogin = (role: Role) => {
+    setSelectedRole(role);
+    routeUser(role);
+  };
+
+  const handlePasswordSignIn = () => {
     setError("");
 
-    if (!email.trim()) {
-      setError("Please enter your email address.");
+    if (!identifier.trim()) {
+      setError("Please enter your phone number or username.");
       return;
     }
 
@@ -60,6 +113,9 @@ export default function LoginScreen() {
       setError("Please enter your password.");
       return;
     }
+
+
+    routeUser(selectedRole);
 
     switch (selectedRole) {
       case "Client":
@@ -81,19 +137,25 @@ export default function LoginScreen() {
 
   const handleSignUp = () => {
     router.push("/signup");
+
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         style={styles.keyboard}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View style={[styles.page, isDesktop && styles.pageDesktop]}>
+
+
+          {/* DESKTOP HERO BRAND PANEL */}
+
           {/* DESKTOP BRAND PANEL */}
+
           {isDesktop && <BrandPanel />}
 
-          {/* LOGIN PANEL */}
+          {/* MAIN LOGIN FORM PANEL */}
           <View
             style={[
               styles.loginPanel,
@@ -110,14 +172,48 @@ export default function LoginScreen() {
               showsVerticalScrollIndicator={false}
             >
               <View style={styles.loginContainer}>
+
+
+                {/* MOBILE BRAND LOGO HEADER */}
+
                 {/* MOBILE LOGO */}
+
                 {!isDesktop && (
-                  <View style={styles.mobileLogoContainer}>
-                    <View style={styles.mobileLogoCircle}>
-                      <View style={styles.mobileLogoShield}>
-                        <Text style={styles.mobileLogoPlus}>+</Text>
-                      </View>
+                  <View style={styles.mobileHeader}>
+                    <View style={styles.logoBadge}>
+                      <ShieldPlus size={22} color={COLORS.white} strokeWidth={2} />
                     </View>
+                    <Text style={styles.logoTitle}>SafeSync</Text>
+                    <Text style={styles.logoSubtitle}>
+                      Rapid Emergency Response & Autonomous Fleet Telemetry
+                    </Text>
+                  </View>
+                )}
+
+
+                {/* HEADING (DESKTOP ONLY) */}
+                {isDesktop && (
+                  <View style={styles.desktopHeading}>
+                    <Text style={styles.welcomeTitle}>Welcome back</Text>
+                    <Text style={styles.welcomeSubtitle}>
+                      Sign in to your SafeSync portal to coordinate dispatch and emergency assets.
+                    </Text>
+                  </View>
+                )}
+
+                {/* GOOGLE SIGN IN */}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.googleButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                  onPress={() => routeUser("user")}
+                >
+                  <View style={styles.googleGContainer}>
+                    <Text style={styles.googleG}>G</Text>
+                  </View>
+                  <Text style={styles.googleButtonText}>Sign in with Google</Text>
+                </Pressable>
 
                     <Text style={styles.mobileLogoText}>SafeSync</Text>
                   </View>
@@ -127,93 +223,221 @@ export default function LoginScreen() {
                 <View style={styles.heading}>
                   <Text style={styles.welcomeTitle}>Welcome back</Text>
 
-                  <Text style={styles.welcomeSubtitle}>
-                    Sign in to your SafeSync account to continue.
-                  </Text>
+
+                {/* DIVIDER */}
+                <View style={styles.divider}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>OR SIGN IN WITH PASSWORD</Text>
+                  <View style={styles.dividerLine} />
                 </View>
+
+
+                {/* ONE-CLICK INSTANT DEMO PERSONAS */}
+                <View style={styles.demoBox}>
+                  <Text style={styles.demoTitle}>
+                    ONE-CLICK INSTANT ACCESS (DEMO PERSONAS)
+                  </Text>
 
                 {/* EMAIL */}
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>Email address</Text>
 
+
+                  <View style={styles.demoGrid}>
+                    {/* SUPER ADMIN (HQ) */}
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.roleCard,
+                        styles.superAdminCard,
+                        pressed && styles.cardPressed,
+                      ]}
+                      onPress={() => handleQuickLogin("superadmin")}
+                    >
+                      <ShieldAlert size={16} color="#FB7185" strokeWidth={2.2} />
+                      <Text style={[styles.roleCardText, { color: COLORS.white }]}>
+                        Super Admin
+                      </Text>
+                    </Pressable>
+
+                    {/* BRANCH ADMIN */}
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.roleCard,
+                        pressed && styles.cardPressed,
+                      ]}
+                      onPress={() => handleQuickLogin("admin")}
+                    >
+                      <Building2 size={16} color={COLORS.amber} strokeWidth={2.2} />
+                      <Text style={styles.roleCardText}>Branch Admin</Text>
+                    </Pressable>
+
+                    {/* RESPONDER */}
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.roleCard,
+                        pressed && styles.cardPressed,
+                      ]}
+                      onPress={() => handleQuickLogin("driver")}
+                    >
+                      <Ambulance size={16} color={COLORS.green} strokeWidth={2.2} />
+                      <Text style={styles.roleCardText}>Responder</Text>
+                    </Pressable>
+
+                    {/* CLIENT */}
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.roleCard,
+                        pressed && styles.cardPressed,
+                      ]}
+                      onPress={() => handleQuickLogin("user")}
+                    >
+                      <User size={16} color={COLORS.primary} strokeWidth={2.2} />
+                      <Text style={styles.roleCardText}>Client</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                {/* ACCOUNT IDENTIFIER */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Account Identifier</Text>
                   <View
                     style={[
                       styles.inputWrapper,
-                      focusedField === "email" &&
-                        styles.inputWrapperFocused,
+                      focusedField === "identifier" && styles.inputWrapperFocused,
                     ]}
                   >
+
+                    <Mail size={18} color={COLORS.muted} strokeWidth={1.8} style={styles.inputIcon} />
+
                     <Text style={styles.inputSymbol}>@</Text>
+
 
                     <TextInput
                       style={styles.input}
-                      value={email}
-                      onChangeText={(value) => {
-                        setEmail(value);
+                      value={identifier}
+                      onChangeText={(val) => {
+                        setIdentifier(val);
                         setError("");
                       }}
-                      placeholder="you@example.com"
+                      placeholder="Username or registered phone"
                       placeholderTextColor={COLORS.placeholder}
-                      keyboardType="email-address"
                       autoCapitalize="none"
                       autoCorrect={false}
+
+                      onFocus={() => setFocusedField("identifier")}
+
                       autoComplete="email"
                       textContentType="emailAddress"
                       onFocus={() => setFocusedField("email")}
+
                       onBlur={() => setFocusedField(null)}
                       returnKeyType="next"
-                      selectionColor={COLORS.primary}
                     />
                   </View>
                 </View>
 
                 {/* PASSWORD */}
                 <View style={styles.inputGroup}>
+
+                  <View style={styles.labelRow}>
+                    <Text style={styles.inputLabel}>Password</Text>
+                    <Pressable onPress={() => router.push("/forgot-password")}>
+                      <Text style={styles.forgotText}>Forgot password?</Text>
+                    </Pressable>
+                  </View>
+
                   <Text style={styles.inputLabel}>Password</Text>
+
 
                   <View
                     style={[
                       styles.inputWrapper,
-                      focusedField === "password" &&
-                        styles.inputWrapperFocused,
+                      focusedField === "password" && styles.inputWrapperFocused,
                     ]}
                   >
+
+                    <LockKeyhole size={18} color={COLORS.muted} strokeWidth={1.8} style={styles.inputIcon} />
+
                     <Text style={styles.inputSymbol}>•</Text>
+
 
                     <TextInput
                       style={styles.input}
                       value={password}
-                      onChangeText={(value) => {
-                        setPassword(value);
+                      onChangeText={(val) => {
+                        setPassword(val);
                         setError("");
                       }}
-                      placeholder="Enter your password"
+                      placeholder="••••••••"
                       placeholderTextColor={COLORS.placeholder}
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"
                       autoCorrect={false}
+
+                      onFocus={() => setFocusedField("password")}
+                      onBlur={() => setFocusedField(null)}
+                      onSubmitEditing={handlePasswordSignIn}
+
                       autoComplete="password"
                       textContentType="password"
                       onFocus={() => setFocusedField("password")}
                       onBlur={() => setFocusedField(null)}
+
                       returnKeyType="done"
-                      onSubmitEditing={handleLogin}
-                      selectionColor={COLORS.primary}
                     />
+
+                    <Pressable
+                      style={styles.passwordToggle}
+                      onPress={() => setShowPassword((prev) => !prev)}
+
 
                     <Pressable
                       style={styles.passwordToggle}
                       onPress={() =>
                         setShowPassword((value) => !value)
                       }
+
                       hitSlop={10}
                     >
-                      <Text style={styles.passwordToggleText}>
-                        {showPassword ? "Hide" : "Show"}
-                      </Text>
+                      {showPassword ? (
+                        <EyeOff size={18} color={COLORS.muted} />
+                      ) : (
+                        <Eye size={18} color={COLORS.muted} />
+                      )}
                     </Pressable>
                   </View>
                 </View>
+
+
+                {/* PORTAL ROLE PILL SELECTOR */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Portal Role</Text>
+                  <View style={styles.pillRow}>
+                    {(
+                      [
+                        { id: "superadmin", label: "Super Admin" },
+                        { id: "admin", label: "Branch Admin" },
+                        { id: "driver", label: "Responder" },
+                        { id: "user", label: "Client" },
+                      ] as const
+                    ).map((r) => {
+                      const isActive = selectedRole === r.id;
+                      return (
+                        <Pressable
+                          key={r.id}
+                          onPress={() => setSelectedRole(r.id)}
+                          style={[styles.pill, isActive && styles.pillActive]}
+                        >
+                          <Text
+                            style={[styles.pillText, isActive && styles.pillTextActive]}
+                            numberOfLines={1}
+                          >
+                            {r.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
 
                 {/* ROLE DROPDOWN */}
                 <View style={styles.inputGroup}>
@@ -315,23 +539,42 @@ export default function LoginScreen() {
                       Forgot password?
                     </Text>
                   </Pressable>
+
                 </View>
 
-                {/* ERROR */}
+                {/* ERROR BOX */}
                 {error ? (
                   <View style={styles.errorBox}>
                     <Text style={styles.errorText}>{error}</Text>
                   </View>
                 ) : null}
 
-                {/* LOGIN BUTTON */}
+                {/* SUBMIT BUTTON */}
                 <Pressable
                   style={({ pressed }) => [
                     styles.loginButton,
-                    pressed && styles.buttonPressed,
+                    pressed && styles.loginButtonPressed,
                   ]}
-                  onPress={handleLogin}
+                  onPress={handlePasswordSignIn}
                 >
+
+                  <Text style={styles.loginButtonText}>Sign In with Password</Text>
+                  <ArrowRight size={18} color={COLORS.white} strokeWidth={2.5} />
+                </Pressable>
+
+                {/* SIGN UP FOOTER */}
+                <View style={styles.footerRow}>
+                  <Text style={styles.footerText}>Don't have an account yet? </Text>
+                  <Pressable onPress={() => router.push("/signup")}>
+                    <Text style={styles.signUpLink}>Sign Up</Text>
+                  </Pressable>
+                </View>
+
+                {/* SECURITY NOTICE */}
+                <View style={styles.securityMessage}>
+                  <Text style={styles.securityText}>
+                    Protected by SafeSync End-to-End Enterprise Encryption.
+
                   <Text style={styles.loginButtonText}>Log in</Text>
                 </Pressable>
 
@@ -372,6 +615,7 @@ export default function LoginScreen() {
                 <View style={styles.securityMessage}>
                   <Text style={styles.securityText}>
                     Your account is protected by SafeSync security.
+
                   </Text>
                 </View>
               </View>
@@ -384,13 +628,36 @@ export default function LoginScreen() {
 }
 
 /* =========================================================
-   BRAND PANEL
+   DESKTOP BRAND PANEL
 ========================================================= */
-
 function BrandPanel() {
   return (
     <View style={styles.brandPanel}>
       <View style={styles.brandContent}>
+
+        {/* LOGO */}
+        <View style={styles.brandLogoRow}>
+          <View style={styles.brandLogoBox}>
+            <ShieldPlus size={22} color={COLORS.primary} strokeWidth={2.5} />
+          </View>
+          <Text style={styles.brandLogoText}>SafeSync</Text>
+        </View>
+
+        {/* HERO MESSAGE */}
+        <View style={styles.brandCenterMessage}>
+          <Text style={styles.brandHeroTagline}>
+            Every second you{"\n"}save is a life you{"\n"}can protect.
+          </Text>
+          <Text style={styles.brandHeroSubtitle}>
+            Rapid emergency response coordination designed to connect citizens,
+            paramedics, hospital trauma teams, and enterprise fleets in real time.
+          </Text>
+        </View>
+
+        {/* COPYRIGHT */}
+        <Text style={styles.brandCopyright}>
+          © 2026 SafeSync Technologies Ltd. All rights reserved.
+
         <View style={styles.logoRow}>
           <View style={styles.logoCircle}>
             <View style={styles.logoShield}>
@@ -416,6 +683,7 @@ function BrandPanel() {
 
         <Text style={styles.copyright}>
           © 2026 SafeSync Technologies Ltd.
+
         </Text>
       </View>
     </View>
@@ -425,254 +693,332 @@ function BrandPanel() {
 /* =========================================================
    STYLES
 ========================================================= */
-
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.background,
   },
-
   keyboard: {
     flex: 1,
   },
-
   page: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.background,
   },
-
   pageDesktop: {
     flexDirection: "row",
   },
 
-  scrollContent: {
-    flexGrow: 1,
-    justifyContent: "center",
-  },
-
-  scrollContentMobile: {
-    paddingVertical: 28,
-  },
-
-  /* BRAND PANEL */
-
+  /* BRAND PANEL (TABLET / DESKTOP) */
   brandPanel: {
     flex: 1,
     backgroundColor: COLORS.primary,
     paddingHorizontal: 48,
-    paddingVertical: 48,
+    paddingVertical: 56,
   },
-
   brandContent: {
     flex: 1,
     justifyContent: "space-between",
   },
-
-  logoRow: {
+  brandLogoRow: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 12,
   },
-
-  logoCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  brandLogoBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     backgroundColor: COLORS.white,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 3,
   },
-
-  logoShield: {
-    width: 21,
-    height: 23,
-    borderWidth: 2,
-    borderColor: COLORS.primary,
-    borderRadius: 5,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  logoPlus: {
-    color: COLORS.primary,
-    fontSize: 14,
-    fontWeight: "900",
-  },
-
-  logoText: {
+  brandLogoText: {
     color: COLORS.white,
-    fontSize: 21,
-    fontWeight: "800",
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: -0.5,
   },
-
-  brandMessage: {
+  brandCenterMessage: {
     marginVertical: "auto",
   },
-
-  brandTitle: {
+  brandHeroTagline: {
     color: COLORS.white,
-    fontSize: 40,
-    lineHeight: 48,
-    fontWeight: "800",
+    fontSize: 38,
+    lineHeight: 46,
+    fontWeight: "900",
     letterSpacing: -1,
   },
-
-  brandDescription: {
-    maxWidth: 400,
-    marginTop: 20,
+  brandHeroSubtitle: {
+    maxWidth: 420,
+    marginTop: 18,
     color: COLORS.white,
     opacity: 0.9,
-    fontSize: 15,
+    fontSize: 14,
     lineHeight: 22,
   },
-
-  copyright: {
+  brandCopyright: {
     color: COLORS.white,
-    opacity: 0.8,
+    opacity: 0.75,
     fontSize: 12,
   },
 
   /* LOGIN PANEL */
-
   loginPanel: {
     flex: 1,
     backgroundColor: COLORS.white,
     paddingHorizontal: 40,
     paddingVertical: 40,
   },
-
   loginPanelMobile: {
-    paddingHorizontal: 24,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 16,
     paddingVertical: 20,
   },
-
   loginPanelSmallPhone: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 12,
   },
-
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+  },
+  scrollContentMobile: {
+    paddingVertical: 12,
+  },
   loginContainer: {
     width: "100%",
-    maxWidth: 420,
+    maxWidth: 440,
     alignSelf: "center",
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 16,
+    elevation: 3,
   },
 
-  /* MOBILE LOGO */
-
-  mobileLogoContainer: {
+  /* MOBILE BRAND LOGO HEADER */
+  mobileHeader: {
     alignItems: "center",
-    marginBottom: 32,
+    marginBottom: 20,
   },
-
-  mobileLogoCircle: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+  logoBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     backgroundColor: COLORS.primary,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
-  },
-
-  mobileLogoShield: {
-    width: 28,
-    height: 31,
-    borderWidth: 2,
-    borderColor: COLORS.white,
-    borderRadius: 7,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  mobileLogoPlus: {
-    color: COLORS.white,
-    fontSize: 19,
-    fontWeight: "900",
-  },
-
-  mobileLogoText: {
-    color: COLORS.black,
-    fontSize: 21,
-    fontWeight: "800",
-  },
-
-  /* HEADING */
-
-  heading: {
-    marginBottom: 28,
-  },
-
-  welcomeTitle: {
-    color: COLORS.black,
-    fontSize: 32,
-    fontWeight: "800",
-    letterSpacing: -0.8,
-  },
-
-  welcomeSubtitle: {
-    marginTop: 8,
-    color: COLORS.muted,
-    fontSize: 14,
-    lineHeight: 21,
-  },
-
-  /* INPUTS */
-
-  inputGroup: {
-    marginBottom: 18,
-  },
-
-  inputLabel: {
     marginBottom: 8,
-    color: COLORS.black,
-    fontSize: 13,
-    fontWeight: "600",
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  logoTitle: {
+    fontSize: 24,
+    fontWeight: "900",
+    color: COLORS.text,
+    letterSpacing: -0.5,
+  },
+  logoSubtitle: {
+    marginTop: 4,
+    fontSize: 11,
+    color: COLORS.muted,
+    textAlign: "center",
+    lineHeight: 16,
+    maxWidth: 290,
   },
 
-  inputWrapper: {
-    minHeight: 54,
+  /* DESKTOP HEADING */
+  desktopHeading: {
+    marginBottom: 20,
+  },
+  welcomeTitle: {
+    fontSize: 28,
+    fontWeight: "900",
+    color: COLORS.text,
+    letterSpacing: -0.5,
+  },
+  welcomeSubtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    color: COLORS.muted,
+    lineHeight: 19,
+  },
+
+  /* GOOGLE BUTTON */
+  googleButton: {
+    height: 46,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 10,
     backgroundColor: COLORS.white,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 1,
   },
-
-  inputWrapperFocused: {
-    borderColor: COLORS.primary,
-    borderWidth: 1.5,
+  buttonPressed: {
+    backgroundColor: COLORS.background,
+    opacity: 0.9,
   },
-
-  inputSymbol: {
-    width: 48,
-    textAlign: "center",
-    color: COLORS.muted,
-    fontSize: 18,
-    fontWeight: "700",
-  },
-
-  input: {
-    flex: 1,
-    minHeight: 52,
-    paddingVertical: 12,
-    paddingHorizontal: 0,
-    color: COLORS.black,
-    backgroundColor: "transparent",
-    fontSize: 15,
-  },
-
-  passwordToggle: {
-    width: 58,
-    minHeight: 52,
+  googleGContainer: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#4285F4",
     alignItems: "center",
     justifyContent: "center",
+    marginRight: 10,
   },
-
-  passwordToggleText: {
-    color: COLORS.primary,
+  googleG: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  googleButtonText: {
     fontSize: 13,
     fontWeight: "700",
+    color: COLORS.text,
   },
+
+  /* DIVIDER */
+  divider: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginVertical: 18,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+  dividerText: {
+    marginHorizontal: 10,
+    fontSize: 10,
+    fontWeight: "800",
+    color: COLORS.placeholder,
+    letterSpacing: 0.5,
+  },
+
+  /* ONE-CLICK DEMO PERSONAS */
+  demoBox: {
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 18,
+  },
+  demoTitle: {
+    textAlign: "center",
+    fontSize: 9,
+    fontWeight: "800",
+    color: COLORS.muted,
+    marginBottom: 10,
+    letterSpacing: 0.5,
+  },
+  demoGrid: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  roleCard: {
+    flex: 1,
+    minHeight: 56,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.white,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 4,
+    gap: 4,
+  },
+  superAdminCard: {
+    backgroundColor: COLORS.slate900,
+    borderColor: COLORS.slate700,
+  },
+  cardPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.98 }],
+  },
+  roleCardText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: COLORS.text,
+    textAlign: "center",
+  },
+
+  /* INPUTS */
+  inputGroup: {
+    marginBottom: 14,
+  },
+  labelRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: COLORS.text,
+    marginBottom: 6,
+  },
+  inputWrapper: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: "#F8FAFC",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+  },
+  inputWrapperFocused: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.white,
+    borderWidth: 1.5,
+  },
+  inputIcon: {
+    marginRight: 8,
+  },
+  input: {
+    flex: 1,
+    minHeight: 46,
+    color: COLORS.text,
+    fontSize: 13,
+  },
+  passwordToggle: {
+    padding: 6,
+  },
+  forgotText: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+
+
+
+  /* ROLE PILLS */
+  pillRow: {
+    flexDirection: "row",
+    gap: 6,
 
   /* ROLE DROPDOWN */
 
@@ -806,49 +1152,92 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     marginTop: -4,
     marginBottom: 18,
-  },
 
-  forgotPassword: {
-    color: COLORS.primary,
-    fontSize: 13,
+  },
+  pill: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pillActive: {
+    backgroundColor: COLORS.slate900,
+    borderColor: COLORS.slate900,
+  },
+  pillText: {
+    fontSize: 10,
     fontWeight: "700",
+    color: COLORS.muted,
+  },
+  pillTextActive: {
+    color: COLORS.white,
   },
 
   /* ERROR */
-
   errorBox: {
-    marginBottom: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderRadius: 9,
-    backgroundColor: "#FEF2F2",
+    backgroundColor: COLORS.primaryLight,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#FECDD3",
   },
-
   errorText: {
     color: "#B91C1C",
-    fontSize: 12,
-    fontWeight: "600",
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "center",
   },
 
   /* LOGIN BUTTON */
-
   loginButton: {
-    minHeight: 54,
-    borderRadius: 10,
+    width: "100%",
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: COLORS.primary,
+    gap: 8,
     marginTop: 4,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
   },
-
-  buttonPressed: {
+  loginButtonPressed: {
     backgroundColor: COLORS.primaryDark,
   },
-
   loginButtonText: {
     color: COLORS.white,
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+
+  /* FOOTER */
+  footerRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 18,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  footerText: {
+    color: COLORS.muted,
+    fontSize: 11,
+  },
+  signUpLink: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: "800",
   },
 
   /* DIVIDER */
@@ -933,16 +1322,15 @@ const styles = StyleSheet.create({
 
   /* SECURITY */
 
+
+  /* SECURITY */
   securityMessage: {
     alignItems: "center",
-    marginTop: 22,
-    paddingHorizontal: 10,
+    marginTop: 14,
   },
-
   securityText: {
-    color: COLORS.muted,
-    fontSize: 12,
+    color: COLORS.placeholder,
+    fontSize: 10,
     textAlign: "center",
-    lineHeight: 18,
   },
 });

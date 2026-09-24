@@ -12,6 +12,16 @@ import {
   Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+
+import { useRouter } from "expo-router";
+
+type AccountType = "client" | "organization";
+
+export default function SignupScreen() {
+  const router = useRouter();
+
+  const [accountType, setAccountType] = useState<AccountType | null>(null);
+
 import { useRouter } from "expo-router"
 export default function SignupScreen() {
   const router = useRouter();
@@ -22,6 +32,7 @@ export default function SignupScreen() {
   const [showAccountDropdown, setShowAccountDropdown] =
     useState(false);
 
+
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -30,13 +41,22 @@ export default function SignupScreen() {
     useState("");
 
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] =
-    useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleSignup = () => {
+    // ACCOUNT TYPE
+    if (!accountType) {
+      Alert.alert(
+        "Choose account type",
+        "Please select whether you are signing up as a Client or an Organization."
+      );
+      return;
+    }
+
+    // FULL NAME
     if (!fullName.trim()) {
       Alert.alert(
         "Missing information",
@@ -47,6 +67,7 @@ export default function SignupScreen() {
       return;
     }
 
+    // EMAIL
     if (!email.trim()) {
       Alert.alert(
         "Missing information",
@@ -57,6 +78,7 @@ export default function SignupScreen() {
       return;
     }
 
+    // PHONE
     if (!phone.trim()) {
       Alert.alert(
         "Missing information",
@@ -65,6 +87,7 @@ export default function SignupScreen() {
       return;
     }
 
+    // PASSWORD
     if (!password) {
       Alert.alert(
         "Missing information",
@@ -81,6 +104,7 @@ export default function SignupScreen() {
       return;
     }
 
+    // CONFIRM PASSWORD
     if (password !== confirmPassword) {
       Alert.alert(
         "Passwords do not match",
@@ -89,6 +113,7 @@ export default function SignupScreen() {
       return;
     }
 
+    // TERMS
     if (!acceptedTerms) {
       Alert.alert(
         "Terms required",
@@ -98,6 +123,13 @@ export default function SignupScreen() {
     }
 
     setLoading(true);
+
+
+    // TODO:
+    // Connect this section to your backend/Supabase/Firebase.
+    //
+    // accountType will contain:
+    // "client" OR "organization"
 
     /*
      * TODO:
@@ -118,14 +150,24 @@ export default function SignupScreen() {
      * }
      */
 
+
     setTimeout(() => {
       setLoading(false);
 
+      const accountName =
+        accountType === "organization"
+          ? "Organization"
+          : "Client";
+
       Alert.alert(
         "Account created",
+
+        `Your SafeSync ${accountName.toLowerCase()} account has been created successfully.`,
+
         accountType === "organization"
           ? "Your organization account has been created successfully."
           : "Your SafeSync account has been created successfully.",
+
         [
           {
             text: "Continue",
@@ -190,6 +232,124 @@ export default function SignupScreen() {
               Join SafeSync and get access to fast and reliable
               emergency assistance when you need it.
             </Text>
+          </View>
+
+          {/* ACCOUNT TYPE */}
+
+          <View style={styles.accountTypeSection}>
+            <Text style={styles.accountTypeTitle}>
+              How will you use SafeSync?
+            </Text>
+
+            <Text style={styles.accountTypeSubtitle}>
+              Choose the account type that best describes you.
+            </Text>
+
+            {/* CLIENT */}
+
+            <TouchableOpacity
+              style={[
+                styles.accountCard,
+                accountType === "client" &&
+                  styles.accountCardSelected,
+              ]}
+              onPress={() => setAccountType("client")}
+              activeOpacity={0.85}
+            >
+              <View
+                style={[
+                  styles.accountIconContainer,
+                  accountType === "client" &&
+                    styles.accountIconContainerSelected,
+                ]}
+              >
+                <Ionicons
+                  name="person-outline"
+                  size={24}
+                  color={
+                    accountType === "client"
+                      ? "#FFFFFF"
+                      : "#DC2626"
+                  }
+                />
+              </View>
+
+              <View style={styles.accountCardContent}>
+                <Text style={styles.accountCardTitle}>
+                  Client
+                </Text>
+
+                <Text style={styles.accountCardDescription}>
+                  I need emergency assistance for myself or my
+                  personal safety.
+                </Text>
+              </View>
+
+              <View
+                style={[
+                  styles.radioOuter,
+                  accountType === "client" &&
+                    styles.radioOuterSelected,
+                ]}
+              >
+                {accountType === "client" && (
+                  <View style={styles.radioInner} />
+                )}
+              </View>
+            </TouchableOpacity>
+
+            {/* ORGANIZATION */}
+
+            <TouchableOpacity
+              style={[
+                styles.accountCard,
+                accountType === "organization" &&
+                  styles.accountCardSelected,
+              ]}
+              onPress={() => setAccountType("organization")}
+              activeOpacity={0.85}
+            >
+              <View
+                style={[
+                  styles.accountIconContainer,
+                  accountType === "organization" &&
+                    styles.accountIconContainerSelected,
+                ]}
+              >
+                <Ionicons
+                  name="business-outline"
+                  size={24}
+                  color={
+                    accountType === "organization"
+                      ? "#FFFFFF"
+                      : "#DC2626"
+                  }
+                />
+              </View>
+
+              <View style={styles.accountCardContent}>
+                <Text style={styles.accountCardTitle}>
+                  Organization
+                </Text>
+
+                <Text style={styles.accountCardDescription}>
+                  I am registering a company or organization
+                  that needs SafeSync emergency services.
+                </Text>
+              </View>
+
+              <View
+                style={[
+                  styles.radioOuter,
+                  accountType === "organization" &&
+                    styles.radioOuterSelected,
+                ]}
+              >
+                {accountType === "organization" && (
+                  <View style={styles.radioInner} />
+                )}
+              </View>
+            </TouchableOpacity>
           </View>
 
           {/* FORM */}
@@ -384,7 +544,11 @@ export default function SignupScreen() {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>
                 {accountType === "organization"
+
+                  ? "Contact person"
+
                   ? "Organization name"
+
                   : "Full name"}
               </Text>
 
@@ -404,7 +568,11 @@ export default function SignupScreen() {
                   style={styles.input}
                   placeholder={
                     accountType === "organization"
+
+                      ? "Enter contact person's name"
+
                       ? "Enter organization name"
+
                       : "Enter your full name"
                   }
                   placeholderTextColor="#94A3B8"
@@ -633,7 +801,11 @@ export default function SignupScreen() {
               ) : (
                 <>
                   <Text style={styles.signupButtonText}>
-                    Create Account
+                    {accountType === "organization"
+                      ? "Create Organization Account"
+                      : accountType === "client"
+                      ? "Create Client Account"
+                      : "Create Account"}
                   </Text>
 
                   <Ionicons
@@ -778,7 +950,7 @@ const styles = StyleSheet.create({
   introSection: {
     paddingHorizontal: 24,
     paddingTop: 30,
-    paddingBottom: 22,
+    paddingBottom: 20,
   },
 
   title: {
@@ -792,6 +964,96 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 23,
     color: "#64748B",
+  },
+
+  /* ACCOUNT TYPE */
+
+  accountTypeSection: {
+    paddingHorizontal: 24,
+    marginBottom: 24,
+  },
+
+  accountTypeTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginBottom: 4,
+  },
+
+  accountTypeSubtitle: {
+    fontSize: 12,
+    color: "#64748B",
+    marginBottom: 13,
+  },
+
+  accountCard: {
+    minHeight: 86,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 16,
+    padding: 13,
+    marginBottom: 10,
+  },
+
+  accountCardSelected: {
+    borderColor: "#DC2626",
+    backgroundColor: "#FFF7F7",
+  },
+
+  accountIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: "#FFF1F2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+
+  accountIconContainerSelected: {
+    backgroundColor: "#DC2626",
+  },
+
+  accountCardContent: {
+    flex: 1,
+    paddingRight: 8,
+  },
+
+  accountCardTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginBottom: 3,
+  },
+
+  accountCardDescription: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: "#64748B",
+  },
+
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "#CBD5E1",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  radioOuterSelected: {
+    borderColor: "#DC2626",
+  },
+
+  radioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#DC2626",
   },
 
   /* FORM */
@@ -1000,7 +1262,7 @@ const styles = StyleSheet.create({
   /* BUTTON */
 
   signupButton: {
-    height: 56,
+    minHeight: 56,
     borderRadius: 16,
     backgroundColor: "#DC2626",
     flexDirection: "row",
@@ -1027,6 +1289,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "800",
     marginRight: 10,
+    textAlign: "center",
   },
 
   /* DIVIDER */
@@ -1120,4 +1383,7 @@ const styles = StyleSheet.create({
     marginTop: 25,
   },
 });
- 
+
+
+
+

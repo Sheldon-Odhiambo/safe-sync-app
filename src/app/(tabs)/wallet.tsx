@@ -9,7 +9,20 @@ import {
   View,
 } from "react-native";
 
+
+import {
+  Plus,
+  Download,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Smartphone,
+  CreditCard,
+  Landmark,
+  ChevronRight,
+} from "lucide-react-native";
+
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+
 
 import DepositModal from "@/components/forms/deposit_modal";
 import {
@@ -106,9 +119,15 @@ const ledgerToRow = (e: LedgerEntry): Transaction => ({
 });
 
 export default function Wallet() {
+
+  const [autoTopUp, setAutoTopUp] = useState(true);
+  const [lowBalanceAlerts, setLowBalanceAlerts] =
+    useState(true);
+
   const [semiAnnualTopUp, setSemiAnnualTopUp] = useState(true);
   const [annualTopUp, setAnnualTopUp] = useState(false);
   const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+
 
   const [balance, setBalance] = useState(DUMMY_BALANCE);
   const [transactions, setTransactions] =
@@ -180,7 +199,14 @@ export default function Wallet() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
+
+        {/* ========================================= */}
         {/* PAGE HEADER */}
+        {/* ========================================= */}
+
+
+        {/* PAGE HEADER */}
+
         <View style={styles.pageHeader}>
           <Text style={styles.pageTitle}>Wallet</Text>
           <Text style={styles.pageSubtitle}>
@@ -188,7 +214,14 @@ export default function Wallet() {
           </Text>
         </View>
 
+
+        {/* ========================================= */}
         {/* BALANCE CARD */}
+        {/* ========================================= */}
+
+
+        {/* BALANCE CARD */}
+
         <View style={styles.balanceCard}>
           <Text style={styles.balanceLabel}>CURRENT BALANCE</Text>
 
@@ -206,8 +239,20 @@ export default function Wallet() {
               activeOpacity={0.8}
               onPress={handleDeposit}
             >
+
+              <Plus
+                size={20}
+                color="#DC2626"
+                strokeWidth={2.5}
+              />
+
+              <Text style={styles.depositButtonText}>
+                Deposit Funds
+              </Text>
+
               <Ionicons name="add" size={20} color="#DC2626" />
               <Text style={styles.depositButtonText}>Deposit Funds</Text>
+
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -215,15 +260,39 @@ export default function Wallet() {
               activeOpacity={0.8}
               onPress={handleDownloadReceipts}
             >
+
+              <Download
+                size={18}
+                color="#FFFFFF"
+                strokeWidth={2.2}
+              />
+
+              <Text style={styles.receiptButtonText}>
+                Receipts
+              </Text>
+
               <Ionicons name="download-outline" size={18} color="#FFFFFF" />
               <Text style={styles.receiptButtonText}>Receipts</Text>
+
             </TouchableOpacity>
           </View>
         </View>
 
+
+        {/* ========================================= */}
+        {/* AUTOMATIC TOP-UP */}
+        {/* ========================================= */}
+
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>
+            Automatic top-up
+          </Text>
+
+
         {/* AUTOMATIC TOP-UP */}
         <View style={styles.panel}>
           <Text style={styles.panelTitle}>Automatic top-up</Text>
+
           <Text style={styles.panelSubtitle}>
             Never risk an unfunded dispatch during an emergency.
           </Text>
@@ -295,7 +364,14 @@ export default function Wallet() {
           </View>
         </View>
 
+
+        {/* ========================================= */}
         {/* TRANSACTION HISTORY */}
+        {/* ========================================= */}
+
+
+        {/* TRANSACTION HISTORY */}
+
         <View style={styles.panel}>
           <View style={styles.sectionHeader}>
             <Text style={styles.panelTitle}>Transaction history</Text>
@@ -307,7 +383,16 @@ export default function Wallet() {
 
           <View style={styles.transactionList}>
             {transactions.map((transaction) => (
+
+              <View
+                key={transaction.id}
+                style={styles.transactionRow}
+              >
+                {/* TRANSACTION ICON */}
+
+
               <View key={transaction.id} style={styles.transactionRow}>
+
                 <View
                   style={[
                     styles.transactionIcon,
@@ -316,6 +401,21 @@ export default function Wallet() {
                       : styles.debitIcon,
                   ]}
                 >
+
+                  {transaction.kind === "credit" ? (
+                    <ArrowDownLeft
+                      size={18}
+                      color="#059669"
+                      strokeWidth={2.3}
+                    />
+                  ) : (
+                    <ArrowUpRight
+                      size={18}
+                      color="#DC2626"
+                      strokeWidth={2.3}
+                    />
+                  )}
+
                   <Ionicons
                     name={
                       transaction.kind === "credit" ? "arrow-down" : "arrow-up"
@@ -323,10 +423,18 @@ export default function Wallet() {
                     size={18}
                     color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
                   />
+
                 </View>
 
                 <View style={styles.transactionDetails}>
+
+                  <Text
+                    style={styles.transactionLabel}
+                    numberOfLines={1}
+                  >
+
                   <Text style={styles.transactionLabel} numberOfLines={1}>
+
                     {transaction.label}
                   </Text>
                   <Text style={styles.transactionDate} numberOfLines={1}>
@@ -347,9 +455,21 @@ export default function Wallet() {
           </View>
         </View>
 
+
+        {/* ========================================= */}
+        {/* SAVED PAYMENT METHODS */}
+        {/* ========================================= */}
+
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>
+            Saved payment methods
+          </Text>
+
+
         {/* SAVED PAYMENT METHODS */}
         <View style={styles.panel}>
           <Text style={styles.panelTitle}>Saved payment methods</Text>
+
           <Text style={styles.panelSubtitle}>
             Manage the accounts you use for SafeSync payments.
           </Text>
@@ -361,29 +481,52 @@ export default function Wallet() {
                 style={styles.paymentMethod}
                 activeOpacity={0.75}
               >
+
+                {/* ICON */}
+
+
+
                 <View style={styles.paymentIcon}>
                   {method.icon === "phone" && (
-                    <Ionicons
-                      name="phone-portrait-outline"
+                    <Smartphone
                       size={20}
                       color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
                   {method.icon === "card" && (
-                    <Ionicons name="card-outline" size={20} color="#DC2626" />
-                  )}
-                  {method.icon === "bank" && (
-                    <MaterialCommunityIcons
-                      name="bank-outline"
+
+                    <CreditCard
                       size={20}
                       color="#DC2626"
+                      strokeWidth={2.2}
+                    />
+
+                    <Ionicons name="card-outline" size={20} color="#DC2626" />
+
+                  )}
+                  {method.icon === "bank" && (
+                    <Landmark
+                      size={20}
+                      color="#DC2626"
+                      strokeWidth={2.2}
                     />
                   )}
                 </View>
 
                 <View style={styles.methodDetails}>
+
+                  <Text style={styles.methodLabel}>
+                    {method.label}
+                  </Text>
+
+                  <Text style={styles.methodDetail}>
+                    {method.detail}
+                  </Text>
+
                   <Text style={styles.methodLabel}>{method.label}</Text>
                   <Text style={styles.methodDetail}>{method.detail}</Text>
+
                 </View>
 
                 {method.badge && (
@@ -392,7 +535,15 @@ export default function Wallet() {
                   </View>
                 )}
 
+
+                <ChevronRight
+                  size={18}
+                  color="#94A3B8"
+                  strokeWidth={2}
+                />
+
                 <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+
               </TouchableOpacity>
             ))}
           </View>
@@ -402,8 +553,20 @@ export default function Wallet() {
             activeOpacity={0.8}
             onPress={handleAddPaymentMethod}
           >
+
+            <Plus
+              size={20}
+              color="#DC2626"
+              strokeWidth={2.5}
+            />
+
+            <Text style={styles.addPaymentText}>
+              Add payment method
+            </Text>
+
             <Ionicons name="add" size={20} color="#DC2626" />
             <Text style={styles.addPaymentText}>Add payment method</Text>
+
           </TouchableOpacity>
         </View>
 
@@ -421,6 +584,10 @@ export default function Wallet() {
     </SafeAreaView>
   );
 }
+
+/* ========================================= */
+/* STYLES                                    */
+/* ========================================= */
 
 const styles = StyleSheet.create({
   safeArea: {

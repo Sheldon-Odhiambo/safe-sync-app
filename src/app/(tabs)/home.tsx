@@ -1,231 +1,1376 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
+  Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
+import { useRouter } from "expo-router";
 
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-
-import DepositModal from "@/components/forms/deposit_modal";
-import SubscriptionView from "@/components/subscription/subscription_view";
 import {
-  createDeposit,
-  getPaymentProfile,
-  getWallet,
-  getWalletTransactions,
-  type LedgerEntry,
-  type PaymentProfile,
-} from "@/lib/payments_api";
+  Ambulance,
+  Flame,
+  MapPin,
+  Navigation,
+  Radio,
+  ShieldAlert,
+  ShieldCheck,
+  LocateFixed,
+  Clock3,
+  UsersRound,
+  Truck,
+  ChevronRight,
+} from "lucide-react-native";
 
-// true: load the real profile/wallet from the backend (dummy data stays if the API is unreachable)
-// false: dummy data only
-const USE_LIVE_WALLET = true;
+/* =========================================================
+   COLORS
+========================================================= */
 
-type Transaction = {
+const COLORS = {
+  primary: "#E11D48",
+  primaryDark: "#BE123C",
+  primaryLight: "#FFF1F2",
+
+  background: "#F8FAFC",
+  card: "#FFFFFF",
+  white: "#FFFFFF",
+
+  slate950: "#020617",
+  slate900: "#0F172A",
+  slate800: "#1E293B",
+  slate700: "#334155",
+  slate600: "#475569",
+  slate500: "#64748B",
+  slate400: "#94A3B8",
+  slate300: "#CBD5E1",
+  slate200: "#E2E8F0",
+  slate100: "#F1F5F9",
+
+  success: "#059669",
+  successLight: "#ECFDF5",
+
+  amber: "#D97706",
+  amberDark: "#B45309",
+  amberLight: "#FFFBEB",
+
+  blue: "#2563EB",
+  blueLight: "#EFF6FF",
+
+  mapRoad: "#CBD5E1",
+  mapRoadMain: "#94A3B8",
+};
+
+/* =========================================================
+   TYPES
+========================================================= */
+
+interface ResponderUnit {
   id: string;
-  label: string;
-  date: string;
-  amount: string;
-  kind: "debit" | "credit";
-};
-
-const DUMMY_BALANCE = 21800;
-
-const initialTransactions: Transaction[] = [
-  {
-    id: "TXN-1024",
-    label: "Ambulance dispatch",
-    date: "18 Aug 2026",
-    amount: "- KSh 5,500",
-    kind: "debit",
-  },
-  {
-    id: "TXN-1023",
-    label: "Wallet deposit",
-    date: "16 Aug 2026",
-    amount: "+ KSh 10,000",
-    kind: "credit",
-  },
-  {
-    id: "TXN-1022",
-    label: "Emergency response",
-    date: "12 Aug 2026",
-    amount: "- KSh 4,200",
-    kind: "debit",
-  },
-  {
-    id: "TXN-1021",
-    label: "Wallet deposit",
-    date: "08 Aug 2026",
-    amount: "+ KSh 15,000",
-    kind: "credit",
-  },
-];
-
-const methods = [
-  {
-    id: "mpesa",
-    label: "M-PESA",
-    detail: "+254 712 345 678",
-    badge: "Default",
-    icon: "phone",
-  },
-  {
-    id: "visa",
-    label: "Visa",
-    detail: "•••• 4412 · 09/29",
-    icon: "card",
-  },
-  {
-    id: "bank",
-    label: "Bank Transfer",
-    detail: "KCB Bank · •••• 8871",
-    icon: "bank",
-  },
-];
-
-const DEFAULT_PROFILE: PaymentProfile = {
-  account_kind: "public",
-  organization_id: null,
-  first_deposit_required: false,
-  first_deposit_amount: 500,
-  min_topup: 10,
-};
-
-const STANDARD_DISPATCH_COST = 5500;
-
-const formatAmount = (n: number) =>
-  Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-
-const formatDate = (d: Date | string) =>
-  new Date(d).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-
-const ledgerToRow = (e: LedgerEntry): Transaction => ({
-  id: e.reference ?? e.id.slice(0, 8).toUpperCase(),
-  label: e.label,
-  date: formatDate(e.created_at),
-  amount: `${e.kind === "credit" ? "+" : "-"} KSh ${formatAmount(e.amount)}`,
-  kind: e.kind,
-});
-
-/* ========================================= */
-/* ENTRY: personal wallet vs organisation    */
-/* ========================================= */
-
-export default function Wallet() {
-  const [profile, setProfile] = useState<PaymentProfile | null>(null);
-
-  const loadProfile = useCallback(async () => {
-    if (!USE_LIVE_WALLET) {
-      setProfile(DEFAULT_PROFILE);
-      return;
-    }
-    try {
-      setProfile(await getPaymentProfile());
-    } catch (e) {
-      console.log("Profile load failed, assuming personal wallet:", e);
-      setProfile((current) => current ?? DEFAULT_PROFILE);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadProfile();
-  }, [loadProfile]);
-
-  if (!profile) {
-    return (
-      <SafeAreaView style={[styles.safeArea, styles.centered]}>
-        <ActivityIndicator size="large" color="#DC2626" />
-      </SafeAreaView>
-    );
-  }
-
-  // Organisations (client or service provider) subscribe to a plan; they have no wallet
-  if (profile.account_kind !== "public") {
-    return <SubscriptionView />;
-  }
-
-  return <PersonalWallet profile={profile} onDeposited={loadProfile} />;
+  name: string;
+  station: string;
+  kind: "Ambulance" | "Fire Engine" | "Rescue Truck";
+  status: "Available" | "En Route" | "Standby";
+  eta: string;
+  distance: string;
+  crew: number;
+  vehicle: string;
 }
 
-/* ========================================= */
-/* PERSONAL WALLET                           */
-/* ========================================= */
+/* =========================================================
+   NEARBY UNITS
+========================================================= */
 
-function PersonalWallet({
-  profile,
-  onDeposited,
-}: {
-  profile: PaymentProfile;
-  onDeposited: () => void;
-}) {
-  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
-  const [balance, setBalance] = useState(DUMMY_BALANCE);
-  const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
-  const [depositOpen, setDepositOpen] = useState(false);
+const NEARBY_UNITS: ResponderUnit[] = [
+  {
+    id: "u-1",
+    name: "ALS Ambulance Alpha 1",
+    station: "Nairobi West Hospital Station",
+    kind: "Ambulance",
+    status: "Available",
+    eta: "3.5 mins",
+    distance: "1.4 km",
+    crew: 3,
+    vehicle: "Toyota Land Cruiser ALS",
+  },
+  {
+    id: "u-2",
+    name: "Rapid Fire Engine 04",
+    station: "Kilimani Fire Substation",
+    kind: "Fire Engine",
+    status: "Available",
+    eta: "5.2 mins",
+    distance: "2.1 km",
+    crew: 5,
+    vehicle: "Scania Heavy Pumper",
+  },
+];
 
-  const firstDeposit = profile.first_deposit_required;
-  const dispatchesCovered = Math.round(balance / STANDARD_DISPATCH_COST);
+/* =========================================================
+   HOME SCREEN
+========================================================= */
 
-  // Returns true when live data was loaded; on failure the current (dummy) data stays
-  const loadWallet = useCallback(async (): Promise<boolean> => {
-    if (!USE_LIVE_WALLET) return false;
-    try {
-      const [wallet, ledger] = await Promise.all([getWallet(), getWalletTransactions(20)]);
-      setBalance(wallet.balance);
-      setTransactions(ledger.map(ledgerToRow));
-      return true;
-    } catch (e) {
-      console.log("Wallet load failed, keeping current data:", e);
-      return false;
+export default function HomeScreen() {
+  const router = useRouter();
+
+  const [units] = useState<ResponderUnit[]>(
+    NEARBY_UNITS
+  );
+
+  /* =======================================================
+     UNIT ICON
+  ======================================================= */
+
+  const getUnitIcon = (
+    kind: ResponderUnit["kind"]
+  ) => {
+    switch (kind) {
+      case "Ambulance":
+        return (
+          <Ambulance
+            size={20}
+            color={COLORS.primary}
+            strokeWidth={2.2}
+          />
+        );
+
+      case "Fire Engine":
+        return (
+          <Flame
+            size={20}
+            color={COLORS.amber}
+            strokeWidth={2.2}
+          />
+        );
+
+      case "Rescue Truck":
+        return (
+          <ShieldAlert
+            size={20}
+            color={COLORS.blue}
+            strokeWidth={2.2}
+          />
+        );
+
+      default:
+        return null;
     }
-  }, []);
-
-  useEffect(() => {
-    loadWallet();
-  }, [loadWallet]);
-
-  const handleDepositSuccess = async (amount: number, receipt?: string | null) => {
-    onDeposited(); // refreshes the profile, so the first-deposit rule is lifted
-    const refreshed = await loadWallet();
-    if (refreshed) return;
-
-    // Backend unreachable or dummy mode: update locally so the UI still reflects it
-    setBalance((current) => current + amount);
-    setTransactions((current) => [
-      {
-        id: receipt ?? `TXN-${Date.now()}`,
-        label: "Wallet deposit",
-        date: formatDate(new Date()),
-        amount: `+ KSh ${formatAmount(amount)}`,
-        kind: "credit",
-      },
-      ...current,
-    ]);
   };
 
-  const handleDownloadReceipts = () => {
-    Alert.alert("Receipts", "Your receipts will be prepared for download.");
+  /* =======================================================
+     UNIT COLORS
+  ======================================================= */
+
+  const getUnitColors = (
+    kind: ResponderUnit["kind"]
+  ) => {
+    switch (kind) {
+      case "Ambulance":
+        return {
+          background: COLORS.primaryLight,
+          border: "#FECDD3",
+          icon: COLORS.primary,
+        };
+
+      case "Fire Engine":
+        return {
+          background: COLORS.amberLight,
+          border: "#FDE68A",
+          icon: COLORS.amber,
+        };
+
+      case "Rescue Truck":
+        return {
+          background: COLORS.blueLight,
+          border: "#BFDBFE",
+          icon: COLORS.blue,
+        };
+
+      default:
+        return {
+          background: COLORS.slate100,
+          border: COLORS.slate200,
+          icon: COLORS.slate600,
+        };
+    }
   };
 
-  const handleAddPaymentMethod = () => {
-    Alert.alert("Add payment method", "Choose a payment method to add.", [
-      { text: "M-PESA", onPress: () => console.log("Add M-PESA") },
-      { text: "Card", onPress: () => console.log("Add card") },
-      { text: "Bank", onPress: () => console.log("Add bank") },
-      { text: "Cancel", style: "cancel" },
-    ]);
-  };
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* =====================================================
+            HEADER
+        ===================================================== */}
+
+        <View style={styles.header}>
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.greetingSmall}>
+              Welcome back
+            </Text>
+
+            <Text style={styles.greetingTitle}>
+              Hello, Kevin
+            </Text>
+
+            <View style={styles.locationRow}>
+              <View style={styles.locationIcon}>
+                <MapPin
+                  size={12}
+                  color={COLORS.primary}
+                  strokeWidth={2.5}
+                />
+              </View>
+
+              <Text style={styles.locationText}>
+                Kilimani, Nairobi
+              </Text>
+
+              <View style={styles.gpsBadge}>
+                <View style={styles.gpsDot} />
+
+                <Text style={styles.gpsText}>
+                  GPS 6m
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <Pressable
+            onPress={() =>
+              router.push("/(tabs)/profile")
+            }
+            style={({ pressed }) => [
+              styles.profileBadge,
+              pressed &&
+                styles.profileBadgePressed,
+            ]}
+          >
+            <Text style={styles.profileInitials}>
+              KM
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* =====================================================
+            LIVE MAP
+        ===================================================== */}
+
+        <View style={styles.mapCard}>
+          {/* MAP HEADER */}
+
+          <View style={styles.mapTopBar}>
+            <View style={styles.mapTitleArea}>
+              <View style={styles.liveIcon}>
+                <Radio
+                  size={17}
+                  color={COLORS.white}
+                  strokeWidth={2.2}
+                />
+              </View>
+
+              <View>
+                <Text style={styles.mapTitle}>
+                  Live emergency coverage
+                </Text>
+
+                <Text style={styles.mapSubtitle}>
+                  Responders near your location
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.liveBadge}>
+              <View style={styles.liveBadgeDot} />
+
+              <Text style={styles.liveBadgeText}>
+                LIVE
+              </Text>
+            </View>
+          </View>
+
+          {/* MAP */}
+
+          <View style={styles.mapContainer}>
+            {/* Map background */}
+
+            <View style={styles.mapBackground}>
+              {/* Horizontal roads */}
+
+              <View
+                style={[
+                  styles.mapRoad,
+                  {
+                    top: 35,
+                    transform: [
+                      { rotate: "-8deg" },
+                    ],
+                  },
+                ]}
+              />
+
+              <View
+                style={[
+                  styles.mapRoad,
+                  {
+                    top: 95,
+                    transform: [
+                      { rotate: "7deg" },
+                    ],
+                  },
+                ]}
+              />
+
+              <View
+                style={[
+                  styles.mapRoad,
+                  {
+                    top: 145,
+                    transform: [
+                      { rotate: "-5deg" },
+                    ],
+                  },
+                ]}
+              />
+
+              {/* Vertical roads */}
+
+              <View
+                style={[
+                  styles.mapRoadVertical,
+                  {
+                    left: 55,
+                    transform: [
+                      { rotate: "12deg" },
+                    ],
+                  },
+                ]}
+              />
+
+              <View
+                style={[
+                  styles.mapRoadVertical,
+                  {
+                    left: 155,
+                    transform: [
+                      { rotate: "-10deg" },
+                    ],
+                  },
+                ]}
+              />
+
+              <View
+                style={[
+                  styles.mapRoadVertical,
+                  {
+                    right: 55,
+                    transform: [
+                      { rotate: "7deg" },
+                    ],
+                  },
+                ]}
+              />
+
+              {/* Main road */}
+
+              <View
+                style={[
+                  styles.mainRoad,
+                  {
+                    transform: [
+                      { rotate: "-18deg" },
+                    ],
+                  },
+                ]}
+              />
+
+              {/* Map blocks */}
+
+              <View
+                style={[
+                  styles.mapBlock,
+                  {
+                    top: 20,
+                    left: 25,
+                    width: 75,
+                    height: 45,
+                  },
+                ]}
+              />
+
+              <View
+                style={[
+                  styles.mapBlock,
+                  {
+                    top: 72,
+                    right: 18,
+                    width: 85,
+                    height: 45,
+                  },
+                ]}
+              />
+
+              <View
+                style={[
+                  styles.mapBlock,
+                  {
+                    bottom: 18,
+                    left: 20,
+                    width: 90,
+                    height: 50,
+                  },
+                ]}
+              />
+
+              <View
+                style={[
+                  styles.mapBlock,
+                  {
+                    bottom: 25,
+                    right: 25,
+                    width: 70,
+                    height: 45,
+                  },
+                ]}
+              />
+
+              {/* Green area */}
+
+              <View style={styles.greenArea}>
+                <View style={styles.greenTree} />
+                <View style={styles.greenTreeTwo} />
+                <View style={styles.greenTreeThree} />
+              </View>
+
+              {/* Map labels */}
+
+              <Text
+                style={[
+                  styles.mapLabel,
+                  {
+                    top: 24,
+                    left: 115,
+                  },
+                ]}
+              >
+                KILIMANI
+              </Text>
+
+              <Text
+                style={[
+                  styles.mapLabelSmall,
+                  {
+                    bottom: 18,
+                    right: 105,
+                  },
+                ]}
+              >
+                WOOD AVE
+              </Text>
+
+              <Text
+                style={[
+                  styles.mapLabelSmall,
+                  {
+                    top: 108,
+                    left: 24,
+                  },
+                ]}
+              >
+                DENIS PRITT
+              </Text>
+
+              {/* Coverage circle */}
+
+              <View style={styles.coverageOuter}>
+                <View style={styles.coverageMiddle}>
+                  <View style={styles.coverageInner} />
+                </View>
+              </View>
+
+              {/* =================================================
+                  USER LOCATION
+              ================================================= */}
+
+              <View style={styles.userLocationMarker}>
+                <View style={styles.userLocationPulse} />
+
+                <View
+                  style={styles.userLocationDot}
+                />
+
+                <View style={styles.userLocationLabel}>
+                  <Text
+                    style={styles.userLocationText}
+                  >
+                    YOU
+                  </Text>
+                </View>
+              </View>
+
+              {/* =================================================
+                  AMBULANCE MARKER
+              ================================================= */}
+
+              <View style={styles.ambulanceMarker}>
+                <View
+                  style={
+                    styles.responderMarkerWhite
+                  }
+                >
+                  <Ambulance
+                    size={17}
+                    color={COLORS.primary}
+                    strokeWidth={2.4}
+                  />
+                </View>
+
+                <View
+                  style={styles.markerLabel}
+                >
+                  <Text
+                    style={styles.markerLabelText}
+                  >
+                    3.5 min
+                  </Text>
+                </View>
+              </View>
+
+              {/* =================================================
+                  FIRE ENGINE MARKER
+              ================================================= */}
+
+              <View style={styles.fireMarker}>
+                <View
+                  style={[
+                    styles.responderMarkerWhite,
+                    {
+                      borderColor:
+                        "#FDE68A",
+                    },
+                  ]}
+                >
+                  <Flame
+                    size={17}
+                    color={COLORS.amber}
+                    strokeWidth={2.4}
+                  />
+                </View>
+
+                <View
+                  style={[
+                    styles.markerLabel,
+                    {
+                      backgroundColor:
+                        COLORS.amber,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={styles.markerLabelText}
+                  >
+                    FIRE · 5.2 min
+                  </Text>
+                </View>
+              </View>
+
+              {/* =================================================
+                  MAP CONTROLS
+              ================================================= */}
+
+              <View style={styles.mapControls}>
+                <Pressable
+                  style={styles.mapControlButton}
+                >
+                  <LocateFixed
+                    size={18}
+                    color={COLORS.slate700}
+                    strokeWidth={2.2}
+                  />
+                </Pressable>
+              </View>
+
+              {/* MAP STATUS */}
+
+              <View style={styles.mapStatus}>
+                <View style={styles.mapStatusDot} />
+
+                <Text style={styles.mapStatusText}>
+                  Coverage active
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* =====================================================
+              MAP SUMMARY
+          ===================================================== */}
+
+          <View style={styles.mapSummary}>
+            <View style={styles.coverageSummary}>
+              <View
+                style={styles.coverageSummaryIcon}
+              >
+                <ShieldCheck
+                  size={17}
+                  color={COLORS.success}
+                  strokeWidth={2.3}
+                />
+              </View>
+
+              <View>
+                <Text
+                  style={
+                    styles.coverageSummaryTitle
+                  }
+                >
+                  Excellent coverage
+                </Text>
+
+                <Text
+                  style={
+                    styles.coverageSummaryText
+                  }
+                >
+                  2 responders within 2 km
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.responseTime}>
+              <Clock3
+                size={15}
+                color={COLORS.primary}
+                strokeWidth={2.2}
+              />
+
+              <View>
+                <Text
+                  style={styles.responseTimeValue}
+                >
+                  &lt; 6 min
+                </Text>
+
+                <Text
+                  style={styles.responseTimeLabel}
+                >
+                  Estimated
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* =====================================================
+            QUICK EMERGENCY ACTION
+        ===================================================== */}
+
+          
+
+ 
+       
+
+        {/* =====================================================
+            RESPONDER SECTION
+        ===================================================== */}
+
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionTitle}>
+              Nearby responders
+            </Text>
+
+            <Text style={styles.sectionSubtitle}>
+              Live availability around you
+            </Text>
+          </View>
+
+          <View style={styles.activeBadge}>
+            <View style={styles.activeBadgeDot} />
+
+            <Text style={styles.activeBadgeText}>
+              {units.length} Active
+            </Text>
+          </View>
+        </View>
+
+        {/* =====================================================
+            RESPONDER CARDS
+        ===================================================== */}
+
+        <View style={styles.unitsList}>
+          {units.map((unit) => {
+            const unitColors =
+              getUnitColors(unit.kind);
+
+            return (
+              <View
+                key={unit.id}
+                style={[
+                  styles.unitCard,
+                  {
+                    borderColor:
+                      unitColors.border,
+                  },
+                ]}
+              >
+                {/* UNIT HEADER */}
+
+                <View style={styles.unitHeader}>
+                  <View
+                    style={[
+                      styles.unitIconBadge,
+                      {
+                        backgroundColor:
+                          unitColors.background,
+                      },
+                    ]}
+                  >
+                    {getUnitIcon(unit.kind)}
+                  </View>
+
+                  <View style={styles.unitMeta}>
+                    <Text
+                      style={styles.unitName}
+                      numberOfLines={1}
+                    >
+                      {unit.name}
+                    </Text>
+
+                    <View
+                      style={
+                        styles.unitLocationRow
+                      }
+                    >
+                      <MapPin
+                        size={12}
+                        color={COLORS.slate400}
+                        strokeWidth={2}
+                      />
+
+                      <Text
+                        style={styles.unitStation}
+                        numberOfLines={1}
+                      >
+                        {unit.station}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View
+                    style={
+                      styles.unitStatusPill
+                    }
+                  >
+                    <View
+                      style={
+                        styles.unitStatusDot
+                      }
+                    />
+
+                    <Text
+                      style={
+                        styles.unitStatusText
+                      }
+                    >
+                      {unit.status}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* UNIT TYPE */}
+
+                <View style={styles.unitTypeRow}>
+                  {unit.kind === "Ambulance" ? (
+                    <Ambulance
+                      size={13}
+                      color={COLORS.primary}
+                      strokeWidth={2.2}
+                    />
+                  ) : (
+                    <Flame
+                      size={13}
+                      color={COLORS.amber}
+                      strokeWidth={2.2}
+                    />
+                  )}
+
+                  <Text
+                    style={[
+                      styles.unitTypeText,
+                      {
+                        color:
+                          unitColors.icon,
+                      },
+                    ]}
+                  >
+                    {unit.kind}
+                  </Text>
+
+                  <View
+                    style={
+                      styles.typeDivider
+                    }
+                  />
+
+                  <Text
+                    style={styles.unitVehicle}
+                    numberOfLines={1}
+                  >
+                    {unit.vehicle}
+                  </Text>
+                </View>
+
+                {/* =================================================
+                    TELEMETRY
+                ================================================= */}
+
+                <View style={styles.statsGrid}>
+                  <View style={styles.statBox}>
+                    <Clock3
+                      size={14}
+                      color={COLORS.primary}
+                      strokeWidth={2.2}
+                    />
+
+                    <Text
+                      style={styles.statLabel}
+                    >
+                      ETA
+                    </Text>
+
+                    <Text
+                      style={[
+                        styles.statValue,
+                        styles.statValuePrimary,
+                      ]}
+                    >
+                      {unit.eta}
+                    </Text>
+                  </View>
+
+                  <View style={styles.statBox}>
+                    <MapPin
+                      size={14}
+                      color={COLORS.slate500}
+                      strokeWidth={2.2}
+                    />
+
+                    <Text
+                      style={styles.statLabel}
+                    >
+                      DISTANCE
+                    </Text>
+
+                    <Text
+                      style={styles.statValue}
+                    >
+                      {unit.distance}
+                    </Text>
+                  </View>
+
+                  <View style={styles.statBox}>
+                    <UsersRound
+                      size={14}
+                      color={COLORS.slate500}
+                      strokeWidth={2.2}
+                    />
+
+                    <Text
+                      style={styles.statLabel}
+                    >
+                      CREW
+                    </Text>
+
+                    <Text
+                      style={styles.statValue}
+                    >
+                      {unit.crew}
+                    </Text>
+                  </View>
+
+                  <View style={styles.statBox}>
+                    <Truck
+                      size={14}
+                      color={COLORS.slate500}
+                      strokeWidth={2.2}
+                    />
+
+                    <Text
+                      style={styles.statLabel}
+                    >
+                      UNIT
+                    </Text>
+
+                    <Text
+                      style={styles.statValue}
+                    >
+                      {unit.kind ===
+                      "Fire Engine"
+                        ? "FE-04"
+                        : "ALS-01"}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* REQUEST */}
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.requestButton,
+                    pressed &&
+                      styles.requestButtonPressed,
+                  ]}
+                  onPress={() =>
+                    router.push("/emergency")
+                  }
+                >
+                  <Text
+                    style={
+                      styles.requestButtonText
+                    }
+                  >
+                    Request {unit.kind}
+                  </Text>
+
+                  <Navigation
+                    size={15}
+                    color={COLORS.primary}
+                    strokeWidth={2.5}
+                  />
+                </Pressable>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* =====================================================
+            BOTTOM INFO
+        ===================================================== */}
+
+        <View style={styles.infoCard}>
+          <ShieldCheck
+            size={18}
+            color={COLORS.success}
+            strokeWidth={2.2}
+          />
+
+          <View style={styles.infoTextContainer}>
+            <Text style={styles.infoTitle}>
+              SafeSync protection is active
+            </Text>
+
+            <Text style={styles.infoText}>
+              Your location is ready to be shared with
+              an assigned responder when you request
+              emergency assistance.
+            </Text>
+          </View>
+        </View>
+
+        {/* =====================================================
+            BOTTOM SPACING
+        ===================================================== */}
+
+        <View style={{ height: 140 }} />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+/* =========================================================
+   STYLES
+========================================================= */
+
+const styles = StyleSheet.create({
+  /* =======================================================
+     MAIN
+  ======================================================= */
+
+  safeArea: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+
+  scrollView: {
+    flex: 1,
+  },
+
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 30,
+  },
+
+  /* =======================================================
+     HEADER
+  ======================================================= */
+
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+
+  headerTextContainer: {
+    flex: 1,
+    paddingRight: 12,
+  },
+
+  greetingSmall: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: COLORS.slate500,
+    marginBottom: 2,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+
+  greetingTitle: {
+    fontSize: 27,
+    fontWeight: "900",
+    color: COLORS.text,
+    letterSpacing: -0.7,
+  },
+
+  locationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 6,
+  },
+
+  locationIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 5,
+  },
+
+  locationText: {
+    fontSize: 12,
+    color: COLORS.slate600,
+    fontWeight: "600",
+  },
+
+  gpsBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.successLight,
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    marginLeft: 7,
+  },
+
+  gpsDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: COLORS.success,
+    marginRight: 5,
+  },
+
+  gpsText: {
+    fontSize: 9,
+    color: COLORS.success,
+    fontWeight: "800",
+  },
+
+  profileBadge: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: COLORS.slate900,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 3,
+    borderColor: COLORS.white,
+    shadowColor: "#0F172A",
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    shadowOpacity: 0.12,
+    shadowRadius: 7,
+    elevation: 3,
+  },
+
+  profileBadgePressed: {
+    opacity: 0.75,
+    transform: [{ scale: 0.96 }],
+  },
+
+  profileInitials: {
+    color: COLORS.white,
+    fontWeight: "900",
+    fontSize: 14,
+  },
+
+  /* =======================================================
+     MAP CARD
+  ======================================================= */
+
+  mapCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: COLORS.slate200,
+    overflow: "hidden",
+    marginBottom: 16,
+    shadowColor: "#0F172A",
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+
+  mapTopBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 15,
+    paddingVertical: 13,
+  },
+
+  mapTitleArea: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+
+  liveIcon: {
+    width: 35,
+    height: 35,
+    borderRadius: 11,
+    backgroundColor: COLORS.slate900,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 9,
+  },
+
+  mapTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
+  mapSubtitle: {
+    fontSize: 10,
+    color: COLORS.slate500,
+    marginTop: 2,
+  },
+
+  liveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.successLight,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+  },
+
+  liveBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.success,
+    marginRight: 5,
+  },
+
+  liveBadgeText: {
+    fontSize: 9,
+    fontWeight: "900",
+    color: COLORS.success,
+    letterSpacing: 0.4,
+  },
+
+  /* =======================================================
+     MAP
+  ======================================================= */
+
+  mapContainer: {
+    height: 250,
+  },
+
+  mapBackground: {
+    flex: 1,
+    backgroundColor: "#E8EEF1",
+    position: "relative",
+    overflow: "hidden",
+  },
+
+  mapRoad: {
+    position: "absolute",
+    width: "125%",
+    height: 8,
+    backgroundColor: COLORS.white,
+    left: "-10%",
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: COLORS.mapRoad,
+  },
+
+  mapRoadVertical: {
+    position: "absolute",
+    width: 7,
+    height: "130%",
+    top: "-15%",
+    backgroundColor: COLORS.white,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: COLORS.mapRoad,
+  },
+
+  mainRoad: {
+    position: "absolute",
+    width: "135%",
+    height: 15,
+    backgroundColor: "#FFFFFF",
+    left: "-20%",
+    top: 110,
+    borderTopWidth: 2,
+    borderBottomWidth: 2,
+    borderColor: COLORS.mapRoadMain,
+  },
+
+  mapBlock: {
+    position: "absolute",
+    backgroundColor: "#DCE5E7",
+    borderRadius: 5,
+    opacity: 0.8,
+  },
+
+  greenArea: {
+    position: "absolute",
+    width: 105,
+    height: 65,
+    borderRadius: 40,
+    backgroundColor: "#D9E9D9",
+    left: 115,
+    bottom: 12,
+    opacity: 0.9,
+  },
+
+  greenTree: {
+    position: "absolute",
+    width: 13,
+    height: 13,
+    borderRadius: 7,
+    backgroundColor: "#A8CBA8",
+    top: 16,
+    left: 22,
+  },
+
+  greenTreeTwo: {
+    position: "absolute",
+    width: 11,
+    height: 11,
+    borderRadius: 6,
+    backgroundColor: "#A8CBA8",
+    top: 35,
+    left: 51,
+  },
+
+  greenTreeThree: {
+    position: "absolute",
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#A8CBA8",
+    top: 14,
+    right: 18,
+  },
+
+  mapLabel: {
+    position: "absolute",
+    fontSize: 8,
+    fontWeight: "900",
+    color: "#718096",
+    letterSpacing: 1,
+  },
+
+  mapLabelSmall: {
+    position: "absolute",
+    fontSize: 7,
+    fontWeight: "700",
+    color: "#94A3B8",
+    letterSpacing: 0.6,
+  },
+
+  /* =======================================================
+     COVERAGE
+  ======================================================= */
+
+  coverageOuter: {
+    position: "absolute",
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    backgroundColor: "rgba(225, 29, 72, 0.035)",
+    borderWidth: 1,
+    borderColor: "rgba(225, 29, 72, 0.13)",
+    alignItems: "center",
+    justifyContent: "center",
+    top: 30,
+    left: "50%",
+    marginLeft: -95,
+  },
+
+  coverageMiddle: {
+    width: 125,
+    height: 125,
+    borderRadius: 63,
+    backgroundColor: "rgba(225, 29, 72, 0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(225, 29, 72, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  coverageInner: {
+    width: 65,
+    height: 65,
+    borderRadius: 33,
+    backgroundColor: "rgba(225, 29, 72, 0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(225, 29, 72, 0.18)",
+  },
+
+  /* =======================================================
+     USER LOCATION
+  ======================================================= */
+
+
+  userLocationMarker: {
+    position: "absolute",
+    top: 105,
+    left: "50%",
+    marginLeft: -13,
+    alignItems: "center",
+  },
+
+  userLocationPulse: {
+    position: "absolute",
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "rgba(225, 29, 72, 0.12)",
+    top: -8,
+    left: -8,
+  },
 
   /* ========================================= */
   /* RENDER                                    */
@@ -323,332 +1468,525 @@ function PersonalWallet({
                 />
               </View>
 
-        {/* ALERTS */}
-        <View style={styles.panel}>
-          <Text style={styles.panelTitle}>Alerts</Text>
-          <Text style={styles.panelSubtitle}>
-            Never risk an unfunded dispatch during an emergency.
-          </Text>
 
-          <View style={styles.settingRow}>
-            <View style={styles.settingTextContainer}>
-              <Text style={styles.settingTitle}>Low balance alerts</Text>
-              <Text style={styles.settingDescription}>Push notifications and SMS</Text>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.switch, lowBalanceAlerts && styles.switchActive]}
-              onPress={() => setLowBalanceAlerts(!lowBalanceAlerts)}
-              activeOpacity={0.8}
-            >
-              <View
-                style={[styles.switchThumb, lowBalanceAlerts && styles.switchThumbActive]}
-              />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* TRANSACTION HISTORY */}
-        <View style={styles.panel}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.panelTitle}>Transaction history</Text>
-            <TouchableOpacity>
-              <Text style={styles.viewAllText}>View all</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.transactionList}>
-            {transactions.map((transaction) => (
-              <View key={transaction.id} style={styles.transactionRow}>
-                <View
-                  style={[
-                    styles.transactionIcon,
-                    transaction.kind === "credit" ? styles.creditIcon : styles.debitIcon,
-                  ]}
-                >
-                  <Ionicons
-                    name={transaction.kind === "credit" ? "arrow-down" : "arrow-up"}
-                    size={18}
-                    color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
-                  />
-                </View>
-
-                <View style={styles.transactionDetails}>
-                  <Text style={styles.transactionLabel} numberOfLines={1}>
-                    {transaction.label}
-                  </Text>
-                  <Text style={styles.transactionDate} numberOfLines={1}>
-                    {transaction.date} · {transaction.id}
-                  </Text>
-                </View>
-
-                <Text
-                  style={[
-                    styles.transactionAmount,
-                    transaction.kind === "credit" && styles.creditAmount,
-                  ]}
-                >
-                  {transaction.amount}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* SAVED PAYMENT METHODS */}
-        <View style={styles.panel}>
-          <Text style={styles.panelTitle}>Saved payment methods</Text>
-          <Text style={styles.panelSubtitle}>
-            Manage the accounts you use for SafeSync payments.
-          </Text>
-
-          <View style={styles.methodsList}>
-            {methods.map((method) => (
-              <TouchableOpacity key={method.id} style={styles.paymentMethod} activeOpacity={0.75}>
-                <View style={styles.paymentIcon}>
-                  {method.icon === "phone" && (
-                    <Ionicons name="phone-portrait-outline" size={20} color="#DC2626" />
-                  )}
-                  {method.icon === "card" && (
-                    <Ionicons name="card-outline" size={20} color="#DC2626" />
-                  )}
-                  {method.icon === "bank" && (
-                    <MaterialCommunityIcons name="bank-outline" size={20} color="#DC2626" />
-                  )}
-                </View>
-
-                <View style={styles.methodDetails}>
-                  <Text style={styles.methodLabel}>{method.label}</Text>
-                  <Text style={styles.methodDetail}>{method.detail}</Text>
-                </View>
-
-                {method.badge && (
-                  <View style={styles.defaultBadge}>
-                    <Text style={styles.defaultBadgeText}>{method.badge}</Text>
-                  </View>
-                )}
-
-                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <TouchableOpacity
-            style={styles.addPaymentButton}
-            activeOpacity={0.8}
-            onPress={handleAddPaymentMethod}
-          >
-            <Ionicons name="add" size={20} color="#DC2626" />
-            <Text style={styles.addPaymentText}>Add payment method</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* BOTTOM SPACE FOR GLOBAL EMERGENCY BUTTON */}
-        <View style={{ height: 120 }} />
-      </ScrollView>
-
-      {/* DEPOSIT FORM */}
-      <DepositModal
-        visible={depositOpen}
-        onClose={() => setDepositOpen(false)}
-        onSubmit={(phone, amount) => createDeposit(phone, amount)}
-        onSuccess={handleDepositSuccess}
-        defaultPhone={methods[0].detail}
-        title="Deposit Funds"
-        subtitle={
-          firstDeposit ? "Your first deposit activates your wallet" : "Pay securely with M-PESA"
-        }
-        submitLabel={
-          firstDeposit
-            ? `Pay KSh ${formatAmount(profile.first_deposit_amount)}`
-            : "Pay with M-PESA"
-        }
-        fixedAmount={firstDeposit ? profile.first_deposit_amount : null}
-        quickAmounts={firstDeposit ? [] : [500, 1000, 2000, 5000]}
-        hint={
-          firstDeposit
-            ? `Your first deposit is KSh ${formatAmount(profile.first_deposit_amount)}. After that you can add any amount you like.`
-            : undefined
-        }
-        minAmount={profile.min_topup}
-      />
-    </SafeAreaView>
-  );
-}
-
-const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F8FAFC" },
-  centered: { alignItems: "center", justifyContent: "center" },
-  scrollContent: { padding: 20, paddingBottom: 30 },
-
-  /* HEADER */
-  pageHeader: { marginBottom: 20 },
-  pageTitle: { fontSize: 30, fontWeight: "900", color: "#0F172A" },
-  pageSubtitle: { fontSize: 13, lineHeight: 19, color: "#64748B", marginTop: 5 },
-
-  /* BALANCE CARD */
-  balanceCard: {
-    backgroundColor: "#DC2626",
-    borderRadius: 26,
-    padding: 22,
-    marginBottom: 16,
-    shadowColor: "#DC2626",
-    shadowOffset: { width: 0, height: 8 },
+  userLocationDot: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: COLORS.primary,
+    borderWidth: 4,
+    borderColor: COLORS.white,
+    shadowColor: COLORS.primary,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
     shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 7,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  balanceLabel: {
-    color: "#FFFFFF",
-    opacity: 0.75,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 2,
+
+  userLocationLabel: {
+    marginTop: 4,
+    backgroundColor: COLORS.slate900,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
-  balanceAmount: { color: "#FFFFFF", fontSize: 40, fontWeight: "900", marginTop: 10 },
-  balanceDescription: {
-    color: "#FFFFFF",
-    opacity: 0.85,
-    fontSize: 13,
-    lineHeight: 19,
-    marginTop: 5,
+
+  userLocationText: {
+    color: COLORS.white,
+    fontSize: 7,
+    fontWeight: "900",
+    letterSpacing: 0.5,
   },
-  balanceActions: { flexDirection: "row", gap: 10, marginTop: 22 },
-  depositButton: {
-    flex: 1,
-    minHeight: 46,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    flexDirection: "row",
+
+  /* =======================================================
+     RESPONDER MARKERS
+  ======================================================= */
+
+  ambulanceMarker: {
+    position: "absolute",
+    top: 57,
+    left: "24%",
+    alignItems: "center",
+  },
+
+  fireMarker: {
+    position: "absolute",
+    bottom: 38,
+    right: "20%",
+    alignItems: "center",
+  },
+
+  responderMarkerWhite: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    borderWidth: 3,
+    borderColor: "#FECDD3",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
+    shadowColor: "#0F172A",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  depositButtonText: { color: "#DC2626", fontSize: 13, fontWeight: "800" },
-  receiptButton: {
-    flex: 0.8,
-    minHeight: 46,
-    borderRadius: 14,
+
+  markerLabel: {
+    marginTop: 4,
+    backgroundColor: COLORS.primary,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+
+  markerLabelText: {
+    color: COLORS.white,
+    fontSize: 7,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+
+  /* =======================================================
+     MAP CONTROLS
+  ======================================================= */
+
+  mapControls: {
+    position: "absolute",
+    right: 12,
+    top: 12,
+  },
+
+  mapControlButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
+    backgroundColor: "rgba(255,255,255,0.94)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0F172A",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
+  mapStatus: {
+    position: "absolute",
+    left: 12,
+    bottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.94)",
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 9,
+  },
+
+  mapStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.success,
+    marginRight: 5,
+  },
+
+  mapStatusText: {
+    fontSize: 9,
+    color: COLORS.slate700,
+    fontWeight: "800",
+  },
+
+  /* =======================================================
+     MAP SUMMARY
+  ======================================================= */
+
+  mapSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.slate200,
+  },
+
+  coverageSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+
+  coverageSummaryIcon: {
+    width: 35,
+    height: 35,
+    borderRadius: 11,
+    backgroundColor: COLORS.successLight,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 8,
+  },
+
+  coverageSummaryTitle: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
+  coverageSummaryText: {
+    fontSize: 10,
+    color: COLORS.slate500,
+    marginTop: 2,
+  },
+
+  responseTime: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingLeft: 10,
+    borderLeftWidth: 1,
+    borderLeftColor: COLORS.slate200,
+  },
+
+  responseTimeValue: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: COLORS.primary,
+    marginLeft: 6,
+  },
+
+  responseTimeLabel: {
+    fontSize: 9,
+    color: COLORS.slate500,
+    marginLeft: 6,
+    marginTop: 1,
+  },
+
+  /* =======================================================
+     EMERGENCY ACTION
+  ======================================================= */
+
+  emergencyAction: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 22,
+    shadowColor: COLORS.primary,
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    shadowOpacity: 0.18,
+    shadowRadius: 9,
+    elevation: 4,
+  },
+
+  emergencyActionPressed: {
+    backgroundColor: COLORS.primaryDark,
+    transform: [{ scale: 0.99 }],
+  },
+
+  emergencyIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.16)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+
+  emergencyText: {
+    flex: 1,
+  },
+
+  emergencyTitle: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: COLORS.white,
+  },
+
+  emergencySubtitle: {
+    fontSize: 10,
+    color: "#FFE4E6",
+    marginTop: 3,
+  },
+
+  /* =======================================================
+     SECTION
+  ======================================================= */
+
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+
+  sectionTitle: {
+    fontSize: 19,
+    fontWeight: "900",
+    color: COLORS.slate900,
+    letterSpacing: -0.4,
+  },
+
+  sectionSubtitle: {
+    fontSize: 11,
+    color: COLORS.slate500,
+    marginTop: 2,
+  },
+
+  activeBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.successLight,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.45)",
+    borderColor: "#A7F3D0",
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 9,
+  },
+
+  activeBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.success,
+    marginRight: 5,
+  },
+
+  activeBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: COLORS.success,
+  },
+
+  /* =======================================================
+     UNIT LIST
+  ======================================================= */
+
+  unitsList: {
+    gap: 13,
+  },
+
+  unitCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 19,
+    padding: 15,
+    borderWidth: 1,
+    shadowColor: "#0F172A",
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    shadowOpacity: 0.045,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  unitHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  unitIconBadge: {
+    width: 43,
+    height: 43,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+
+  unitMeta: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  unitName: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
+  unitLocationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+  },
+
+  unitStation: {
+    fontSize: 10,
+    color: COLORS.slate500,
+    marginLeft: 3,
+    flex: 1,
+  },
+
+  unitStatusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.successLight,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginLeft: 5,
+  },
+
+  unitStatusDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: COLORS.success,
+    marginRight: 4,
+  },
+
+  unitStatusText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: COLORS.success,
+  },
+
+  /* =======================================================
+     UNIT TYPE
+  ======================================================= */
+
+  unitTypeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.slate100,
+  },
+
+  unitTypeText: {
+    fontSize: 10,
+    fontWeight: "900",
+    marginLeft: 5,
+  },
+
+  typeDivider: {
+    width: 3,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: COLORS.slate300,
+    marginHorizontal: 7,
+  },
+
+  unitVehicle: {
+    flex: 1,
+    fontSize: 10,
+    color: COLORS.slate500,
+  },
+
+  /* =======================================================
+     STATS
+  ======================================================= */
+
+  statsGrid: {
+    flexDirection: "row",
+    gap: 7,
+    marginTop: 11,
+  },
+
+  statBox: {
+    flex: 1,
+    backgroundColor: COLORS.slate100,
+    borderRadius: 11,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    alignItems: "center",
+    minWidth: 0,
+  },
+
+  statLabel: {
+    fontSize: 8,
+    fontWeight: "800",
+    color: COLORS.slate500,
+    letterSpacing: 0.2,
+    marginTop: 3,
+  },
+
+  statValue: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: COLORS.slate900,
+    marginTop: 2,
+  },
+
+  statValuePrimary: {
+    color: COLORS.primary,
+    fontSize: 13,
+  },
+
+  /* =======================================================
+     REQUEST BUTTON
+  ======================================================= */
+
+  requestButton: {
+    marginTop: 12,
+    height: 42,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: "#FECDD3",
+    backgroundColor: COLORS.primaryLight,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
   },
-  receiptButtonText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
 
-  /* PANELS */
-  panel: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
+  requestButtonPressed: {
+    backgroundColor: "#FFE4E6",
   },
-  panelTitle: { fontSize: 17, fontWeight: "800", color: "#0F172A" },
-  panelSubtitle: { fontSize: 12, color: "#64748B", lineHeight: 18, marginTop: 4 },
 
-  /* SETTINGS */
-  settingRow: {
+  requestButtonText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: COLORS.primary,
+  },
+
+  /* =======================================================
+     INFO CARD
+  ======================================================= */
+
+  infoCard: {
     marginTop: 16,
-    padding: 14,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: COLORS.successLight,
     borderRadius: 15,
-    backgroundColor: "#F8FAFC",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  settingTextContainer: { flex: 1, paddingRight: 15 },
-  settingTitle: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
-  settingDescription: { fontSize: 11, color: "#64748B", marginTop: 3, lineHeight: 16 },
-
-  /* CUSTOM SWITCH */
-  switch: {
-    width: 48,
-    height: 28,
-    borderRadius: 20,
-    backgroundColor: "#CBD5E1",
-    justifyContent: "center",
-    paddingHorizontal: 3,
-  },
-  switchActive: { backgroundColor: "#DC2626" },
-  switchThumb: { width: 22, height: 22, borderRadius: 11, backgroundColor: "#FFFFFF" },
-  switchThumbActive: { alignSelf: "flex-end" },
-
-  /* SECTION HEADER */
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  viewAllText: { color: "#DC2626", fontSize: 12, fontWeight: "700" },
-
-  /* TRANSACTIONS */
-  transactionList: { marginTop: 10 },
-  transactionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 13,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
-  },
-  transactionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 13,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  creditIcon: { backgroundColor: "#ECFDF5" },
-  debitIcon: { backgroundColor: "#FEF2F2" },
-  transactionDetails: { flex: 1, minWidth: 0 },
-  transactionLabel: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
-  transactionDate: { fontSize: 10, color: "#94A3B8", marginTop: 3 },
-  transactionAmount: { fontSize: 13, fontWeight: "800", color: "#0F172A", marginLeft: 8 },
-  creditAmount: { color: "#059669" },
-
-  /* PAYMENT METHODS */
-  methodsList: { marginTop: 14, gap: 10 },
-  paymentMethod: {
-    minHeight: 68,
+    padding: 13,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 15,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
+    borderColor: "#A7F3D0",
   },
-  paymentIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#FEF2F2",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 11,
-  },
-  methodDetails: { flex: 1 },
-  methodLabel: { fontSize: 13, fontWeight: "700", color: "#0F172A" },
-  methodDetail: { fontSize: 11, color: "#64748B", marginTop: 3 },
-  defaultBadge: {
-    backgroundColor: "#F1F5F9",
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 10,
-    marginRight: 8,
-  },
-  defaultBadgeText: { fontSize: 9, fontWeight: "800", color: "#475569" },
 
-  /* ADD PAYMENT */
-  addPaymentButton: {
-    height: 48,
-    marginTop: 14,
-    borderWidth: 1,
-    borderColor: "#DC2626",
-    borderRadius: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
+  infoTextContainer: {
+    flex: 1,
+    marginLeft: 9,
   },
-  addPaymentText: { color: "#DC2626", fontSize: 13, fontWeight: "800" },
+
+  infoTitle: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#065F46",
+  },
+
+  infoText: {
+    fontSize: 10,
+    lineHeight: 15,
+    color: "#047857",
+    marginTop: 3,
+  },
 });
