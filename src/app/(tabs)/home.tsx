@@ -1353,6 +1353,7 @@ const styles = StyleSheet.create({
      USER LOCATION
   ======================================================= */
 
+
   userLocationMarker: {
     position: "absolute",
     top: 105,
@@ -1370,6 +1371,103 @@ const styles = StyleSheet.create({
     top: -8,
     left: -8,
   },
+
+  /* ========================================= */
+  /* RENDER                                    */
+  /* ========================================= */
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        {/* PAGE HEADER */}
+        <View style={styles.pageHeader}>
+          <Text style={styles.pageTitle}>Wallet</Text>
+          <Text style={styles.pageSubtitle}>
+            Keep a balance so dispatch is never delayed by payment.
+          </Text>
+        </View>
+
+        {/* BALANCE CARD */}
+        <View style={styles.balanceCard}>
+          <Text style={styles.balanceLabel}>CURRENT BALANCE</Text>
+
+          <Text style={styles.balanceAmount}>KSh {formatAmount(balance)}</Text>
+
+          <Text style={styles.balanceDescription}>
+            {firstDeposit
+              ? `Make your first deposit of KSh ${formatAmount(profile.first_deposit_amount)} to activate your wallet`
+              : `Covers roughly ${dispatchesCovered} standard ambulance dispatches`}
+          </Text>
+
+          <View style={styles.balanceActions}>
+            <TouchableOpacity
+              style={styles.depositButton}
+              activeOpacity={0.8}
+              onPress={() => setDepositOpen(true)}
+            >
+              <Ionicons name="add" size={20} color="#DC2626" />
+              <Text style={styles.depositButtonText}>
+                {firstDeposit
+                  ? `Deposit KSh ${formatAmount(profile.first_deposit_amount)}`
+                  : "Deposit Funds"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.receiptButton}
+              activeOpacity={0.8}
+              onPress={handleDownloadReceipts}
+            >
+              <Ionicons name="download-outline" size={18} color="#FFFFFF" />
+              <Text style={styles.receiptButtonText}>Receipts</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ===================================== */}
+        {/* EMERGENCY ACTIONS                     */}
+        {/* ===================================== */}
+
+        {locationConfirmed && (
+          <View style={styles.emergencySection}>
+            <Text style={styles.sectionTitle}>
+              Emergency Assistance
+            </Text>
+
+            <Text style={styles.sectionSubtitle}>
+              Select the type of emergency assistance
+              you need.
+            </Text>
+
+            {/* -------------------------------- */}
+            {/* AMBULANCE                         */}
+            {/* -------------------------------- */}
+
+            <TouchableOpacity
+              style={[
+                styles.emergencyCard,
+                selectedEmergency ===
+                  "ambulance" &&
+                  styles.emergencyCardSelected,
+              ]}
+              activeOpacity={0.85}
+              onPress={() =>
+                requestEmergency("ambulance")
+              }
+            >
+              <View
+                style={[
+                  styles.emergencyIcon,
+                  styles.ambulanceIcon,
+                ]}
+              >
+                <FontAwesome5
+                  name="ambulance"
+                  size={25}
+                  color="#FFFFFF"
+                />
+              </View>
+
 
   userLocationDot: {
     width: 26,
