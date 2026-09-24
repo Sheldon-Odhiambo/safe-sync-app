@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   SafeAreaView,
@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
 
 import {
   Plus,
@@ -20,7 +21,31 @@ import {
   ChevronRight,
 } from "lucide-react-native";
 
-const transactions = [
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+
+
+import DepositModal from "@/components/forms/deposit_modal";
+import {
+  getWallet,
+  getWalletTransactions,
+  type LedgerEntry,
+} from "@/lib/payments_api";
+
+// true: load the real wallet from the backend (dummy data stays as the fallback on errors)
+// false: dummy data only, with local optimistic updates
+const USE_LIVE_WALLET = true;
+
+type Transaction = {
+  id: string;
+  label: string;
+  date: string;
+  amount: string;
+  kind: "debit" | "credit";
+};
+
+const DUMMY_BALANCE = 21800;
+
+const initialTransactions: Transaction[] = [
   {
     id: "TXN-1024",
     label: "Ambulance dispatch",
@@ -73,72 +98,99 @@ const methods = [
   },
 ];
 
+const STANDARD_DISPATCH_COST = 5500;
+
+const formatAmount = (n: number) =>
+  Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+const formatDate = (d: Date | string) =>
+  new Date(d).toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+
+const ledgerToRow = (e: LedgerEntry): Transaction => ({
+  id: e.reference ?? e.id.slice(0, 8).toUpperCase(),
+  label: e.label,
+  date: formatDate(e.created_at),
+  amount: `${e.kind === "credit" ? "+" : "-"} KSh ${formatAmount(e.amount)}`,
+  kind: e.kind,
+});
+
 export default function Wallet() {
+
   const [autoTopUp, setAutoTopUp] = useState(true);
   const [lowBalanceAlerts, setLowBalanceAlerts] =
     useState(true);
 
-  const handleDeposit = () => {
-    Alert.alert(
-      "Deposit funds",
-      "Choose how you would like to add money to your SafeSync wallet.",
-      [
-        {
-          text: "M-PESA",
-          onPress: () => {
-            Alert.alert(
-              "M-PESA",
-              "M-PESA top-up will be connected to the backend."
-            );
-          },
-        },
-        {
-          text: "Bank Transfer",
-          onPress: () => {
-            Alert.alert(
-              "Bank Transfer",
-              "Bank transfer details will appear here."
-            );
-          },
-        },
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-      ]
-    );
+  const [semiAnnualTopUp, setSemiAnnualTopUp] = useState(true);
+  const [annualTopUp, setAnnualTopUp] = useState(false);
+  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
+
+
+  const [balance, setBalance] = useState(DUMMY_BALANCE);
+  const [transactions, setTransactions] =
+    useState<Transaction[]>(initialTransactions);
+  const [depositOpen, setDepositOpen] = useState(false);
+
+  const dispatchesCovered = Math.round(balance / STANDARD_DISPATCH_COST);
+
+  // Returns true when live data was loaded; on failure the current (dummy) data stays
+  const loadWallet = useCallback(async (): Promise<boolean> => {
+    if (!USE_LIVE_WALLET) return false;
+    try {
+      const [wallet, ledger] = await Promise.all([
+        getWallet(),
+        getWalletTransactions(20),
+      ]);
+      setBalance(wallet.balance);
+      setTransactions(ledger.map(ledgerToRow));
+      return true;
+    } catch (e) {
+      console.log("Wallet load failed, keeping current data:", e);
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    loadWallet();
+  }, [loadWallet]);
+
+  const handleDeposit = () => setDepositOpen(true);
+
+  const handleDepositSuccess = async (
+    amount: number,
+    receipt?: string | null
+  ) => {
+    const refreshed = await loadWallet();
+    if (refreshed) return;
+
+    // Backend unreachable or dummy mode: update locally so the UI still reflects it
+    setBalance((current) => current + amount);
+    setTransactions((current) => [
+      {
+        id: receipt ?? `TXN-${Date.now()}`,
+        label: "Wallet deposit",
+        date: formatDate(new Date()),
+        amount: `+ KSh ${formatAmount(amount)}`,
+        kind: "credit",
+      },
+      ...current,
+    ]);
   };
 
   const handleDownloadReceipts = () => {
-    Alert.alert(
-      "Receipts",
-      "Your receipts will be prepared for download."
-    );
+    Alert.alert("Receipts", "Your receipts will be prepared for download.");
   };
 
   const handleAddPaymentMethod = () => {
-    Alert.alert(
-      "Add payment method",
-      "Choose a payment method to add.",
-      [
-        {
-          text: "M-PESA",
-          onPress: () => console.log("Add M-PESA"),
-        },
-        {
-          text: "Card",
-          onPress: () => console.log("Add card"),
-        },
-        {
-          text: "Bank",
-          onPress: () => console.log("Add bank"),
-        },
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-      ]
-    );
+    Alert.alert("Add payment method", "Choose a payment method to add.", [
+      { text: "M-PESA", onPress: () => console.log("Add M-PESA") },
+      { text: "Card", onPress: () => console.log("Add card") },
+      { text: "Bank", onPress: () => console.log("Add bank") },
+      { text: "Cancel", style: "cancel" },
+    ]);
   };
 
   return (
@@ -147,33 +199,38 @@ export default function Wallet() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
+
         {/* ========================================= */}
         {/* PAGE HEADER */}
         {/* ========================================= */}
 
+
+        {/* PAGE HEADER */}
+
         <View style={styles.pageHeader}>
           <Text style={styles.pageTitle}>Wallet</Text>
-
           <Text style={styles.pageSubtitle}>
             Keep a balance so dispatch is never delayed by payment.
           </Text>
         </View>
 
+
         {/* ========================================= */}
         {/* BALANCE CARD */}
         {/* ========================================= */}
 
+
+        {/* BALANCE CARD */}
+
         <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>
-            CURRENT BALANCE
-          </Text>
+          <Text style={styles.balanceLabel}>CURRENT BALANCE</Text>
 
           <Text style={styles.balanceAmount}>
-            KSh 21,800
+            KSh {formatAmount(balance)}
           </Text>
 
           <Text style={styles.balanceDescription}>
-            Covers roughly 4 standard ambulance dispatches
+            Covers roughly {dispatchesCovered} standard ambulance dispatches
           </Text>
 
           <View style={styles.balanceActions}>
@@ -182,6 +239,7 @@ export default function Wallet() {
               activeOpacity={0.8}
               onPress={handleDeposit}
             >
+
               <Plus
                 size={20}
                 color="#DC2626"
@@ -191,6 +249,10 @@ export default function Wallet() {
               <Text style={styles.depositButtonText}>
                 Deposit Funds
               </Text>
+
+              <Ionicons name="add" size={20} color="#DC2626" />
+              <Text style={styles.depositButtonText}>Deposit Funds</Text>
+
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -198,6 +260,7 @@ export default function Wallet() {
               activeOpacity={0.8}
               onPress={handleDownloadReceipts}
             >
+
               <Download
                 size={18}
                 color="#FFFFFF"
@@ -207,9 +270,14 @@ export default function Wallet() {
               <Text style={styles.receiptButtonText}>
                 Receipts
               </Text>
+
+              <Ionicons name="download-outline" size={18} color="#FFFFFF" />
+              <Text style={styles.receiptButtonText}>Receipts</Text>
+
             </TouchableOpacity>
           </View>
         </View>
+
 
         {/* ========================================= */}
         {/* AUTOMATIC TOP-UP */}
@@ -220,98 +288,110 @@ export default function Wallet() {
             Automatic top-up
           </Text>
 
+
+        {/* AUTOMATIC TOP-UP */}
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Automatic top-up</Text>
+
           <Text style={styles.panelSubtitle}>
             Never risk an unfunded dispatch during an emergency.
           </Text>
 
-          {/* AUTO TOP-UP */}
-
           <View style={styles.settingRow}>
             <View style={styles.settingTextContainer}>
-              <Text style={styles.settingTitle}>
-                Auto top-up KSh 6,500
-              </Text>
-
+              <Text style={styles.settingTitle}>Semi-annual top-up</Text>
               <Text style={styles.settingDescription}>
-                When balance drops below KSh 3,000
+                KSh 6,000 added every 6 months
               </Text>
             </View>
 
             <TouchableOpacity
-              style={[
-                styles.switch,
-                autoTopUp && styles.switchActive,
-              ]}
-              onPress={() => setAutoTopUp(!autoTopUp)}
+              style={[styles.switch, semiAnnualTopUp && styles.switchActive]}
+              onPress={() => setSemiAnnualTopUp(!semiAnnualTopUp)}
               activeOpacity={0.8}
             >
               <View
                 style={[
                   styles.switchThumb,
-                  autoTopUp && styles.switchThumbActive,
+                  semiAnnualTopUp && styles.switchThumbActive,
                 ]}
               />
             </TouchableOpacity>
           </View>
 
-          {/* LOW BALANCE */}
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextContainer}>
+              <Text style={styles.settingTitle}>Annual top-up</Text>
+              <Text style={styles.settingDescription}>
+                KSh 12,000 added every year
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.switch, annualTopUp && styles.switchActive]}
+              onPress={() => setAnnualTopUp(!annualTopUp)}
+              activeOpacity={0.8}
+            >
+              <View
+                style={[
+                  styles.switchThumb,
+                  annualTopUp && styles.switchThumbActive,
+                ]}
+              />
+            </TouchableOpacity>
+          </View>
 
           <View style={styles.settingRow}>
             <View style={styles.settingTextContainer}>
-              <Text style={styles.settingTitle}>
-                Low balance alerts
-              </Text>
-
+              <Text style={styles.settingTitle}>Low balance alerts</Text>
               <Text style={styles.settingDescription}>
                 Push notifications and SMS
               </Text>
             </View>
 
             <TouchableOpacity
-              style={[
-                styles.switch,
-                lowBalanceAlerts && styles.switchActive,
-              ]}
-              onPress={() =>
-                setLowBalanceAlerts(!lowBalanceAlerts)
-              }
+              style={[styles.switch, lowBalanceAlerts && styles.switchActive]}
+              onPress={() => setLowBalanceAlerts(!lowBalanceAlerts)}
               activeOpacity={0.8}
             >
               <View
                 style={[
                   styles.switchThumb,
-                  lowBalanceAlerts &&
-                    styles.switchThumbActive,
+                  lowBalanceAlerts && styles.switchThumbActive,
                 ]}
               />
             </TouchableOpacity>
           </View>
         </View>
 
+
         {/* ========================================= */}
         {/* TRANSACTION HISTORY */}
         {/* ========================================= */}
 
+
+        {/* TRANSACTION HISTORY */}
+
         <View style={styles.panel}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.panelTitle}>
-              Transaction history
-            </Text>
+            <Text style={styles.panelTitle}>Transaction history</Text>
 
             <TouchableOpacity>
-              <Text style={styles.viewAllText}>
-                View all
-              </Text>
+              <Text style={styles.viewAllText}>View all</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.transactionList}>
             {transactions.map((transaction) => (
+
               <View
                 key={transaction.id}
                 style={styles.transactionRow}
               >
                 {/* TRANSACTION ICON */}
+
+
+              <View key={transaction.id} style={styles.transactionRow}>
 
                 <View
                   style={[
@@ -321,6 +401,7 @@ export default function Wallet() {
                       : styles.debitIcon,
                   ]}
                 >
+
                   {transaction.kind === "credit" ? (
                     <ArrowDownLeft
                       size={18}
@@ -334,33 +415,37 @@ export default function Wallet() {
                       strokeWidth={2.3}
                     />
                   )}
+
+                  <Ionicons
+                    name={
+                      transaction.kind === "credit" ? "arrow-down" : "arrow-up"
+                    }
+                    size={18}
+                    color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
+                  />
+
                 </View>
 
-                {/* DETAILS */}
-
                 <View style={styles.transactionDetails}>
+
                   <Text
                     style={styles.transactionLabel}
                     numberOfLines={1}
                   >
+
+                  <Text style={styles.transactionLabel} numberOfLines={1}>
+
                     {transaction.label}
                   </Text>
-
-                  <Text
-                    style={styles.transactionDate}
-                    numberOfLines={1}
-                  >
+                  <Text style={styles.transactionDate} numberOfLines={1}>
                     {transaction.date} · {transaction.id}
                   </Text>
                 </View>
 
-                {/* AMOUNT */}
-
                 <Text
                   style={[
                     styles.transactionAmount,
-                    transaction.kind === "credit" &&
-                      styles.creditAmount,
+                    transaction.kind === "credit" && styles.creditAmount,
                   ]}
                 >
                   {transaction.amount}
@@ -370,6 +455,7 @@ export default function Wallet() {
           </View>
         </View>
 
+
         {/* ========================================= */}
         {/* SAVED PAYMENT METHODS */}
         {/* ========================================= */}
@@ -378,6 +464,11 @@ export default function Wallet() {
           <Text style={styles.panelTitle}>
             Saved payment methods
           </Text>
+
+
+        {/* SAVED PAYMENT METHODS */}
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Saved payment methods</Text>
 
           <Text style={styles.panelSubtitle}>
             Manage the accounts you use for SafeSync payments.
@@ -390,7 +481,10 @@ export default function Wallet() {
                 style={styles.paymentMethod}
                 activeOpacity={0.75}
               >
+
                 {/* ICON */}
+
+
 
                 <View style={styles.paymentIcon}>
                   {method.icon === "phone" && (
@@ -400,15 +494,17 @@ export default function Wallet() {
                       strokeWidth={2.2}
                     />
                   )}
-
                   {method.icon === "card" && (
+
                     <CreditCard
                       size={20}
                       color="#DC2626"
                       strokeWidth={2.2}
                     />
-                  )}
 
+                    <Ionicons name="card-outline" size={20} color="#DC2626" />
+
+                  )}
                   {method.icon === "bank" && (
                     <Landmark
                       size={20}
@@ -418,9 +514,8 @@ export default function Wallet() {
                   )}
                 </View>
 
-                {/* DETAILS */}
-
                 <View style={styles.methodDetails}>
+
                   <Text style={styles.methodLabel}>
                     {method.label}
                   </Text>
@@ -428,34 +523,37 @@ export default function Wallet() {
                   <Text style={styles.methodDetail}>
                     {method.detail}
                   </Text>
-                </View>
 
-                {/* DEFAULT BADGE */}
+                  <Text style={styles.methodLabel}>{method.label}</Text>
+                  <Text style={styles.methodDetail}>{method.detail}</Text>
+
+                </View>
 
                 {method.badge && (
                   <View style={styles.defaultBadge}>
-                    <Text style={styles.defaultBadgeText}>
-                      {method.badge}
-                    </Text>
+                    <Text style={styles.defaultBadgeText}>{method.badge}</Text>
                   </View>
                 )}
+
 
                 <ChevronRight
                   size={18}
                   color="#94A3B8"
                   strokeWidth={2}
                 />
+
+                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+
               </TouchableOpacity>
             ))}
           </View>
-
-          {/* ADD PAYMENT METHOD */}
 
           <TouchableOpacity
             style={styles.addPaymentButton}
             activeOpacity={0.8}
             onPress={handleAddPaymentMethod}
           >
+
             <Plus
               size={20}
               color="#DC2626"
@@ -465,13 +563,24 @@ export default function Wallet() {
             <Text style={styles.addPaymentText}>
               Add payment method
             </Text>
+
+            <Ionicons name="add" size={20} color="#DC2626" />
+            <Text style={styles.addPaymentText}>Add payment method</Text>
+
           </TouchableOpacity>
         </View>
 
         {/* BOTTOM SPACE FOR GLOBAL EMERGENCY BUTTON */}
-
         <View style={{ height: 120 }} />
       </ScrollView>
+
+      {/* DEPOSIT FORM */}
+      <DepositModal
+        visible={depositOpen}
+        onClose={() => setDepositOpen(false)}
+        onSuccess={handleDepositSuccess}
+        defaultPhone={methods[0].detail}
+      />
     </SafeAreaView>
   );
 }
@@ -519,10 +628,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
 
     shadowColor: "#DC2626",
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25,
     shadowRadius: 14,
 
