@@ -72,9 +72,9 @@ export default function LoginScreen() {
   const routeUser = (role: Role) => {
     setError("");
     switch (role) {
-      // case "superadmin":
-      //   router.replace("#");
-      //   break;
+      case "superadmin":
+        router.replace("/superadmin");
+        break;
       case "admin":
         router.replace("/admin");
         break;

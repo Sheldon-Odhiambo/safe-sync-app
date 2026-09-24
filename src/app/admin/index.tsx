@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from "react";
 import {
   Alert,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -12,21 +11,26 @@ import {
   TextInput,
   View,
 } from "react-native";
-
 import { useRouter } from "expo-router";
+
+// Import icons from lucide-react-native
 import {
-  Ionicons,
-  MaterialCommunityIcons,
-} from "@expo/vector-icons";
+  Ambulance,
+  Car,
+  Flame,
+  LogOut,
+  PlusCircle,
+  RadioTower,
+  ShieldCheck,
+  Truck,
+  Users,
+} from "lucide-react-native";
 
 /* =========================================================
    TYPES
 ========================================================= */
 
-type VehicleKind =
-  | "Ambulance"
-  | "Fire Engine"
-  | "Rescue Truck";
+type VehicleKind = "Ambulance" | "Fire Engine" | "Rescue Truck";
 
 type Vehicle = {
   id: string;
@@ -55,7 +59,6 @@ type Shift = {
 
 /* =========================================================
    SAMPLE DATA
-   Replace this later with your backend/database
 ========================================================= */
 
 const INITIAL_VEHICLES: Vehicle[] = [
@@ -69,7 +72,7 @@ const INITIAL_VEHICLES: Vehicle[] = [
     id: "vehicle-2",
     plate: "KDB 452A",
     kind: "Fire Engine",
-    station: "Nairobi Central Station",
+    station: "Nairobi Central Station",  
   },
 ];
 
@@ -116,31 +119,20 @@ export default function AdminScreen() {
      STATE
   --------------------------------------------------------- */
 
-  const [vehicles, setVehicles] =
-    useState<Vehicle[]>(INITIAL_VEHICLES);
-
-  const [drivers, setDrivers] =
-    useState<Driver[]>(INITIAL_DRIVERS);
-
-  const [shifts] =
-    useState<Shift[]>(INITIAL_SHIFTS);
-
-  const [activeTab, setActiveTab] =
-    useState<"vehicles" | "drivers">("vehicles");
+  const [vehicles, setVehicles] = useState<Vehicle[]>(INITIAL_VEHICLES);
+  const [drivers, setDrivers] = useState<Driver[]>(INITIAL_DRIVERS);
+  const [shifts] = useState<Shift[]>(INITIAL_SHIFTS);
+  const [activeTab, setActiveTab] = useState<"vehicles" | "drivers">("vehicles");
 
   /* Vehicle form */
-
   const [plate, setPlate] = useState("");
-  const [vehicleKind, setVehicleKind] =
-    useState<VehicleKind>("Ambulance");
+  const [vehicleKind, setVehicleKind] = useState<VehicleKind>("Ambulance");
   const [station, setStation] = useState("");
 
   /* Driver form */
-
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [companyId, setCompanyId] =
-    useState("NRB-001");
+  const [companyId, setCompanyId] = useState("NRB-001");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [phone, setPhone] = useState("");
@@ -150,32 +142,21 @@ export default function AdminScreen() {
      COMPUTED DATA
   --------------------------------------------------------- */
 
-  const onlineDrivers = useMemo(() => {
-    return shifts.length;
-  }, [shifts]);
+  const onlineDrivers = useMemo(() => shifts.length, [shifts]);
 
   /* ---------------------------------------------------------
      SIGN OUT
   --------------------------------------------------------- */
 
   const handleSignOut = () => {
-    Alert.alert(
-      "Sign out",
-      "Are you sure you want to sign out?",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Sign out",
-          style: "destructive",
-          onPress: () => {
-            router.replace("/");
-          },
-        },
-      ]
-    );
+    Alert.alert("Sign out", "Are you sure you want to sign out?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Sign out",
+        style: "destructive",
+        onPress: () => router.replace("/"),
+      },
+    ]);
   };
 
   /* ---------------------------------------------------------
@@ -195,15 +176,10 @@ export default function AdminScreen() {
       id: `vehicle-${Date.now()}`,
       plate: plate.trim(),
       kind: vehicleKind,
-      station:
-        station.trim() || "Unassigned station",
+      station: station.trim() || "Unassigned station",
     };
 
-    setVehicles((current) => [
-      ...current,
-      newVehicle,
-    ]);
-
+    setVehicles((current) => [...current, newVehicle]);
     setPlate("");
     setStation("");
 
@@ -217,25 +193,18 @@ export default function AdminScreen() {
      REMOVE VEHICLE
   --------------------------------------------------------- */
 
-  const handleRemoveVehicle = (
-    vehicle: Vehicle
-  ) => {
+  const handleRemoveVehicle = (vehicle: Vehicle) => {
     Alert.alert(
       "Remove vehicle",
       `Are you sure you want to remove ${vehicle.plate}?`,
       [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
+        { text: "Cancel", style: "cancel" },
         {
           text: "Remove",
           style: "destructive",
           onPress: () => {
             setVehicles((current) =>
-              current.filter(
-                (item) => item.id !== vehicle.id
-              )
+              current.filter((item) => item.id !== vehicle.id)
             );
           },
         },
@@ -244,135 +213,27 @@ export default function AdminScreen() {
   };
 
   /* ---------------------------------------------------------
-     CREATE DRIVER
+     HELPERS
   --------------------------------------------------------- */
 
-  const handleCreateDriver = () => {
-    if (
-      !name.trim() ||
-      !email.trim() ||
-      !password.trim()
-    ) {
-      Alert.alert(
-        "Missing information",
-        "Name, email and password are required."
-      );
+  const getDriver = (driverId?: string) =>
+    drivers.find((driver) => driver.id === driverId);
 
-      return;
+  const getVehicle = (vehicleId?: string) =>
+    vehicles.find((vehicle) => vehicle.id === vehicleId);
+
+  /* Helper function to render Lucide vehicle icons dynamically */
+  const renderVehicleIcon = (kind: VehicleKind) => {
+    switch (kind) {
+      case "Ambulance":
+        return <Ambulance size={24} color="#DC2626" />;
+      case "Fire Engine":
+        return <Flame size={24} color="#DC2626" />;
+      case "Rescue Truck":
+        return <Truck size={24} color="#DC2626" />;
+      default:
+        return <Car size={24} color="#DC2626" />;
     }
-
-    const emailExists = drivers.some(
-      (driver) =>
-        driver.email.toLowerCase() ===
-        email.trim().toLowerCase()
-    );
-
-    if (emailExists) {
-      Alert.alert(
-        "Email already exists",
-        "Please use another email address."
-      );
-
-      return;
-    }
-
-    const finalUsername =
-      username.trim() ||
-      email.trim().split("@")[0];
-
-    const usernameExists = drivers.some(
-      (driver) =>
-        driver.username.toLowerCase() ===
-        finalUsername.toLowerCase()
-    );
-
-    if (usernameExists) {
-      Alert.alert(
-        "Username already exists",
-        "Please choose another username."
-      );
-
-      return;
-    }
-
-    const newDriver: Driver = {
-      id: `driver-${Date.now()}`,
-      name: name.trim(),
-      companyId:
-        companyId.trim() || "NRB-001",
-      email: email.trim(),
-      username: finalUsername,
-      password: password.trim(),
-      phone: phone.trim(),
-      licence: licence.trim(),
-    };
-
-    setDrivers((current) => [
-      ...current,
-      newDriver,
-    ]);
-
-    setName("");
-    setEmail("");
-    setUsername("");
-    setPassword("");
-    setPhone("");
-    setLicence("");
-
-    Alert.alert(
-      "Driver created",
-      `${newDriver.name}'s driver account has been created.`
-    );
-  };
-
-  /* ---------------------------------------------------------
-     REMOVE DRIVER
-  --------------------------------------------------------- */
-
-  const handleRemoveDriver = (
-    driver: Driver
-  ) => {
-    Alert.alert(
-      "Remove driver",
-      `Are you sure you want to remove ${driver.name}?`,
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: () => {
-            setDrivers((current) =>
-              current.filter(
-                (item) => item.id !== driver.id
-              )
-            );
-          },
-        },
-      ]
-    );
-  };
-
-  /* ---------------------------------------------------------
-     GET DRIVER
-  --------------------------------------------------------- */
-
-  const getDriver = (driverId?: string) => {
-    return drivers.find(
-      (driver) => driver.id === driverId
-    );
-  };
-
-  /* ---------------------------------------------------------
-     GET VEHICLE
-  --------------------------------------------------------- */
-
-  const getVehicle = (vehicleId?: string) => {
-    return vehicles.find(
-      (vehicle) => vehicle.id === vehicleId
-    );
   };
 
   /* =========================================================
@@ -383,245 +244,120 @@ export default function AdminScreen() {
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={
-          Platform.OS === "ios"
-            ? "padding"
-            : undefined
-        }
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        {/* =================================================
-            HEADER
-        ================================================= */}
-
+        {/* HEADER */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
             <View style={styles.logoBadge}>
-              <Ionicons
-                name="shield-checkmark"
-                size={22}
-                color="#FFFFFF"
-              />
+              <ShieldCheck size={22} color="#FFFFFF" />
             </View>
 
             <View>
-              <Text style={styles.headerTitle}>
-                Super Admin Portal
-              </Text>
-
+              <Text style={styles.headerTitle}>Super Admin Portal</Text>
               <Text style={styles.headerSubtitle}>
                 SafeSync · ID NRB-001
               </Text>
             </View>
           </View>
 
-          <Pressable
-            style={styles.signOutButton}
-            onPress={handleSignOut}
-          >
-            <Ionicons
-              name="log-out-outline"
-              size={21}
-              color="#0F172A"
-            />
+          <Pressable style={styles.signOutButton} onPress={handleSignOut}>
+            <LogOut size={21} color="#0F172A" />
           </Pressable>
         </View>
 
-        {/* =================================================
-            MAIN SCROLL
-        ================================================= */}
-
+        {/* MAIN SCROLL */}
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={
-            styles.scrollContent
-          }
+          contentContainerStyle={styles.scrollContent}
         >
-          {/* =================================================
-              COMPANY SUMMARY
-          ================================================= */}
-
+          {/* COMPANY SUMMARY */}
           <View style={styles.summaryCard}>
             <View style={styles.summaryHeader}>
               <View>
-                <Text style={styles.summaryTitle}>
-                  SafeSync Company Fleet
-                </Text>
-
-                <Text
-                  style={styles.summarySubtitle}
-                >
-                  Manage responders, vehicles and
-                  driver accounts.
+                <Text style={styles.summaryTitle}>SafeSync Company Fleet</Text>
+                <Text style={styles.summarySubtitle}>
+                  Manage responders, vehicles and driver accounts.
                 </Text>
               </View>
 
               <View style={styles.onlineBadge}>
-                <View
-                  style={styles.onlineDot}
-                />
-
-                <Text
-                  style={styles.onlineText}
-                >
-                  {onlineDrivers} online
-                </Text>
+                <View style={styles.onlineDot} />
+                <Text style={styles.onlineText}>{onlineDrivers} online</Text>
               </View>
             </View>
 
             <View style={styles.statsRow}>
               <View style={styles.statBox}>
-                <Ionicons
-                  name="car-outline"
-                  size={22}
-                  color="#DC2626"
-                />
-
-                <Text style={styles.statNumber}>
-                  {vehicles.length}
-                </Text>
-
-                <Text style={styles.statLabel}>
-                  Vehicles
-                </Text>
+                <Car size={22} color="#DC2626" />
+                <Text style={styles.statNumber}>{vehicles.length}</Text>
+                <Text style={styles.statLabel}>Vehicles</Text>
               </View>
 
               <View style={styles.statBox}>
-                <Ionicons
-                  name="people-outline"
-                  size={22}
-                  color="#DC2626"
-                />
-
-                <Text style={styles.statNumber}>
-                  {drivers.length}
-                </Text>
-
-                <Text style={styles.statLabel}>
-                  Drivers
-                </Text>
+                <Users size={22} color="#DC2626" />
+                <Text style={styles.statNumber}>{drivers.length}</Text>
+                <Text style={styles.statLabel}>Drivers</Text>
               </View>
 
               <View style={styles.statBox}>
-                <MaterialCommunityIcons
-                  name="radio-tower"
-                  size={22}
-                  color="#DC2626"
-                />
-
-                <Text style={styles.statNumber}>
-                  {onlineDrivers}
-                </Text>
-
-                <Text style={styles.statLabel}>
-                  Online
-                </Text>
+                <RadioTower size={22} color="#DC2626" />
+                <Text style={styles.statNumber}>{onlineDrivers}</Text>
+                <Text style={styles.statLabel}>Online</Text>
               </View>
             </View>
           </View>
 
-          {/* =================================================
-              LIVE DRIVER STATUS
-          ================================================= */}
-
+          {/* LIVE DRIVER STATUS */}
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <View>
-                <Text style={styles.sectionTitle}>
-                  Live driver status
-                </Text>
-
-                <Text
-                  style={styles.sectionSubtitle}
-                >
+                <Text style={styles.sectionTitle}>Live driver status</Text>
+                <Text style={styles.sectionSubtitle}>
                   Current responder availability
                 </Text>
               </View>
 
               <View style={styles.liveIndicator}>
-                <View
-                  style={styles.liveDot}
-                />
-
-                <Text style={styles.liveText}>
-                  LIVE
-                </Text>
+                <View style={styles.liveDot} />
+                <Text style={styles.liveText}>LIVE</Text>
               </View>
             </View>
 
             {drivers.length === 0 ? (
               <View style={styles.emptyState}>
-                <Ionicons
-                  name="people-outline"
-                  size={38}
-                  color="#94A3B8"
-                />
-
-                <Text style={styles.emptyTitle}>
-                  No drivers yet
-                </Text>
-
-                <Text
-                  style={styles.emptySubtitle}
-                >
+                <Users size={38} color="#94A3B8" />
+                <Text style={styles.emptyTitle}>No drivers yet</Text>
+                <Text style={styles.emptySubtitle}>
                   Create a driver account below.
                 </Text>
               </View>
             ) : (
               drivers.map((driver) => {
                 const shift = shifts.find(
-                  (item) =>
-                    item.driverId ===
-                    driver.id
+                  (item) => item.driverId === driver.id
                 );
-
-                const vehicle =
-                  getVehicle(
-                    shift?.vehicleId
-                  );
+                const vehicle = getVehicle(shift?.vehicleId);
 
                 return (
-                  <View
-                    key={driver.id}
-                    style={styles.driverStatusRow}
-                  >
+                  <View key={driver.id} style={styles.driverStatusRow}>
                     <View
                       style={[
                         styles.statusDot,
                         {
-                          backgroundColor:
-                            shift
-                              ? "#16A34A"
-                              : "#CBD5E1",
+                          backgroundColor: shift ? "#16A34A" : "#CBD5E1",
                         },
                       ]}
                     />
 
-                    <View
-                      style={
-                        styles.driverStatusInfo
-                      }
-                    >
-                      <Text
-                        style={
-                          styles.driverStatusName
-                        }
-                      >
+                    <View style={styles.driverStatusInfo}>
+                      <Text style={styles.driverStatusName}>
                         {driver.name}
                       </Text>
-
-                      <Text
-                        style={
-                          styles.driverStatusUsername
-                        }
-                      >
+                      <Text style={styles.driverStatusUsername}>
                         @{driver.username}
                       </Text>
-
-                      <Text
-                        style={
-                          styles.driverStatusVehicle
-                        }
-                      >
+                      <Text style={styles.driverStatusVehicle}>
                         {shift && vehicle
                           ? `Driving ${vehicle.plate} · ${vehicle.kind}`
                           : "Off shift — no vehicle assigned"}
@@ -632,26 +368,17 @@ export default function AdminScreen() {
                       style={[
                         styles.statusBadge,
                         {
-                          backgroundColor:
-                            shift
-                              ? "#DCFCE7"
-                              : "#F1F5F9",
+                          backgroundColor: shift ? "#DCFCE7" : "#F1F5F9",
                         },
                       ]}
                     >
                       <Text
                         style={[
                           styles.statusBadgeText,
-                          {
-                            color: shift
-                              ? "#15803D"
-                              : "#64748B",
-                          },
+                          { color: shift ? "#15803D" : "#64748B" },
                         ]}
                       >
-                        {shift
-                          ? "Online"
-                          : "Offline"}
+                        {shift ? "Online" : "Offline"}
                       </Text>
                     </View>
                   </View>
@@ -660,36 +387,23 @@ export default function AdminScreen() {
             )}
           </View>
 
-          {/* =================================================
-              TAB NAVIGATION
-          ================================================= */}
-
+          {/* TAB NAVIGATION */}
           <View style={styles.tabs}>
             <Pressable
-              onPress={() =>
-                setActiveTab("vehicles")
-              }
+              onPress={() => setActiveTab("vehicles")}
               style={[
                 styles.tab,
-                activeTab === "vehicles" &&
-                  styles.activeTab,
+                activeTab === "vehicles" && styles.activeTab,
               ]}
             >
-              <Ionicons
-                name="car-outline"
+              <Car
                 size={20}
-                color={
-                  activeTab === "vehicles"
-                    ? "#FFFFFF"
-                    : "#64748B"
-                }
+                color={activeTab === "vehicles" ? "#FFFFFF" : "#64748B"}
               />
-
               <Text
                 style={[
                   styles.tabText,
-                  activeTab === "vehicles" &&
-                    styles.activeTabText,
+                  activeTab === "vehicles" && styles.activeTabText,
                 ]}
               >
                 Vehicles
@@ -697,30 +411,20 @@ export default function AdminScreen() {
             </Pressable>
 
             <Pressable
-              onPress={() =>
-                setActiveTab("drivers")
-              }
+              onPress={() => setActiveTab("drivers")}
               style={[
                 styles.tab,
-                activeTab === "drivers" &&
-                  styles.activeTab,
+                activeTab === "drivers" && styles.activeTab,
               ]}
             >
-              <Ionicons
-                name="people-outline"
+              <Users
                 size={20}
-                color={
-                  activeTab === "drivers"
-                    ? "#FFFFFF"
-                    : "#64748B"
-                }
+                color={activeTab === "drivers" ? "#FFFFFF" : "#64748B"}
               />
-
               <Text
                 style={[
                   styles.tabText,
-                  activeTab === "drivers" &&
-                    styles.activeTabText,
+                  activeTab === "drivers" && styles.activeTabText,
                 ]}
               >
                 Drivers
@@ -728,50 +432,25 @@ export default function AdminScreen() {
             </Pressable>
           </View>
 
-          {/* =================================================
-              VEHICLES
-          ================================================= */}
-
+          {/* VEHICLES TAB */}
           {activeTab === "vehicles" && (
             <>
               {/* ADD VEHICLE */}
-
               <View style={styles.card}>
-                <View
-                  style={styles.formTitleRow}
-                >
-                  <View
-                    style={styles.formIcon}
-                  >
-                    <Ionicons
-                      name="car"
-                      size={20}
-                      color="#DC2626"
-                    />
+                <View style={styles.formTitleRow}>
+                  <View style={styles.formIcon}>
+                    <Car size={20} color="#DC2626" />
                   </View>
 
                   <View>
-                    <Text
-                      style={styles.sectionTitle}
-                    >
-                      Add a vehicle
-                    </Text>
-
-                    <Text
-                      style={styles.sectionSubtitle}
-                    >
-                      Add emergency response
-                      vehicles.
+                    <Text style={styles.sectionTitle}>Add a vehicle</Text>
+                    <Text style={styles.sectionSubtitle}>
+                      Add emergency response vehicles.
                     </Text>
                   </View>
                 </View>
 
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Plate / Unit Code
-                </Text>
-
+                <Text style={styles.inputLabel}>Plate / Unit Code</Text>
                 <TextInput
                   style={styles.input}
                   value={plate}
@@ -781,36 +460,23 @@ export default function AdminScreen() {
                   autoCapitalize="characters"
                 />
 
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Vehicle Type
-                </Text>
-
+                <Text style={styles.inputLabel}>Vehicle Type</Text>
                 <View style={styles.typeRow}>
                   {(
-                    [
-                      "Ambulance",
-                      "Fire Engine",
-                      "Rescue Truck",
-                    ] as VehicleKind[]
+                    ["Ambulance", "Fire Engine", "Rescue Truck"] as VehicleKind[]
                   ).map((type) => (
                     <Pressable
                       key={type}
-                      onPress={() =>
-                        setVehicleKind(type)
-                      }
+                      onPress={() => setVehicleKind(type)}
                       style={[
                         styles.typeButton,
-                        vehicleKind === type &&
-                          styles.selectedTypeButton,
+                        vehicleKind === type && styles.selectedTypeButton,
                       ]}
                     >
                       <Text
                         style={[
                           styles.typeButtonText,
-                          vehicleKind === type &&
-                            styles.selectedTypeText,
+                          vehicleKind === type && styles.selectedTypeText,
                         ]}
                       >
                         {type}
@@ -819,12 +485,7 @@ export default function AdminScreen() {
                   ))}
                 </View>
 
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Station
-                </Text>
-
+                <Text style={styles.inputLabel}>Station</Text>
                 <TextInput
                   style={styles.input}
                   value={station}
@@ -833,159 +494,70 @@ export default function AdminScreen() {
                   placeholderTextColor="#94A3B8"
                 />
 
-                <Pressable
-                  style={styles.primaryButton}
-                  onPress={handleAddVehicle}
-                >
-                  <Ionicons
-                    name="add-circle-outline"
-                    size={21}
-                    color="#FFFFFF"
-                  />
-
-                  <Text
-                    style={
-                      styles.primaryButtonText
-                    }
-                  >
-                    Add Vehicle
-                  </Text>
+                <Pressable style={styles.primaryButton} onPress={handleAddVehicle}>
+                  <PlusCircle size={21} color="#FFFFFF" />
+                  <Text style={styles.primaryButtonText}>Add Vehicle</Text>
                 </Pressable>
               </View>
 
-              {/* FLEET */}
-
+              {/* FLEET LIST */}
               <View style={styles.card}>
                 <View style={styles.sectionHeader}>
                   <View>
-                    <Text
-                      style={styles.sectionTitle}
-                    >
-                      Company fleet
-                    </Text>
-
-                    <Text
-                      style={styles.sectionSubtitle}
-                    >
+                    <Text style={styles.sectionTitle}>Company fleet</Text>
+                    <Text style={styles.sectionSubtitle}>
                       All registered vehicles
                     </Text>
                   </View>
 
-                  <Text
-                    style={styles.countText}
-                  >
+                  <Text style={styles.countText}>
                     {vehicles.length} vehicles
                   </Text>
                 </View>
 
                 {vehicles.length === 0 ? (
                   <View style={styles.emptyState}>
-                    <Ionicons
-                      name="car-outline"
-                      size={38}
-                      color="#94A3B8"
-                    />
-
-                    <Text
-                      style={styles.emptyTitle}
-                    >
-                      No vehicles
-                    </Text>
+                    <Car size={38} color="#94A3B8" />
+                    <Text style={styles.emptyTitle}>No vehicles</Text>
                   </View>
                 ) : (
                   vehicles.map((vehicle) => {
-                    const shift =
-                      shifts.find(
-                        (item) =>
-                          item.vehicleId ===
-                          vehicle.id
-                      );
-
-                    const driver =
-                      getDriver(
-                        shift?.driverId
-                      );
+                    const shift = shifts.find(
+                      (item) => item.vehicleId === vehicle.id
+                    );
+                    const driver = getDriver(shift?.driverId);
 
                     return (
-                      <View
-                        key={vehicle.id}
-                        style={
-                          styles.vehicleRow
-                        }
-                      >
-                        <View
-                          style={
-                            styles.vehicleIcon
-                          }
-                        >
-                          <MaterialCommunityIcons
-                            name={
-                              vehicle.kind ===
-                              "Ambulance"
-                                ? "ambulance"
-                                : vehicle.kind ===
-                                  "Fire Engine"
-                                ? "fire-truck"
-                                : "truck"
-                            }
-                            size={24}
-                            color="#DC2626"
-                          />
+                      <View key={vehicle.id} style={styles.vehicleRow}>
+                        <View style={styles.vehicleIcon}>
+                          {renderVehicleIcon(vehicle.kind)}
                         </View>
 
-                        <View
-                          style={
-                            styles.vehicleInfo
-                          }
-                        >
-                          <Text
-                            style={
-                              styles.vehiclePlate
-                            }
-                          >
+                        <View style={styles.vehicleInfo}>
+                          <Text style={styles.vehiclePlate}>
                             {vehicle.plate}
                           </Text>
-
-                          <Text
-                            style={
-                              styles.vehicleKind
-                            }
-                          >
+                          <Text style={styles.vehicleKind}>
                             {vehicle.kind}
                           </Text>
-
-                          <Text
-                            style={
-                              styles.vehicleStation
-                            }
-                          >
+                          <Text style={styles.vehicleStation}>
                             {vehicle.station}
                           </Text>
-
-                          <Text
-                            style={
-                              styles.vehicleDriver
-                            }
-                          >
+                          <Text style={styles.vehicleDriver}>
                             {driver
                               ? `In use by ${driver.name}`
                               : "Available"}
                           </Text>
                         </View>
 
-                        <View
-                          style={
-                            styles.vehicleActions
-                          }
-                        >
+                        <View style={styles.vehicleActions}>
                           <View
                             style={[
                               styles.statusBadge,
                               {
-                                backgroundColor:
-                                  driver
-                                    ? "#FEF3C7"
-                                    : "#DCFCE7",
+                                backgroundColor: driver
+                                  ? "#FEF3C7"
+                                  : "#DCFCE7",
                               },
                             ]}
                           >
@@ -993,34 +565,18 @@ export default function AdminScreen() {
                               style={[
                                 styles.statusBadgeText,
                                 {
-                                  color:
-                                    driver
-                                      ? "#B45309"
-                                      : "#15803D",
+                                  color: driver ? "#B45309" : "#15803D",
                                 },
                               ]}
                             >
-                              {driver
-                                ? "In use"
-                                : "Available"}
+                              {driver ? "In use" : "Available"}
                             </Text>
                           </View>
 
                           <Pressable
-                            onPress={() =>
-                              handleRemoveVehicle(
-                                vehicle
-                              )
-                            }
-                            style={
-                              styles.deleteButton
-                            }
+                            onPress={() => handleRemoveVehicle(vehicle)}
                           >
-                            <Ionicons
-                              name="trash-outline"
-                              size={20}
-                              color="#DC2626"
-                            />
+                            <Text style={styles.removeText}>Remove</Text>
                           </Pressable>
                         </View>
                       </View>
@@ -1030,871 +586,206 @@ export default function AdminScreen() {
               </View>
             </>
           )}
-
-          {/* =================================================
-              DRIVERS
-          ================================================= */}
-
-          {activeTab === "drivers" && (
-            <>
-              {/* CREATE DRIVER */}
-
-              <View style={styles.card}>
-                <View
-                  style={styles.formTitleRow}
-                >
-                  <View
-                    style={styles.formIcon}
-                  >
-                    <Ionicons
-                      name="person-add"
-                      size={20}
-                      color="#DC2626"
-                    />
-                  </View>
-
-                  <View>
-                    <Text
-                      style={styles.sectionTitle}
-                    >
-                      Create driver account
-                    </Text>
-
-                    <Text
-                      style={styles.sectionSubtitle}
-                    >
-                      The driver will use these
-                      credentials to sign in.
-                    </Text>
-                  </View>
-                </View>
-
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Full Name
-                </Text>
-
-                <TextInput
-                  style={styles.input}
-                  value={name}
-                  onChangeText={setName}
-                  placeholder="John Kamau"
-                  placeholderTextColor="#94A3B8"
-                />
-
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Company ID
-                </Text>
-
-                <TextInput
-                  style={styles.input}
-                  value={companyId}
-                  onChangeText={setCompanyId}
-                  placeholder="NRB-001"
-                  placeholderTextColor="#94A3B8"
-                />
-
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Email
-                </Text>
-
-                <TextInput
-                  style={styles.input}
-                  value={email}
-                  onChangeText={setEmail}
-                  placeholder="driver@safesync.co.ke"
-                  placeholderTextColor="#94A3B8"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Username
-                </Text>
-
-                <TextInput
-                  style={styles.input}
-                  value={username}
-                  onChangeText={setUsername}
-                  placeholder="johnkamau"
-                  placeholderTextColor="#94A3B8"
-                  autoCapitalize="none"
-                />
-
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Password
-                </Text>
-
-                <TextInput
-                  style={styles.input}
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="Enter password"
-                  placeholderTextColor="#94A3B8"
-                  secureTextEntry
-                />
-
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Phone
-                </Text>
-
-                <TextInput
-                  style={styles.input}
-                  value={phone}
-                  onChangeText={setPhone}
-                  placeholder="0712345678"
-                  placeholderTextColor="#94A3B8"
-                  keyboardType="phone-pad"
-                />
-
-                <Text
-                  style={styles.inputLabel}
-                >
-                  Licence Number
-                </Text>
-
-                <TextInput
-                  style={styles.input}
-                  value={licence}
-                  onChangeText={setLicence}
-                  placeholder="DL-45821"
-                  placeholderTextColor="#94A3B8"
-                />
-
-                <Pressable
-                  style={styles.primaryButton}
-                  onPress={handleCreateDriver}
-                >
-                  <Ionicons
-                    name="person-add-outline"
-                    size={21}
-                    color="#FFFFFF"
-                  />
-
-                  <Text
-                    style={
-                      styles.primaryButtonText
-                    }
-                  >
-                    Create Driver
-                  </Text>
-                </Pressable>
-              </View>
-
-              {/* DRIVER ACCOUNTS */}
-
-              <View style={styles.card}>
-                <View style={styles.sectionHeader}>
-                  <View>
-                    <Text
-                      style={styles.sectionTitle}
-                    >
-                      Driver accounts
-                    </Text>
-
-                    <Text
-                      style={styles.sectionSubtitle}
-                    >
-                      Registered emergency
-                      responders
-                    </Text>
-                  </View>
-
-                  <Text
-                    style={styles.countText}
-                  >
-                    {drivers.length} drivers
-                  </Text>
-                </View>
-
-                {drivers.length === 0 ? (
-                  <View style={styles.emptyState}>
-                    <Ionicons
-                      name="people-outline"
-                      size={38}
-                      color="#94A3B8"
-                    />
-
-                    <Text
-                      style={styles.emptyTitle}
-                    >
-                      No drivers
-                    </Text>
-                  </View>
-                ) : (
-                  drivers.map((driver) => (
-                    <View
-                      key={driver.id}
-                      style={styles.accountRow}
-                    >
-                      <View
-                        style={
-                          styles.avatar
-                        }
-                      >
-                        <Text
-                          style={
-                            styles.avatarText
-                          }
-                        >
-                          {driver.name
-                            .charAt(0)
-                            .toUpperCase()}
-                        </Text>
-                      </View>
-
-                      <View
-                        style={
-                          styles.accountInfo
-                        }
-                      >
-                        <Text
-                          style={
-                            styles.accountName
-                          }
-                        >
-                          {driver.name}
-                        </Text>
-
-                        <Text
-                          style={
-                            styles.accountUsername
-                          }
-                        >
-                          @{driver.username}
-                        </Text>
-
-                        <Text
-                          style={
-                            styles.accountDetails
-                          }
-                        >
-                          {driver.companyId}
-                        </Text>
-
-                        <Text
-                          style={
-                            styles.accountDetails
-                          }
-                        >
-                          {driver.phone ||
-                            "No phone"}
-                        </Text>
-
-                        <Text
-                          style={
-                            styles.accountDetails
-                          }
-                        >
-                          {driver.licence ||
-                            "No licence"}
-                        </Text>
-                      </View>
-
-                      <Pressable
-                        onPress={() =>
-                          handleRemoveDriver(
-                            driver
-                          )
-                        }
-                        style={
-                          styles.deleteButton
-                        }
-                      >
-                        <Ionicons
-                          name="trash-outline"
-                          size={20}
-                          color="#DC2626"
-                        />
-                      </Pressable>
-                    </View>
-                  ))
-                )}
-              </View>
-            </>
-          )}
-
-          {/* =================================================
-              FOOTER
-          ================================================= */}
-
-          <View style={styles.footer}>
-            <Ionicons
-              name="shield-checkmark"
-              size={18}
-              color="#94A3B8"
-            />
-
-            <Text style={styles.footerText}>
-              SafeSync Emergency Response Platform
-            </Text>
-          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-/* =========================================================
-   STYLES
-========================================================= */
-
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#F8FAFC",
-  },
-
-  container: {
-    flex: 1,
-    backgroundColor: "#F8FAFC",
-  },
-
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-
-  /* =====================================================
-     HEADER
-  ===================================================== */
-
+  safeArea: { flex: 1, backgroundColor: "#F8FAFC" },
+  container: { flex: 1 },
   header: {
-    minHeight: 70,
-    backgroundColor: "#FFFFFF",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
-    paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
   },
-
-  headerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    flex: 1,
-  },
-
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
   logoBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 13,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     backgroundColor: "#DC2626",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 11,
   },
-
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  headerSubtitle: {
-    marginTop: 3,
-    fontSize: 11,
-    color: "#64748B",
-  },
-
+  headerTitle: { fontSize: 18, fontWeight: "700", color: "#0F172A" },
+  headerSubtitle: { fontSize: 13, color: "#64748B" },
   signOutButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: "#F1F5F9",
   },
-
-  /* =====================================================
-     SUMMARY
-  ===================================================== */
-
+  scrollContent: { padding: 16, gap: 16 },
   summaryCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    padding: 18,
-    marginBottom: 16,
+    backgroundColor: "#0F172A",
+    borderRadius: 16,
+    padding: 20,
+    gap: 16,
   },
-
   summaryHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
   },
-
-  summaryTitle: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  summarySubtitle: {
-    fontSize: 12,
-    color: "#64748B",
-    marginTop: 4,
-    maxWidth: 220,
-  },
-
+  summaryTitle: { fontSize: 18, fontWeight: "700", color: "#FFFFFF" },
+  summarySubtitle: { fontSize: 13, color: "#94A3B8", marginTop: 4 },
   onlineBadge: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#DCFCE7",
-    paddingHorizontal: 9,
-    paddingVertical: 6,
+    gap: 6,
+    backgroundColor: "rgba(22, 163, 74, 0.2)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 20,
   },
-
-  onlineDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 5,
-    backgroundColor: "#16A34A",
-    marginRight: 5,
-  },
-
-  onlineText: {
-    color: "#15803D",
-    fontSize: 11,
-    fontWeight: "800",
-  },
-
-  statsRow: {
-    flexDirection: "row",
-    marginTop: 18,
-    gap: 9,
-  },
-
+  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22C55E" },
+  onlineText: { fontSize: 12, fontWeight: "600", color: "#4ADE80" },
+  statsRow: { flexDirection: "row", gap: 12 },
   statBox: {
     flex: 1,
-    backgroundColor: "#F8FAFC",
-    borderRadius: 14,
-    paddingVertical: 13,
+    backgroundColor: "#1E293B",
+    borderRadius: 12,
+    padding: 12,
     alignItems: "center",
+    gap: 4,
   },
-
-  statNumber: {
-    fontSize: 20,
-    fontWeight: "900",
-    color: "#0F172A",
-    marginTop: 5,
-  },
-
-  statLabel: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 2,
-    fontWeight: "600",
-  },
-
-  /* =====================================================
-     CARD
-  ===================================================== */
-
+  statNumber: { fontSize: 20, fontWeight: "700", color: "#FFFFFF" },
+  statLabel: { fontSize: 12, color: "#94A3B8" },
   card: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderRadius: 16,
+    padding: 16,
     borderWidth: 1,
     borderColor: "#E2E8F0",
-    padding: 18,
-    marginBottom: 16,
+    gap: 12,
   },
-
   sectionHeader: {
     flexDirection: "row",
-    alignItems: "flex-start",
     justifyContent: "space-between",
-    marginBottom: 14,
+    alignItems: "center",
   },
-
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  sectionSubtitle: {
-    fontSize: 11,
-    color: "#64748B",
-    marginTop: 4,
-  },
-
-  countText: {
-    fontSize: 11,
-    color: "#64748B",
-    fontWeight: "700",
-  },
-
-  /* =====================================================
-     LIVE DRIVER
-  ===================================================== */
-
+  sectionTitle: { fontSize: 16, fontWeight: "700", color: "#0F172A" },
+  sectionSubtitle: { fontSize: 12, color: "#64748B" },
   liveIndicator: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 6,
     backgroundColor: "#FEF2F2",
-    borderRadius: 20,
     paddingHorizontal: 8,
-    paddingVertical: 5,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
-
-  liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 5,
-    backgroundColor: "#DC2626",
-    marginRight: 5,
-  },
-
-  liveText: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "#DC2626",
-  },
-
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#DC2626" },
+  liveText: { fontSize: 11, fontWeight: "700", color: "#DC2626" },
+  emptyState: { alignItems: "center", paddingVertical: 24, gap: 8 },
+  emptyTitle: { fontSize: 15, fontWeight: "600", color: "#475569" },
+  emptySubtitle: { fontSize: 13, color: "#94A3B8" },
   driverStatusRow: {
     flexDirection: "row",
     alignItems: "center",
-    borderTopWidth: 1,
-    borderTopColor: "#F1F5F9",
-    paddingVertical: 13,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+    gap: 12,
   },
-
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: 11,
-  },
-
-  driverStatusInfo: {
-    flex: 1,
-  },
-
-  driverStatusName: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  driverStatusUsername: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 1,
-  },
-
-  driverStatusVehicle: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 4,
-  },
-
-  statusBadge: {
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 20,
-  },
-
-  statusBadgeText: {
-    fontSize: 9,
-    fontWeight: "800",
-  },
-
-  /* =====================================================
-     TABS
-  ===================================================== */
-
+  statusDot: { width: 10, height: 10, borderRadius: 5 },
+  driverStatusInfo: { flex: 1 },
+  driverStatusName: { fontSize: 14, fontWeight: "600", color: "#0F172A" },
+  driverStatusUsername: { fontSize: 12, color: "#64748B" },
+  driverStatusVehicle: { fontSize: 12, color: "#94A3B8", marginTop: 2 },
+  statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
+  statusBadgeText: { fontSize: 12, fontWeight: "600" },
   tabs: {
     flexDirection: "row",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
+    backgroundColor: "#E2E8F0",
+    borderRadius: 12,
     padding: 4,
-    marginBottom: 16,
+    gap: 4,
   },
-
   tab: {
     flex: 1,
-    height: 46,
-    borderRadius: 11,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 7,
+    paddingVertical: 10,
+    borderRadius: 8,
+    gap: 8,
   },
-
-  activeTab: {
-    backgroundColor: "#DC2626",
-  },
-
-  tabText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#64748B",
-  },
-
-  activeTabText: {
-    color: "#FFFFFF",
-  },
-
-  /* =====================================================
-     FORM
-  ===================================================== */
-
-  formTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 18,
-  },
-
+  activeTab: { backgroundColor: "#DC2626" },
+  tabText: { fontSize: 14, fontWeight: "600", color: "#64748B" },
+  activeTabText: { color: "#FFFFFF" },
+  formTitleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   formIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 8,
     backgroundColor: "#FEF2F2",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
   },
-
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#334155",
-    marginBottom: 7,
-  },
-
+  inputLabel: { fontSize: 13, fontWeight: "600", color: "#334155", marginTop: 4 },
   input: {
-    height: 50,
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    fontSize: 14,
-    color: "#0F172A",
-    backgroundColor: "#FFFFFF",
-    marginBottom: 14,
-  },
-
-  typeRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 7,
-    marginBottom: 15,
-  },
-
-  typeButton: {
+    backgroundColor: "#F8FAFC",
     borderWidth: 1,
     borderColor: "#CBD5E1",
     borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: "#0F172A",
+  },
+  typeRow: { flexDirection: "row", gap: 8 },
+  typeButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    alignItems: "center",
     backgroundColor: "#FFFFFF",
   },
-
-  selectedTypeButton: {
-    backgroundColor: "#DC2626",
-    borderColor: "#DC2626",
-  },
-
-  typeButtonText: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#475569",
-  },
-
-  selectedTypeText: {
-    color: "#FFFFFF",
-  },
-
+  selectedTypeButton: { backgroundColor: "#DC2626", borderColor: "#DC2626" },
+  typeButtonText: { fontSize: 12, fontWeight: "600", color: "#475569" },
+  selectedTypeText: { color: "#FFFFFF" },
   primaryButton: {
-    height: 52,
-    borderRadius: 13,
+    flexDirection: "row",
     backgroundColor: "#DC2626",
+    borderRadius: 10,
+    paddingVertical: 12,
     alignItems: "center",
     justifyContent: "center",
-    flexDirection: "row",
     gap: 8,
-    marginTop: 5,
+    marginTop: 8,
   },
-
-  primaryButtonText: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "900",
-  },
-
-  /* =====================================================
-     VEHICLES
-  ===================================================== */
-
+  primaryButtonText: { fontSize: 15, fontWeight: "600", color: "#FFFFFF" },
+  countText: { fontSize: 13, fontWeight: "600", color: "#64748B" },
   vehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    borderTopWidth: 1,
-    borderTopColor: "#F1F5F9",
-    paddingVertical: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+    gap: 12,
   },
-
   vehicleIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 13,
-    backgroundColor: "#FEF2F2",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 11,
-  },
-
-  vehicleInfo: {
-    flex: 1,
-  },
-
-  vehiclePlate: {
-    fontSize: 13,
-    fontWeight: "900",
-    color: "#0F172A",
-  },
-
-  vehicleKind: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#334155",
-    marginTop: 2,
-  },
-
-  vehicleStation: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 3,
-  },
-
-  vehicleDriver: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 2,
-  },
-
-  vehicleActions: {
-    alignItems: "flex-end",
-    gap: 8,
-    marginLeft: 8,
-  },
-
-  deleteButton: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 10,
     backgroundColor: "#FEF2F2",
     alignItems: "center",
     justifyContent: "center",
   },
-
-  /* =====================================================
-     DRIVER ACCOUNTS
-  ===================================================== */
-
-  accountRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    borderTopWidth: 1,
-    borderTopColor: "#F1F5F9",
-    paddingVertical: 14,
-  },
-
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#DC2626",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 11,
-  },
-
-  avatarText: {
-    color: "#FFFFFF",
-    fontSize: 17,
-    fontWeight: "900",
-  },
-
-  accountInfo: {
-    flex: 1,
-  },
-
-  accountName: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
-
-  accountUsername: {
-    fontSize: 10,
-    color: "#DC2626",
-    fontWeight: "700",
-    marginTop: 2,
-  },
-
-  accountDetails: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 2,
-  },
-
-  /* =====================================================
-     EMPTY STATE
-  ===================================================== */
-
-  emptyState: {
-    alignItems: "center",
-    paddingVertical: 28,
-  },
-
-  emptyTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#334155",
-    marginTop: 8,
-  },
-
-  emptySubtitle: {
-    fontSize: 11,
-    color: "#94A3B8",
-    marginTop: 3,
-  },
-
-  /* =====================================================
-     FOOTER
-  ===================================================== */
-
-  footer: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 18,
-    flexDirection: "row",
-    gap: 6,
-  },
-
-  footerText: {
-    fontSize: 10,
-    color: "#94A3B8",
-    fontWeight: "600",
-  },
+  vehicleInfo: { flex: 1 },
+  vehiclePlate: { fontSize: 15, fontWeight: "700", color: "#0F172A" },
+  vehicleKind: { fontSize: 12, fontWeight: "500", color: "#DC2626" },
+  vehicleStation: { fontSize: 12, color: "#64748B" },
+  vehicleDriver: { fontSize: 12, color: "#94A3B8" },
+  vehicleActions: { alignItems: "flex-end", gap: 8 },
+  removeText: { fontSize: 12, color: "#DC2626", fontWeight: "600" },
 });
