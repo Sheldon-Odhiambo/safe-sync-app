@@ -12,22 +12,16 @@ import {
   Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router"
+import { useRouter } from "expo-router";
+
 export default function SignupScreen() {
   const router = useRouter();
-
-  // ACCOUNT TYPE
-  const [accountType, setAccountType] =
-    useState<AccountType>("individual");
-  const [showAccountDropdown, setShowAccountDropdown] =
-    useState(false);
 
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] =
-    useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] =
@@ -38,38 +32,22 @@ export default function SignupScreen() {
 
   const handleSignup = () => {
     if (!fullName.trim()) {
-      Alert.alert(
-        "Missing information",
-        accountType === "organization"
-          ? "Please enter the organization name."
-          : "Please enter your full name."
-      );
+      Alert.alert("Missing information", "Please enter your full name.");
       return;
     }
 
     if (!email.trim()) {
-      Alert.alert(
-        "Missing information",
-        accountType === "organization"
-          ? "Please enter the organization email address."
-          : "Please enter your email address."
-      );
+      Alert.alert("Missing information", "Please enter your email address.");
       return;
     }
 
     if (!phone.trim()) {
-      Alert.alert(
-        "Missing information",
-        "Please enter your phone number."
-      );
+      Alert.alert("Missing information", "Please enter your phone number.");
       return;
     }
 
     if (!password) {
-      Alert.alert(
-        "Missing information",
-        "Please create a password."
-      );
+      Alert.alert("Missing information", "Please create a password.");
       return;
     }
 
@@ -99,33 +77,14 @@ export default function SignupScreen() {
 
     setLoading(true);
 
-    /*
-     * TODO:
-     * Connect this section to your backend/Supabase/Firebase.
-     *
-     * The backend should receive:
-     *
-     * accountType: "individual" | "organization"
-     *
-     * Example:
-     *
-     * {
-     *   accountType,
-     *   fullName,
-     *   email,
-     *   phone,
-     *   password
-     * }
-     */
-
+    // TODO:
+    // Connect this section to your backend/Supabase/Firebase.
     setTimeout(() => {
       setLoading(false);
 
       Alert.alert(
         "Account created",
-        accountType === "organization"
-          ? "Your organization account has been created successfully."
-          : "Your SafeSync account has been created successfully.",
+        "Your SafeSync account has been created successfully.",
         [
           {
             text: "Continue",
@@ -140,9 +99,7 @@ export default function SignupScreen() {
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         style={styles.keyboardView}
-        behavior={
-          Platform.OS === "ios" ? "padding" : undefined
-        }
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView
           contentContainerStyle={styles.scrollContent}
@@ -182,9 +139,7 @@ export default function SignupScreen() {
           {/* INTRODUCTION */}
 
           <View style={styles.introSection}>
-            <Text style={styles.title}>
-              Create your account
-            </Text>
+            <Text style={styles.title}>Create your account</Text>
 
             <Text style={styles.subtitle}>
               Join SafeSync and get access to fast and reliable
@@ -195,206 +150,14 @@ export default function SignupScreen() {
           {/* FORM */}
 
           <View style={styles.formContainer}>
-            {/* ACCOUNT TYPE */}
+            {/* FULL NAME */}
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                Account type
-              </Text>
-
-              <Text style={styles.accountHelperText}>
-                Choose whether you are registering as an
-                individual or an organization.
-              </Text>
-
-              {/* DROPDOWN */}
-
-              <TouchableOpacity
-                style={[
-                  styles.dropdown,
-                  showAccountDropdown &&
-                    styles.dropdownActive,
-                ]}
-                activeOpacity={0.8}
-                onPress={() =>
-                  setShowAccountDropdown(
-                    !showAccountDropdown
-                  )
-                }
-              >
-                <View style={styles.dropdownLeft}>
-                  <View style={styles.dropdownIcon}>
-                    <Ionicons
-                      name={
-                        accountType === "individual"
-                          ? "person-outline"
-                          : "business-outline"
-                      }
-                      size={20}
-                      color="#64748B"
-                    />
-                  </View>
-
-                  <Text style={styles.dropdownText}>
-                    {accountType === "individual"
-                      ? "Individual"
-                      : "Organization"}
-                  </Text>
-                </View>
-
-                <Ionicons
-                  name={
-                    showAccountDropdown
-                      ? "chevron-up"
-                      : "chevron-down"
-                  }
-                  size={20}
-                  color="#64748B"
-                />
-              </TouchableOpacity>
-
-              {/* DROPDOWN OPTIONS */}
-
-              {showAccountDropdown && (
-                <View style={styles.dropdownMenu}>
-                  {/* INDIVIDUAL */}
-
-                  <TouchableOpacity
-                    style={[
-                      styles.dropdownOption,
-                      accountType === "individual" &&
-                        styles.dropdownOptionActive,
-                    ]}
-                    activeOpacity={0.8}
-                    onPress={() => {
-                      setAccountType("individual");
-                      setShowAccountDropdown(false);
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.optionIcon,
-                        accountType === "individual" &&
-                          styles.optionIconActive,
-                      ]}
-                    >
-                      <Ionicons
-                        name="person-outline"
-                        size={19}
-                        color={
-                          accountType === "individual"
-                            ? "#FFFFFF"
-                            : "#64748B"
-                        }
-                      />
-                    </View>
-
-                    <View style={styles.optionContent}>
-                      <Text
-                        style={[
-                          styles.optionTitle,
-                          accountType === "individual" &&
-                            styles.optionTitleActive,
-                        ]}
-                      >
-                        Individual
-                      </Text>
-
-                      <Text
-                        style={styles.optionDescription}
-                      >
-                        Personal SafeSync account
-                      </Text>
-                    </View>
-
-                    {accountType === "individual" && (
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={21}
-                        color="#DC2626"
-                      />
-                    )}
-                  </TouchableOpacity>
-
-                  {/* ORGANIZATION */}
-
-                  <TouchableOpacity
-                    style={[
-                      styles.dropdownOption,
-                      accountType === "organization" &&
-                        styles.dropdownOptionActive,
-                    ]}
-                    activeOpacity={0.8}
-                    onPress={() => {
-                      setAccountType("organization");
-                      setShowAccountDropdown(false);
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.optionIcon,
-                        accountType === "organization" &&
-                          styles.optionIconActive,
-                      ]}
-                    >
-                      <Ionicons
-                        name="business-outline"
-                        size={19}
-                        color={
-                          accountType === "organization"
-                            ? "#FFFFFF"
-                            : "#64748B"
-                        }
-                      />
-                    </View>
-
-                    <View style={styles.optionContent}>
-                      <Text
-                        style={[
-                          styles.optionTitle,
-                          accountType ===
-                            "organization" &&
-                            styles.optionTitleActive,
-                        ]}
-                      >
-                        Organization
-                      </Text>
-
-                      <Text
-                        style={styles.optionDescription}
-                      >
-                        Register a company or organization
-                      </Text>
-                    </View>
-
-                    {accountType === "organization" && (
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={21}
-                        color="#DC2626"
-                      />
-                    )}
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-
-            {/* FULL NAME / ORGANIZATION NAME */}
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                {accountType === "organization"
-                  ? "Organization name"
-                  : "Full name"}
-              </Text>
+              <Text style={styles.label}>Full name</Text>
 
               <View style={styles.inputWrapper}>
                 <Ionicons
-                  name={
-                    accountType === "organization"
-                      ? "business-outline"
-                      : "person-outline"
-                  }
+                  name="person-outline"
                   size={20}
                   color="#64748B"
                   style={styles.inputIcon}
@@ -402,11 +165,7 @@ export default function SignupScreen() {
 
                 <TextInput
                   style={styles.input}
-                  placeholder={
-                    accountType === "organization"
-                      ? "Enter organization name"
-                      : "Enter your full name"
-                  }
+                  placeholder="Enter your full name"
                   placeholderTextColor="#94A3B8"
                   value={fullName}
                   onChangeText={setFullName}
@@ -419,11 +178,7 @@ export default function SignupScreen() {
             {/* EMAIL */}
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                {accountType === "organization"
-                  ? "Organization email"
-                  : "Email address"}
-              </Text>
+              <Text style={styles.label}>Email address</Text>
 
               <View style={styles.inputWrapper}>
                 <Ionicons
@@ -435,11 +190,7 @@ export default function SignupScreen() {
 
                 <TextInput
                   style={styles.input}
-                  placeholder={
-                    accountType === "organization"
-                      ? "organization@example.com"
-                      : "you@example.com"
-                  }
+                  placeholder="you@example.com"
                   placeholderTextColor="#94A3B8"
                   value={email}
                   onChangeText={setEmail}
@@ -453,11 +204,7 @@ export default function SignupScreen() {
             {/* PHONE */}
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                {accountType === "organization"
-                  ? "Organization phone"
-                  : "Phone number"}
-              </Text>
+              <Text style={styles.label}>Phone number</Text>
 
               <View style={styles.inputWrapper}>
                 <Ionicons
@@ -481,9 +228,7 @@ export default function SignupScreen() {
             {/* PASSWORD */}
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                Password
-              </Text>
+              <Text style={styles.label}>Password</Text>
 
               <View style={styles.inputWrapper}>
                 <Ionicons
@@ -530,9 +275,7 @@ export default function SignupScreen() {
             {/* CONFIRM PASSWORD */}
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                Confirm password
-              </Text>
+              <Text style={styles.label}>Confirm password</Text>
 
               <View style={styles.inputWrapper}>
                 <Ionicons
@@ -548,9 +291,7 @@ export default function SignupScreen() {
                   placeholderTextColor="#94A3B8"
                   value={confirmPassword}
                   onChangeText={setConfirmPassword}
-                  secureTextEntry={
-                    !showConfirmPassword
-                  }
+                  secureTextEntry={!showConfirmPassword}
                   autoCapitalize="none"
                   autoCorrect={false}
                 />
@@ -588,8 +329,7 @@ export default function SignupScreen() {
               <View
                 style={[
                   styles.checkbox,
-                  acceptedTerms &&
-                    styles.checkboxActive,
+                  acceptedTerms && styles.checkboxActive,
                 ]}
               >
                 {acceptedTerms && (
@@ -619,8 +359,7 @@ export default function SignupScreen() {
             <TouchableOpacity
               style={[
                 styles.signupButton,
-                loading &&
-                  styles.signupButtonDisabled,
+                loading && styles.signupButtonDisabled,
               ]}
               activeOpacity={0.85}
               onPress={handleSignup}
@@ -650,9 +389,7 @@ export default function SignupScreen() {
             <View style={styles.dividerContainer}>
               <View style={styles.divider} />
 
-              <Text style={styles.dividerText}>
-                OR
-              </Text>
+              <Text style={styles.dividerText}>OR</Text>
 
               <View style={styles.divider} />
             </View>
@@ -810,120 +547,6 @@ const styles = StyleSheet.create({
     color: "#334155",
     marginBottom: 8,
   },
-
-  /* ACCOUNT TYPE */
-
-  accountHelperText: {
-    fontSize: 11,
-    lineHeight: 17,
-    color: "#94A3B8",
-    marginTop: -3,
-    marginBottom: 9,
-  },
-
-  dropdown: {
-    minHeight: 54,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-  },
-
-  dropdownActive: {
-    borderColor: "#DC2626",
-  },
-
-  dropdownLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    flex: 1,
-  },
-
-  dropdownIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 9,
-    backgroundColor: "#F1F5F9",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 10,
-  },
-
-  dropdownText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#0F172A",
-  },
-
-  dropdownMenu: {
-    marginTop: 7,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 14,
-    overflow: "hidden",
-    shadowColor: "#000000",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-
-  dropdownOption: {
-    minHeight: 70,
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 13,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
-  },
-
-  dropdownOptionActive: {
-    backgroundColor: "#FFF7F7",
-  },
-
-  optionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 11,
-    backgroundColor: "#F1F5F9",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 11,
-  },
-
-  optionIconActive: {
-    backgroundColor: "#DC2626",
-  },
-
-  optionContent: {
-    flex: 1,
-  },
-
-  optionTitle: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#334155",
-    marginBottom: 3,
-  },
-
-  optionTitleActive: {
-    color: "#991B1B",
-  },
-
-  optionDescription: {
-    fontSize: 11,
-    color: "#64748B",
-  },
-
-  /* INPUTS */
 
   inputWrapper: {
     height: 54,
@@ -1120,4 +743,3 @@ const styles = StyleSheet.create({
     marginTop: 25,
   },
 });
- 
