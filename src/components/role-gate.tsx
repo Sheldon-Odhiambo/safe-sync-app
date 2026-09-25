@@ -1,6 +1,6 @@
 import React from "react";
-import { useAuth } from "../contexts/AuthContext";
-import type { UserProfileBundle } from "../lib/userProfile";
+import { useAuth } from "../contexts/auth-context";
+import type { UserProfileBundle } from "../lib/user-profile";
 
 type RoleGateProps = {
   children: React.ReactNode;

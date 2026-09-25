@@ -1,7 +1,8 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import { useEffect } from "react";
 import { View, ActivityIndicator } from "react-native";
-import { AuthProvider, useAuth } from "../contexts/AuthContext";
+import { AuthProvider, useAuth } from "../contexts/auth-context";
+import { ReferenceDataProvider } from "../contexts/reference-data-context";
 
 function RootNavigation() {
   const { session, initializing } = useAuth();
@@ -36,7 +37,9 @@ function RootNavigation() {
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <RootNavigation />
+      <ReferenceDataProvider>
+        <RootNavigation />
+      </ReferenceDataProvider>
     </AuthProvider>
   );
 }
