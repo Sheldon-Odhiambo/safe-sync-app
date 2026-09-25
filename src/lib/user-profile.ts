@@ -36,7 +36,7 @@ export type UserProfileBundle = {
   // A coarse, ready-to-switch-on bucket for UI branching. Adjust the
   // "admin" name-matching below to whatever your `core.roles.name`
   // values actually are.
-  userKind: "public" | "responder" | "org_admin" | "org_member";
+  userKind: "public" | "responder" | "super_admin" | "admin" | "system_user";
   fetchedAt: number;
 };
 
