@@ -1,7 +1,8 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import { useEffect } from "react";
 import { View, ActivityIndicator } from "react-native";
-import { AuthProvider, useAuth } from "../contexts/AuthContext";
+import { AuthProvider, useAuth } from "../contexts/auth-context";
+import { ReferenceDataProvider } from "../contexts/reference-data-context";
 
 function RootNavigation() {
   const { session, initializing } = useAuth();
@@ -15,7 +16,7 @@ function RootNavigation() {
 
     if (session && !inTabsGroup) {
       // Already logged in (e.g. app relaunch) — skip straight past login/signup.
-      router.replace("/(tabs)");
+      router.replace("./(tabs)");
     } else if (!session && inTabsGroup) {
       // No session (never logged in, or signed out) — bounce to login.
       router.replace("/");
@@ -36,7 +37,9 @@ function RootNavigation() {
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <RootNavigation />
+      <ReferenceDataProvider>
+        <RootNavigation />
+      </ReferenceDataProvider>
     </AuthProvider>
   );
 }
