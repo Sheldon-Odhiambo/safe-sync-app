@@ -2,7 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
 
 const CACHE_KEY = "safesync:reference-data:v1";
-const TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const TTL_MS = 2 * 24 * 60 * 60 * 1000;
 
 export type ReferenceData = {
   roles: { id: string; name: string; description: string | null }[];
