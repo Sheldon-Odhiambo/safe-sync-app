@@ -15,7 +15,7 @@ function RootNavigation() {
 
     if (session && !inTabsGroup) {
       // Already logged in (e.g. app relaunch) — skip straight past login/signup.
-      router.replace("/(tabs)");
+      router.replace("./(tabs)");
     } else if (!session && inTabsGroup) {
       // No session (never logged in, or signed out) — bounce to login.
       router.replace("/");

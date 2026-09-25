@@ -109,7 +109,7 @@ export default function VerifyCodeScreen() {
       // A session now exists and is persisted by the Supabase client.
       // The root layout's auth guard will pick this up, but we replace
       // explicitly here too so the transition feels immediate. #3/#4.
-      router.replace("/(tabs)");
+      router.replace("./(tabs)");
     } catch (error: any) {
       console.error("Verification error:", error);
       // Let them try again on a fresh code.
