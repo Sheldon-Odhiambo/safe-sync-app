@@ -11,7 +11,7 @@ import { supabase } from "../lib/supabase";
 import {
   fetchUserProfileBundle,
   UserProfileBundle,
-} from "../lib/userProfile";
+} from "../lib/user-profile";
 
 const PROFILE_CACHE_PREFIX = "safesync:profile:";
 
