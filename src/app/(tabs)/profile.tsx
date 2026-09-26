@@ -47,6 +47,9 @@ export default function Profile() {
   const [allergies, setAllergies] = useState(
     "Penicillin, shellfish"
   );
+  const [preExistingConditions, setPreExistingConditions] = useState(
+    "Type 2 Diabetes, Hypertension"
+  );
 
   const handleSaveProfile = () => {
     Alert.alert(
@@ -59,6 +62,24 @@ export default function Profile() {
     Alert.alert(
       "Add emergency contact",
       "The emergency contact form will be added here."
+    );
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      "Delete Account",
+      "Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently removed.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            Alert.alert("Account Deleted", "Your account has been successfully deleted.");
+            // Add your account deletion logic/navigation here
+          },
+        },
+      ]
     );
   };
 
@@ -196,6 +217,20 @@ export default function Profile() {
           />
         </View>
 
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>Pre-existing conditions</Text>
+
+          <TextInput
+            value={preExistingConditions}
+            onChangeText={setPreExistingConditions}
+            multiline
+            textAlignVertical="top"
+            style={styles.textArea}
+            placeholder="Enter pre-existing medical conditions"
+            placeholderTextColor="#94A3B8"
+          />
+        </View>
+
         <View style={styles.medicalNotice}>
           <Ionicons
             name="information-circle-outline"
@@ -283,7 +318,7 @@ export default function Profile() {
       </View>
 
       {/* ========================================= */}
-      {/* SAFETY SETTINGS                            */}
+      {/* SAFETY SETTINGS                           */}
       {/* ========================================= */}
 
       <View style={styles.card}>
@@ -350,6 +385,24 @@ export default function Profile() {
 
           <Text style={styles.saveButtonText}>
             Save profile
+          </Text>
+        </TouchableOpacity>
+
+        {/* DELETE ACCOUNT */}
+
+        <TouchableOpacity
+          style={styles.deleteButton}
+          activeOpacity={0.85}
+          onPress={handleDeleteAccount}
+        >
+          <Ionicons
+            name="trash-outline"
+            size={19}
+            color="#DC2626"
+          />
+
+          <Text style={styles.deleteButtonText}>
+            Delete account
           </Text>
         </TouchableOpacity>
       </View>
@@ -685,7 +738,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 
-  /* SAVE */
+  /* SAVE & DELETE */
 
   saveButton: {
     height: 52,
@@ -699,6 +752,25 @@ const styles = StyleSheet.create({
 
   saveButtonText: {
     color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+    marginLeft: 8,
+  },
+
+  deleteButton: {
+    height: 52,
+    backgroundColor: "#FFF1F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 15,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 10,
+  },
+
+  deleteButtonText: {
+    color: "#DC2626",
     fontSize: 14,
     fontWeight: "800",
     marginLeft: 8,
