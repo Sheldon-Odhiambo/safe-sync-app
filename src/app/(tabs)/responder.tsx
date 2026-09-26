@@ -27,7 +27,6 @@ import {
 import MapView, {
   Marker,
   PROVIDER_GOOGLE,
-  Region,
 } from "react-native-maps";
 
 import * as Location from "expo-location";
@@ -145,6 +144,40 @@ const EMERGENCY_ADDRESS =
   "Wood Avenue, Kilimani, Nairobi, Kenya";
 
 /* ============================================================
+   BACKEND HELPER
+   ------------------------------------------------------------
+   Every time we get a fresh GPS fix for this responder we push
+   {latitude, longitude} to the backend so dispatch and the
+   client-facing map stay in sync. Wire this to the realtime
+   location channel served by the location-persistence worker
+   once the responder app's WebSocket connection is available
+   here — this REST call is a placeholder so the UI already has
+   somewhere to send coordinates.
+   ============================================================ */
+
+async function reportLocationToBackend(
+  coords: Coordinates,
+  role: "client" | "responder" = "responder"
+) {
+  try {
+    await fetch("https://api.safesync.co.ke/v1/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        role,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        recorded_at: new Date().toISOString(),
+      }),
+    });
+  } catch {
+    // Non-fatal: the map already reflects the location locally.
+    // The location-persistence worker will pick up the next
+    // successful report.
+  }
+}
+
+/* ============================================================
    MAIN COMPONENT
    ============================================================ */
 
@@ -205,7 +238,8 @@ export default function ResponderConsole() {
     checked.length === checklist.length;
 
   /* ============================================================
-     GET CURRENT LOCATION
+     GET CURRENT LOCATION — runs automatically as soon as the
+     responder opens/logs into the console.
      ============================================================ */
 
   const getCurrentLocation = useCallback(
@@ -243,6 +277,9 @@ export default function ResponderConsole() {
         };
 
         setCurrentLocation(coordinates);
+
+        // Send latitude/longitude to the backend for dispatch.
+        reportLocationToBackend(coordinates, "responder");
 
         /*
          * Move the map to the responder's current position.
@@ -322,7 +359,8 @@ export default function ResponderConsole() {
   }, []);
 
   /* ============================================================
-     INITIAL LOCATION
+     INITIAL LOCATION — fired as soon as this screen mounts,
+     i.e. as soon as the responder logs in.
      ============================================================ */
 
   useEffect(() => {
@@ -583,6 +621,153 @@ export default function ResponderConsole() {
                 color="#0F172A"
               />
             </Pressable>
+          </View>
+
+          {/* =====================================================
+              LIVE MAP — moved to the top of the page. Shows the
+              responder's current position as soon as the app has
+              a GPS fix, plus the emergency location once one is
+              assigned.
+          ===================================================== */}
+
+          <View style={styles.topMapCard}>
+            <View style={styles.topMapWrapper}>
+              {locationLoading && !currentLocation ? (
+                <View style={styles.mapLoading}>
+                  <ActivityIndicator
+                    size="large"
+                    color="#DC2626"
+                  />
+
+                  <Text style={styles.mapLoadingText}>
+                    Getting your location...
+                  </Text>
+                </View>
+              ) : locationError && !currentLocation ? (
+                <View style={styles.mapError}>
+                  <Ionicons
+                    name="location-outline"
+                    size={32}
+                    color="#DC2626"
+                  />
+
+                  <Text style={styles.mapErrorTitle}>
+                    Location unavailable
+                  </Text>
+
+                  <Text style={styles.mapErrorText}>
+                    {locationError}
+                  </Text>
+
+                  <Pressable
+                    style={styles.locationRetryButton}
+                    onPress={() => getCurrentLocation(true)}
+                  >
+                    <Ionicons
+                      name="refresh"
+                      size={17}
+                      color="#FFFFFF"
+                    />
+
+                    <Text style={styles.locationRetryText}>
+                      Try again
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <MapView
+                  ref={mapRef}
+                  provider={PROVIDER_GOOGLE}
+                  style={styles.googleMap}
+                  onMapReady={() => setMapReady(true)}
+                  showsUserLocation={true}
+                  showsMyLocationButton={false}
+                  showsCompass={true}
+                  showsBuildings={true}
+                  showsPointsOfInterest={true}
+                  loadingEnabled={true}
+                  mapType="standard"
+                  initialRegion={{
+                    latitude: currentLocation?.latitude ?? -1.2921,
+                    longitude: currentLocation?.longitude ?? 36.8219,
+                    latitudeDelta: 0.01,
+                    longitudeDelta: 0.01,
+                  }}
+                >
+                  {/* RESPONDER LOCATION */}
+                  {currentLocation && (
+                    <Marker
+                      coordinate={currentLocation}
+                      title="Your location"
+                      description={
+                        activeVehicle
+                          ? `Unit ${activeVehicle.plate}`
+                          : driver.name
+                      }
+                      anchor={{ x: 0.5, y: 0.5 }}
+                    >
+                      <View style={styles.responderMarker}>
+                        <MaterialCommunityIcons
+                          name="ambulance"
+                          size={23}
+                          color="#FFFFFF"
+                        />
+                      </View>
+                    </Marker>
+                  )}
+
+                  {/* EMERGENCY LOCATION */}
+                  {emergencyLocation && (
+                    <Marker
+                      coordinate={emergencyLocation}
+                      title="Emergency location"
+                      description={EMERGENCY_ADDRESS}
+                    >
+                      <View style={styles.emergencyMarker}>
+                        <Ionicons
+                          name="location"
+                          size={34}
+                          color="#DC2626"
+                        />
+                      </View>
+                    </Marker>
+                  )}
+                </MapView>
+              )}
+
+              {/* CURRENT LOCATION BUTTON */}
+              {currentLocation && (
+                <Pressable
+                  style={styles.myLocationButton}
+                  onPress={() => getCurrentLocation(true)}
+                >
+                  {locationLoading ? (
+                    <ActivityIndicator size="small" color="#0F172A" />
+                  ) : (
+                    <Ionicons name="locate" size={22} color="#0F172A" />
+                  )}
+                </Pressable>
+              )}
+
+              {/* MAP LABEL */}
+              {emergencyLocation && (
+                <View style={styles.mapOverlayLabel}>
+                  <View style={styles.mapOverlayDot} />
+
+                  <Text style={styles.mapOverlayText}>
+                    Emergency location
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {accepted && (
+              <View style={styles.mapStats}>
+                <MapStat value="5 min" label="ETA" />
+                <MapStat value="1.5 km" label="Distance" />
+                <MapStat value="Light" label="Traffic" />
+              </View>
+            )}
           </View>
 
           {/* =====================================================
@@ -916,209 +1101,6 @@ export default function ResponderConsole() {
                   </View>
                 </>
               )}
-
-              {/* =================================================
-                  REAL GOOGLE MAP
-              ================================================= */}
-
-              <View style={styles.mapContainer}>
-                {locationLoading &&
-                !currentLocation ? (
-                  <View style={styles.mapLoading}>
-                    <ActivityIndicator
-                      size="large"
-                      color="#DC2626"
-                    />
-
-                    <Text style={styles.mapLoadingText}>
-                      Getting your location...
-                    </Text>
-                  </View>
-                ) : locationError &&
-                  !currentLocation ? (
-                  <View style={styles.mapError}>
-                    <Ionicons
-                      name="location-outline"
-                      size={32}
-                      color="#DC2626"
-                    />
-
-                    <Text style={styles.mapErrorTitle}>
-                      Location unavailable
-                    </Text>
-
-                    <Text style={styles.mapErrorText}>
-                      {locationError}
-                    </Text>
-
-                    <Pressable
-                      style={styles.locationRetryButton}
-                      onPress={() =>
-                        getCurrentLocation(true)
-                      }
-                    >
-                      <Ionicons
-                        name="refresh"
-                        size={17}
-                        color="#FFFFFF"
-                      />
-
-                      <Text
-                        style={
-                          styles.locationRetryText
-                        }
-                      >
-                        Try again
-                      </Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <MapView
-                    ref={mapRef}
-                    provider={PROVIDER_GOOGLE}
-                    style={styles.googleMap}
-                    onMapReady={() => setMapReady(true)}
-                    showsUserLocation={true}
-                    showsMyLocationButton={false}
-                    showsCompass={true}
-                    showsBuildings={true}
-                    showsPointsOfInterest={true}
-                    loadingEnabled={true}
-                    mapType="standard"
-                    initialRegion={{
-                      latitude:
-                        currentLocation?.latitude ??
-                        -1.2921,
-                      longitude:
-                        currentLocation?.longitude ??
-                        36.8219,
-                      latitudeDelta: 0.01,
-                      longitudeDelta: 0.01,
-                    }}
-                  >
-                    {/* =================================================
-                        RESPONDER LOCATION
-                    ================================================= */}
-
-                    {currentLocation && (
-                      <Marker
-                        coordinate={currentLocation}
-                        title="Your location"
-                        description={
-                          activeVehicle
-                            ? `Unit ${activeVehicle.plate}`
-                            : driver.name
-                        }
-                        anchor={{
-                          x: 0.5,
-                          y: 0.5,
-                        }}
-                      >
-                        <View
-                          style={styles.responderMarker}
-                        >
-                          <MaterialCommunityIcons
-                            name="ambulance"
-                            size={23}
-                            color="#FFFFFF"
-                          />
-                        </View>
-                      </Marker>
-                    )}
-
-                    {/* =================================================
-                        EMERGENCY LOCATION
-                    ================================================= */}
-
-                    {emergencyLocation && (
-                      <Marker
-                        coordinate={emergencyLocation}
-                        title="Emergency location"
-                        description={EMERGENCY_ADDRESS}
-                      >
-                        <View
-                          style={
-                            styles.emergencyMarker
-                          }
-                        >
-                          <Ionicons
-                            name="location"
-                            size={34}
-                            color="#DC2626"
-                          />
-                        </View>
-                      </Marker>
-                    )}
-                  </MapView>
-                )}
-
-                {/* =================================================
-                    CURRENT LOCATION BUTTON
-                ================================================= */}
-
-                {currentLocation && (
-                  <Pressable
-                    style={styles.myLocationButton}
-                    onPress={() =>
-                      getCurrentLocation(true)
-                    }
-                  >
-                    {locationLoading ? (
-                      <ActivityIndicator
-                        size="small"
-                        color="#0F172A"
-                      />
-                    ) : (
-                      <Ionicons
-                        name="locate"
-                        size={22}
-                        color="#0F172A"
-                      />
-                    )}
-                  </Pressable>
-                )}
-
-                {/* =================================================
-                    MAP LABEL
-                ================================================= */}
-
-                {emergencyLocation && (
-                  <View style={styles.mapOverlayLabel}>
-                    <View
-                      style={
-                        styles.mapOverlayDot
-                      }
-                    />
-
-                    <Text
-                      style={styles.mapOverlayText}
-                    >
-                      Emergency location
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              {/* =================================================
-                  MAP STATS
-              ================================================= */}
-
-              <View style={styles.mapStats}>
-                <MapStat
-                  value="5 min"
-                  label="ETA"
-                />
-
-                <MapStat
-                  value="1.5 km"
-                  label="Distance"
-                />
-
-                <MapStat
-                  value="Light"
-                  label="Traffic"
-                />
-              </View>
             </View>
           </View>
 
@@ -1560,12 +1542,32 @@ const styles = StyleSheet.create({
   },
 
   /* ==========================================================
+     TOP LIVE MAP
+  ========================================================== */
+
+  topMapCard: {
+    margin: 16,
+    marginBottom: 8,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    overflow: "hidden",
+  },
+
+  topMapWrapper: {
+    height: 260,
+    width: "100%",
+    position: "relative",
+  },
+
+  /* ==========================================================
      CONTROL CARD
   ========================================================== */
 
   controlCard: {
-    margin: 16,
-    marginBottom: 8,
+    marginHorizontal: 16,
+    marginTop: 16,
     backgroundColor: "#FFFFFF",
     borderRadius: 20,
     borderWidth: 1,
@@ -1929,18 +1931,8 @@ const styles = StyleSheet.create({
   },
 
   /* ==========================================================
-     REAL GOOGLE MAP
+     GOOGLE MAP (top hero map)
   ========================================================== */
-
-  mapContainer: {
-    marginTop: 16,
-    height: 285,
-    borderRadius: 17,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    position: "relative",
-  },
 
   googleMap: {
     flex: 1,
@@ -2099,6 +2091,8 @@ const styles = StyleSheet.create({
     minHeight: 63,
     backgroundColor: "#FFFFFF",
     flexDirection: "row",
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
   },
 
   mapStat: {
