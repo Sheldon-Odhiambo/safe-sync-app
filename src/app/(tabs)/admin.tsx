@@ -405,7 +405,7 @@ export default function AdminScreen() {
 
             <View>
               <Text style={styles.headerTitle}>
-                Super Admin Portal
+                Admin Portal
               </Text>
 
               <Text style={styles.headerSubtitle}>

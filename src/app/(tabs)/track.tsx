@@ -1,5 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
+  ActivityIndicator,
   Alert,
   Linking,
   Pressable,
@@ -12,6 +19,8 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
+import * as Location from "expo-location";
 
 // ============================================================
 // TYPES
@@ -20,6 +29,11 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 type TimelineItem = {
   label: string;
   detail: string;
+};
+
+type Coordinates = {
+  latitude: number;
+  longitude: number;
 };
 
 // ============================================================
@@ -68,12 +82,68 @@ const trackingTimeline: TimelineItem[] = [
   },
 ];
 
+// The incident address — same one the responder console geocodes.
+const EMERGENCY_ADDRESS = "Wood Avenue, Kilimani, Nairobi, Kenya";
+
+// Dummy starting point for the responding unit (Nairobi Hospital
+// Station, Upper Hill — same unit shown in the metrics below).
+// Replace with the responder's live location from the backend once
+// that feed is wired up here.
+const RESPONDER_START: Coordinates = {
+  latitude: -1.2864,
+  longitude: 36.8172,
+};
+
+/* ============================================================
+   BACKEND HELPER
+   ------------------------------------------------------------
+   Every time we get a fresh GPS fix for this client we push
+   {latitude, longitude} to the backend. Wire this to the
+   realtime location channel served by the location-persistence
+   worker once this screen's WebSocket connection is available —
+   this REST call is a placeholder so the UI already has
+   somewhere to send coordinates.
+   ============================================================ */
+
+async function reportLocationToBackend(coords: Coordinates) {
+  try {
+    await fetch("https://api.safesync.co.ke/v1/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        role: "client",
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        recorded_at: new Date().toISOString(),
+      }),
+    });
+  } catch {
+    // Non-fatal: the map already reflects the location locally.
+  }
+}
+
+function interpolateCoordinates(
+  start: Coordinates,
+  end: Coordinates,
+  fraction: number
+): Coordinates {
+  const clamped = Math.max(0, Math.min(1, fraction));
+
+  return {
+    latitude:
+      start.latitude + (end.latitude - start.latitude) * clamped,
+    longitude:
+      start.longitude + (end.longitude - start.longitude) * clamped,
+  };
+}
+
 // ============================================================
 // MAIN SCREEN
 // ============================================================
 
 export default function TrackScreen() {
   const router = useRouter();
+  const mapRef = useRef<MapView | null>(null);
 
   // ----------------------------------------------------------
   // GET EMERGENCY TYPE
@@ -101,6 +171,150 @@ export default function TrackScreen() {
 
   const isArrived =
     eta === 0 || stage === trackingTimeline.length - 1;
+
+  // ----------------------------------------------------------
+  // LOCATION STATE
+  // ----------------------------------------------------------
+
+  const [currentLocation, setCurrentLocation] =
+    useState<Coordinates | null>(null);
+  const [emergencyLocation, setEmergencyLocation] =
+    useState<Coordinates | null>(null);
+  const [locationLoading, setLocationLoading] = useState(true);
+  const [locationError, setLocationError] = useState<string | null>(
+    null
+  );
+  const [mapReady, setMapReady] = useState(false);
+
+  const getCurrentLocation = useCallback(
+    async (showAlert = false) => {
+      try {
+        setLocationLoading(true);
+        setLocationError(null);
+
+        const servicesEnabled =
+          await Location.hasServicesEnabledAsync();
+
+        if (!servicesEnabled) {
+          throw new Error(
+            "Location services are disabled. Please enable GPS/location services on your device."
+          );
+        }
+
+        const permission =
+          await Location.requestForegroundPermissionsAsync();
+
+        if (permission.status !== "granted") {
+          throw new Error(
+            "Location permission was denied. SafeSync needs your location to track the responder coming to you."
+          );
+        }
+
+        const position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+
+        const coordinates: Coordinates = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        };
+
+        setCurrentLocation(coordinates);
+        reportLocationToBackend(coordinates);
+
+        if (showAlert) {
+          Alert.alert(
+            "Location updated",
+            "Your current location has been updated on the map."
+          );
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Unable to determine your current location.";
+
+        setLocationError(message);
+
+        if (showAlert) {
+          Alert.alert("Location unavailable", message);
+        }
+      } finally {
+        setLocationLoading(false);
+      }
+    },
+    []
+  );
+
+  const getEmergencyLocation = useCallback(async () => {
+    try {
+      const results = await Location.geocodeAsync(EMERGENCY_ADDRESS);
+
+      if (!results.length) {
+        return;
+      }
+
+      const result = results[0];
+
+      if (
+        typeof result.latitude !== "number" ||
+        typeof result.longitude !== "number"
+      ) {
+        return;
+      }
+
+      setEmergencyLocation({
+        latitude: result.latitude,
+        longitude: result.longitude,
+      });
+    } catch {
+      // Non-fatal — the client's own GPS fix still centers the map.
+    }
+  }, []);
+
+  // Fetch location automatically as soon as this screen opens.
+  useEffect(() => {
+    getCurrentLocation();
+    getEmergencyLocation();
+  }, [getCurrentLocation, getEmergencyLocation]);
+
+  // Fit the map to show both the client and the incoming responder.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !currentLocation) {
+      return;
+    }
+
+    const destination = emergencyLocation ?? currentLocation;
+
+    mapRef.current.fitToCoordinates(
+      [RESPONDER_START, destination],
+      {
+        edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
+        animated: true,
+      }
+    );
+  }, [mapReady, currentLocation, emergencyLocation]);
+
+  // Where the responder marker sits right now, interpolated between
+  // its starting point and the client, based on how far along the
+  // timeline we are. Swap this for the responder's real live
+  // coordinates from the backend once that feed exists.
+  const responderPosition = useMemo(() => {
+    const destination = emergencyLocation ?? currentLocation;
+
+    if (!destination) {
+      return null;
+    }
+
+    const totalSteps = trackingTimeline.length - 1;
+    const fraction = totalSteps > 0 ? stage / totalSteps : 0;
+
+    return interpolateCoordinates(
+      RESPONDER_START,
+      destination,
+      fraction
+    );
+  }, [emergencyLocation, currentLocation, stage]);
 
   // ----------------------------------------------------------
   // SIMULATE RESPONDER PROGRESS
@@ -289,158 +503,140 @@ export default function TrackScreen() {
         ================================================== */}
 
         <View style={styles.mapContainer}>
-          <View style={styles.mapBackground}>
-            {/* Map roads */}
+          {locationLoading && !currentLocation ? (
+            <View style={styles.mapLoading}>
+              <ActivityIndicator size="large" color={COLORS.primary} />
 
-            <View
-              style={[
-                styles.road,
-                styles.roadOne,
-              ]}
-            />
-
-            <View
-              style={[
-                styles.road,
-                styles.roadTwo,
-              ]}
-            />
-
-            <View
-              style={[
-                styles.road,
-                styles.roadThree,
-              ]}
-            />
-
-            <View
-              style={[
-                styles.road,
-                styles.roadFour,
-              ]}
-            />
-
-            <View
-              style={[
-                styles.road,
-                styles.roadFive,
-              ]}
-            />
-
-            {/* Map blocks */}
-
-            <View
-              style={[
-                styles.mapBlock,
-                styles.blockOne,
-              ]}
-            />
-
-            <View
-              style={[
-                styles.mapBlock,
-                styles.blockTwo,
-              ]}
-            />
-
-            <View
-              style={[
-                styles.mapBlock,
-                styles.blockThree,
-              ]}
-            />
-
-            <View
-              style={[
-                styles.mapBlock,
-                styles.blockFour,
-              ]}
-            />
-
-            {/* ==================================================
-                USER LOCATION
-            ================================================== */}
-
-            <View style={styles.userLocation}>
-              <View style={styles.userLocationPulse} />
-
-              <View style={styles.userLocationOuter}>
-                <View style={styles.userLocationInner} />
-              </View>
+              <Text style={styles.mapLoadingText}>
+                Getting your location...
+              </Text>
             </View>
-
-            {/* ==================================================
-                RESPONDER
-            ================================================== */}
-
-            {!isArrived && (
-              <View
-                style={[
-                  styles.vehicleMarker,
-                  {
-                    left: `${20 + stage * 15}%`,
-                    top: `${67 - stage * 11}%`,
-                  },
-                ]}
-              >
-                <View style={styles.vehiclePulse} />
-
-                <View style={styles.vehicleCircle}>
-                  <MaterialCommunityIcons
-                    name="ambulance"
-                    size={18}
-                    color={COLORS.white}
-                  />
-                </View>
-              </View>
-            )}
-
-            {/* Destination */}
-
-            <View style={styles.destinationMarker}>
+          ) : locationError && !currentLocation ? (
+            <View style={styles.mapError}>
               <Ionicons
-                name="location"
-                size={18}
-                color={COLORS.white}
-              />
-            </View>
-
-            {/* Map labels */}
-
-            <View style={styles.mapLabelUpperHill}>
-              <Text style={styles.mapLabelText}>
-                Upper Hill
-              </Text>
-            </View>
-
-            <View style={styles.mapLabelNairobi}>
-              <Text style={styles.mapLabelText}>
-                Nairobi
-              </Text>
-            </View>
-
-            <View style={styles.mapLabelLocation}>
-              <Text style={styles.mapLocationText}>
-                Your Location
-              </Text>
-            </View>
-
-            {/* Map status */}
-
-            <View style={styles.mapStatus}>
-              <Ionicons
-                name="navigate"
-                size={14}
+                name="location-outline"
+                size={32}
                 color={COLORS.primary}
               />
 
-              <Text style={styles.mapStatusText}>
-                {isArrived
-                  ? "Responder arrived"
-                  : "Responder tracking live"}
+              <Text style={styles.mapErrorTitle}>
+                Location unavailable
               </Text>
+
+              <Text style={styles.mapErrorText}>{locationError}</Text>
+
+              <Pressable
+                style={styles.locationRetryButton}
+                onPress={() => getCurrentLocation(true)}
+              >
+                <Ionicons name="refresh" size={17} color={COLORS.white} />
+
+                <Text style={styles.locationRetryText}>Try again</Text>
+              </Pressable>
             </View>
+          ) : (
+            <MapView
+              ref={mapRef}
+              provider={PROVIDER_GOOGLE}
+              style={styles.map}
+              onMapReady={() => setMapReady(true)}
+              showsUserLocation={false}
+              showsMyLocationButton={false}
+              showsCompass
+              mapType="standard"
+              initialRegion={{
+                latitude: currentLocation?.latitude ?? -1.2921,
+                longitude: currentLocation?.longitude ?? 36.8219,
+                latitudeDelta: 0.03,
+                longitudeDelta: 0.03,
+              }}
+            >
+              {/* CLIENT (YOUR) LOCATION */}
+              {currentLocation && (
+                <Marker
+                  coordinate={currentLocation}
+                  title="Your location"
+                  anchor={{ x: 0.5, y: 0.5 }}
+                >
+                  <View style={styles.clientMarkerWrap}>
+                    <View style={styles.clientPulse} />
+
+                    <View style={styles.clientOuter}>
+                      <View style={styles.clientInner} />
+                    </View>
+                  </View>
+                </Marker>
+              )}
+
+              {/* RESPONDER — moves towards you as the timeline advances */}
+              {!isArrived && responderPosition && (
+                <Marker
+                  coordinate={responderPosition}
+                  title="Responder"
+                  description="A. Mwangi · Unit KDA 241X"
+                  anchor={{ x: 0.5, y: 0.5 }}
+                >
+                  <View style={styles.responderMarkerWrap}>
+                    <View style={styles.vehiclePulse} />
+
+                    <View style={styles.vehicleCircle}>
+                      <MaterialCommunityIcons
+                        name="ambulance"
+                        size={18}
+                        color={COLORS.white}
+                      />
+                    </View>
+                  </View>
+                </Marker>
+              )}
+
+              {/* INCIDENT LOCATION */}
+              {emergencyLocation && (
+                <Marker
+                  coordinate={emergencyLocation}
+                  title="Incident location"
+                  description={EMERGENCY_ADDRESS}
+                >
+                  <View style={styles.destinationMarker}>
+                    <Ionicons
+                      name="location"
+                      size={18}
+                      color={COLORS.white}
+                    />
+                  </View>
+                </Marker>
+              )}
+            </MapView>
+          )}
+
+          {/* Map status */}
+          <View style={styles.mapStatus}>
+            <Ionicons
+              name="navigate"
+              size={14}
+              color={COLORS.primary}
+            />
+
+            <Text style={styles.mapStatusText}>
+              {isArrived
+                ? "Responder arrived"
+                : "Responder tracking live"}
+            </Text>
           </View>
+
+          {/* Recenter on my location */}
+          {currentLocation && (
+            <Pressable
+              style={styles.myLocationButton}
+              onPress={() => getCurrentLocation(true)}
+            >
+              {locationLoading ? (
+                <ActivityIndicator size="small" color={COLORS.text} />
+              ) : (
+                <Ionicons name="locate" size={20} color={COLORS.text} />
+              )}
+            </Pressable>
+          )}
         </View>
 
         {/* ==================================================
@@ -941,131 +1137,101 @@ const styles = StyleSheet.create({
     marginTop: 15,
     borderRadius: 20,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
 
-  mapBackground: {
+  map: {
+    width: "100%",
+    height: "100%",
+  },
+
+  mapLoading: {
     flex: 1,
-    backgroundColor: "#E6ECE4",
-    position: "relative",
-    overflow: "hidden",
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 30,
   },
 
-  road: {
+  mapLoadingText: {
+    marginTop: 10,
+    fontSize: 13,
+    fontWeight: "700",
+    color: COLORS.muted,
+    textAlign: "center",
+  },
+
+  mapError: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 25,
+  },
+
+  mapErrorTitle: {
+    marginTop: 8,
+    fontSize: 15,
+    fontWeight: "800",
+    color: COLORS.text,
+  },
+
+  mapErrorText: {
+    marginTop: 6,
+    fontSize: 11,
+    lineHeight: 17,
+    color: COLORS.muted,
+    textAlign: "center",
+  },
+
+  locationRetryButton: {
+    marginTop: 14,
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 11,
+    backgroundColor: COLORS.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+
+  locationRetryText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  myLocationButton: {
     position: "absolute",
+    right: 12,
+    bottom: 12,
+    width: 42,
+    height: 42,
+    borderRadius: 13,
     backgroundColor: COLORS.white,
-    borderRadius: 30,
-    opacity: 0.9,
-  },
-
-  roadOne: {
-    width: "130%",
-    height: 25,
-    top: "42%",
-    left: "-12%",
-    transform: [
-      {
-        rotate: "-15deg",
-      },
-    ],
-  },
-
-  roadTwo: {
-    width: "125%",
-    height: 18,
-    top: "63%",
-    left: "-12%",
-    transform: [
-      {
-        rotate: "28deg",
-      },
-    ],
-  },
-
-  roadThree: {
-    width: "17%",
-    height: "125%",
-    left: "46%",
-    top: "-12%",
-    transform: [
-      {
-        rotate: "22deg",
-      },
-    ],
-  },
-
-  roadFour: {
-    width: "12%",
-    height: "125%",
-    left: "73%",
-    top: "-12%",
-    transform: [
-      {
-        rotate: "-20deg",
-      },
-    ],
-  },
-
-  roadFive: {
-    width: "115%",
-    height: 14,
-    top: "23%",
-    left: "-8%",
-    transform: [
-      {
-        rotate: "8deg",
-      },
-    ],
-  },
-
-  mapBlock: {
-    position: "absolute",
-    backgroundColor: "#DCE4D8",
-    borderRadius: 8,
-  },
-
-  blockOne: {
-    width: 65,
-    height: 45,
-    top: 25,
-    left: 20,
-  },
-
-  blockTwo: {
-    width: 75,
-    height: 55,
-    top: 70,
-    right: 20,
-  },
-
-  blockThree: {
-    width: 60,
-    height: 50,
-    bottom: 35,
-    right: 40,
-  },
-
-  blockFour: {
-    width: 80,
-    height: 50,
-    bottom: 55,
-    left: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 5,
   },
 
   // ========================================================
-  // USER LOCATION
+  // CLIENT (YOUR) LOCATION MARKER
   // ========================================================
 
-  userLocation: {
-    position: "absolute",
-    left: "17%",
-    top: "70%",
+  clientMarkerWrap: {
     width: 42,
     height: 42,
     alignItems: "center",
     justifyContent: "center",
   },
 
-  userLocationPulse: {
+  clientPulse: {
     position: "absolute",
     width: 42,
     height: 42,
@@ -1073,7 +1239,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(22,163,74,0.18)",
   },
 
-  userLocationOuter: {
+  clientOuter: {
     width: 25,
     height: 25,
     borderRadius: 13,
@@ -1084,7 +1250,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.success,
   },
 
-  userLocationInner: {
+  clientInner: {
     width: 11,
     height: 11,
     borderRadius: 6,
@@ -1092,11 +1258,10 @@ const styles = StyleSheet.create({
   },
 
   // ========================================================
-  // RESPONDER
+  // RESPONDER MARKER
   // ========================================================
 
-  vehicleMarker: {
-    position: "absolute",
+  responderMarkerWrap: {
     width: 46,
     height: 46,
     alignItems: "center",
@@ -1132,9 +1297,6 @@ const styles = StyleSheet.create({
   },
 
   destinationMarker: {
-    position: "absolute",
-    left: "79%",
-    top: "26%",
     width: 34,
     height: 34,
     borderRadius: 17,
@@ -1143,40 +1305,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 2,
     borderColor: COLORS.white,
-  },
-
-  // ========================================================
-  // MAP LABELS
-  // ========================================================
-
-  mapLabelUpperHill: {
-    position: "absolute",
-    top: 32,
-    left: 28,
-  },
-
-  mapLabelNairobi: {
-    position: "absolute",
-    right: 30,
-    top: 95,
-  },
-
-  mapLabelLocation: {
-    position: "absolute",
-    left: "10%",
-    bottom: "18%",
-  },
-
-  mapLabelText: {
-    fontSize: 10,
-    color: "#596158",
-    fontWeight: "700",
-  },
-
-  mapLocationText: {
-    fontSize: 9,
-    color: COLORS.success,
-    fontWeight: "800",
   },
 
   // ========================================================

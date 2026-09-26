@@ -188,6 +188,7 @@ export default function ResponderConsole() {
 
   const [online, setOnline] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState("");
+  const [vehicleDropdownOpen, setVehicleDropdownOpen] = useState(false);
   const [checked, setChecked] = useState<string[]>([]);
   const [accepted, setAccepted] = useState(false);
 
@@ -451,6 +452,7 @@ export default function ResponderConsole() {
       }
 
       setOnline(true);
+      setVehicleDropdownOpen(false);
 
       Alert.alert(
         "You are online",
@@ -462,6 +464,7 @@ export default function ResponderConsole() {
 
     setOnline(false);
     setSelectedVehicle("");
+    setVehicleDropdownOpen(false);
     setChecked([]);
 
     Alert.alert(
@@ -779,81 +782,131 @@ export default function ResponderConsole() {
               RESPONSE VEHICLE
             </Text>
 
-            <View style={styles.vehicleList}>
-              {fleet.vehicles.map((vehicle) => {
-                const selected =
-                  selectedVehicle === vehicle.id;
-
-                return (
-                  <Pressable
-                    key={vehicle.id}
-                    disabled={online}
-                    onPress={() =>
-                      setSelectedVehicle(vehicle.id)
+            <View style={styles.vehicleDropdown}>
+              {/* Dropdown trigger */}
+              <Pressable
+                disabled={online}
+                onPress={() =>
+                  setVehicleDropdownOpen((open) => !open)
+                }
+                style={[
+                  styles.dropdownTrigger,
+                  vehicleDropdownOpen &&
+                    styles.dropdownTriggerOpen,
+                  online && styles.vehicleOptionDisabled,
+                ]}
+              >
+                <View style={styles.vehicleIcon}>
+                  <MaterialCommunityIcons
+                    name={
+                      activeVehicle?.kind === "Fire Engine"
+                        ? "fire-truck"
+                        : "ambulance"
                     }
-                    style={[
-                      styles.vehicleOption,
-                      selected &&
-                        styles.vehicleOptionSelected,
-                      online &&
-                        styles.vehicleOptionDisabled,
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.vehicleIcon,
-                        selected &&
-                          styles.vehicleIconSelected,
-                      ]}
-                    >
-                      <MaterialCommunityIcons
-                        name={
-                          vehicle.kind === "Fire Engine"
-                            ? "fire-truck"
-                            : "ambulance"
-                        }
-                        size={22}
-                        color={
-                          selected
-                            ? "#FFFFFF"
-                            : "#DC2626"
-                        }
-                      />
-                    </View>
+                    size={22}
+                    color="#DC2626"
+                  />
+                </View>
 
-                    <View style={styles.vehicleDetails}>
-                      <Text
+                <View style={styles.vehicleDetails}>
+                  <Text style={styles.vehiclePlate}>
+                    {activeVehicle
+                      ? activeVehicle.plate
+                      : "Select vehicle"}
+                  </Text>
+
+                  <Text style={styles.vehicleKind}>
+                    {activeVehicle
+                      ? `${activeVehicle.kind} • ${activeVehicle.station}`
+                      : "Tap to choose your unit"}
+                  </Text>
+                </View>
+
+                <Ionicons
+                  name={
+                    vehicleDropdownOpen
+                      ? "chevron-up"
+                      : "chevron-down"
+                  }
+                  size={20}
+                  color="#64748B"
+                />
+              </Pressable>
+
+              {/* Dropdown options */}
+              {vehicleDropdownOpen && !online && (
+                <View style={styles.dropdownList}>
+                  {fleet.vehicles.map((vehicle) => {
+                    const selected =
+                      selectedVehicle === vehicle.id;
+
+                    return (
+                      <Pressable
+                        key={vehicle.id}
+                        onPress={() => {
+                          setSelectedVehicle(vehicle.id);
+                          setVehicleDropdownOpen(false);
+                        }}
                         style={[
-                          styles.vehiclePlate,
+                          styles.dropdownItem,
                           selected &&
-                            styles.vehicleTextSelected,
+                            styles.dropdownItemSelected,
                         ]}
                       >
-                        {vehicle.plate}
-                      </Text>
+                        <View
+                          style={[
+                            styles.vehicleIcon,
+                            selected &&
+                              styles.vehicleIconSelected,
+                          ]}
+                        >
+                          <MaterialCommunityIcons
+                            name={
+                              vehicle.kind === "Fire Engine"
+                                ? "fire-truck"
+                                : "ambulance"
+                            }
+                            size={22}
+                            color={
+                              selected ? "#FFFFFF" : "#DC2626"
+                            }
+                          />
+                        </View>
 
-                      <Text
-                        style={[
-                          styles.vehicleKind,
-                          selected &&
-                            styles.vehicleTextSelected,
-                        ]}
-                      >
-                        {vehicle.kind} •{" "}
-                        {vehicle.station}
-                      </Text>
-                    </View>
+                        <View style={styles.vehicleDetails}>
+                          <Text
+                            style={[
+                              styles.vehiclePlate,
+                              selected &&
+                                styles.vehicleTextSelected,
+                            ]}
+                          >
+                            {vehicle.plate}
+                          </Text>
 
-                    {selected && (
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={24}
-                        color="#FFFFFF"
-                      />
-                    )}
-                  </Pressable>
-                );
-              })}
+                          <Text
+                            style={[
+                              styles.vehicleKind,
+                              selected &&
+                                styles.vehicleTextSelected,
+                            ]}
+                          >
+                            {vehicle.kind} • {vehicle.station}
+                          </Text>
+                        </View>
+
+                        {selected && (
+                          <Ionicons
+                            name="checkmark-circle"
+                            size={22}
+                            color="#FFFFFF"
+                          />
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
             </View>
 
             <View style={styles.availabilityRow}>
@@ -1605,6 +1658,50 @@ const styles = StyleSheet.create({
 
   vehicleOptionDisabled: {
     opacity: 0.65,
+  },
+
+  /* DROPDOWN */
+
+  vehicleDropdown: {
+    // wraps the trigger + the list that expands below it
+  },
+
+  dropdownTrigger: {
+    minHeight: 66,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+  },
+
+  dropdownTriggerOpen: {
+    borderColor: "#DC2626",
+  },
+
+  dropdownList: {
+    marginTop: 8,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    overflow: "hidden",
+  },
+
+  dropdownItem: {
+    minHeight: 62,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#F1F5F9",
+  },
+
+  dropdownItemSelected: {
+    backgroundColor: "#DC2626",
   },
 
   vehicleIcon: {

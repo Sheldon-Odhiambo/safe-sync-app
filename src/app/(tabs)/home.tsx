@@ -43,7 +43,7 @@ type Coordinates = {
 
 async function reportLocationToBackend(
   coords: Coordinates,
-  role: "client" | "super_admin" = "client"
+  role: "client" | "responder" = "client"
 ) {
   try {
     await fetch("https://api.safesync.co.ke/v1/locations", {
@@ -61,6 +61,32 @@ async function reportLocationToBackend(
     // The location-persistence worker will pick up the next
     // successful report.
   }
+}
+
+/* ============================================================
+   GREETING
+   ------------------------------------------------------------
+   Swap `loggedInUser` for whatever your auth/session state
+   exposes (e.g. from context or a hook) once that's wired up —
+   this is a stand-in so the screen has a real name to greet.
+   ============================================================ */
+
+const loggedInUser = {
+  name: "Kevin",
+};
+
+function getGreeting(date: Date = new Date()): string {
+  const hour = date.getHours();
+
+  if (hour < 12) {
+    return "Good morning";
+  }
+
+  if (hour < 18) {
+    return "Good afternoon";
+  }
+
+  return "Good evening";
 }
 
 export default function Home() {
@@ -208,7 +234,9 @@ export default function Home() {
       >
         {/* Greeting */}
         <View style={styles.greetingSection}>
-          <Text style={styles.userName}>Kevin</Text>
+          <Text style={styles.greetingText}>{getGreeting()}</Text>
+
+          <Text style={styles.userName}>{loggedInUser.name}</Text>
 
           <Text style={styles.userLocation}>
             {currentLocation
@@ -471,7 +499,14 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
 
+  greetingText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#64748B",
+  },
+
   userName: {
+    marginTop: 2,
     fontSize: 30,
     fontWeight: "800",
     color: "#0F172A",
