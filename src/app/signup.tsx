@@ -10,9 +10,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { supabase } from "../lib/supabase";
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -20,50 +22,27 @@ export default function SignupScreen() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] =
-    useState(false);
-
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const handleSignup = () => {
-    if (!fullName.trim()) {
+  const handleSignup = async () => {
+    const cleanName = fullName.trim();
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = phone.trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!cleanName) {
       Alert.alert("Missing information", "Please enter your full name.");
       return;
     }
 
-    if (!email.trim()) {
-      Alert.alert("Missing information", "Please enter your email address.");
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      Alert.alert("Missing information", "Please enter a valid email address.");
       return;
     }
 
-    if (!phone.trim()) {
+    if (!cleanPhone) {
       Alert.alert("Missing information", "Please enter your phone number.");
-      return;
-    }
-
-    if (!password) {
-      Alert.alert("Missing information", "Please create a password.");
-      return;
-    }
-
-    if (password.length < 8) {
-      Alert.alert(
-        "Weak password",
-        "Your password must contain at least 8 characters."
-      );
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      Alert.alert(
-        "Passwords do not match",
-        "Please make sure both passwords are the same."
-      );
       return;
     }
 
@@ -77,22 +56,61 @@ export default function SignupScreen() {
 
     setLoading(true);
 
-    // TODO:
-    // Connect this section to your backend/Supabase/Firebase.
-    setTimeout(() => {
-      setLoading(false);
-
-      Alert.alert(
-        "Account created",
-        "Your SafeSync account has been created successfully.",
-        [
-          {
-            text: "Continue",
-            onPress: () => router.replace("/"),
-          },
-        ]
+    try {
+      // #2: if this email already has an account, send them to login instead
+      // of creating a duplicate / silently re-sending a signup OTP.
+      const { data: exists, error: checkError } = await supabase.rpc(
+        "email_exists",
+        { check_email: cleanEmail }
       );
-    }, 1000);
+
+      if (checkError) throw checkError;
+
+      if (exists) {
+        setLoading(false);
+        Alert.alert(
+          "Account already exists",
+          "An account with this email already exists. Please sign in instead.",
+          [
+            {
+              text: "Go to Sign In",
+              onPress: () => router.replace("/"),
+            },
+          ]
+        );
+        return;
+      }
+
+      // #1: create the (passwordless) account and send the OTP. Full name
+      // and phone ride along as user metadata; a DB trigger/function on
+      // your side can copy them into core.user_profiles on first
+      // verification, same as the org-registration flow.
+      const { error: otpError } = await supabase.auth.signInWithOtp({
+        email: cleanEmail,
+        options: {
+          shouldCreateUser: true,
+          data: {
+            full_name: cleanName,
+            phone: cleanPhone,
+          },
+        },
+      });
+
+      if (otpError) throw otpError;
+
+      router.push({
+        pathname: "/verify-code",
+        params: { email: cleanEmail, mode: "signup" },
+      });
+    } catch (error: any) {
+      console.error("Signup error:", error);
+      Alert.alert(
+        "Something went wrong",
+        error?.message || "Could not create your account. Please try again."
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -114,20 +132,12 @@ export default function SignupScreen() {
               onPress={() => router.back()}
               activeOpacity={0.7}
             >
-              <Ionicons
-                name="arrow-back"
-                size={21}
-                color="#0F172A"
-              />
+              <Ionicons name="arrow-back" size={21} color="#0F172A" />
             </TouchableOpacity>
 
             <View style={styles.logoContainer}>
               <View style={styles.logoBadge}>
-                <Ionicons
-                  name="shield-checkmark"
-                  size={22}
-                  color="#FFFFFF"
-                />
+                <Ionicons name="shield-checkmark" size={22} color="#FFFFFF" />
               </View>
 
               <Text style={styles.logoText}>SafeSync</Text>
@@ -142,8 +152,8 @@ export default function SignupScreen() {
             <Text style={styles.title}>Create your account</Text>
 
             <Text style={styles.subtitle}>
-              Join SafeSync and get access to fast and reliable
-              emergency assistance when you need it.
+              Join SafeSync and get access to fast and reliable emergency
+              assistance when you need it.
             </Text>
           </View>
 
@@ -171,6 +181,7 @@ export default function SignupScreen() {
                   onChangeText={setFullName}
                   autoCapitalize="words"
                   autoCorrect={false}
+                  editable={!loading}
                 />
               </View>
             </View>
@@ -197,6 +208,7 @@ export default function SignupScreen() {
                   keyboardType="email-address"
                   autoCapitalize="none"
                   autoCorrect={false}
+                  editable={!loading}
                 />
               </View>
             </View>
@@ -221,99 +233,8 @@ export default function SignupScreen() {
                   value={phone}
                   onChangeText={setPhone}
                   keyboardType="phone-pad"
+                  editable={!loading}
                 />
-              </View>
-            </View>
-
-            {/* PASSWORD */}
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={20}
-                  color="#64748B"
-                  style={styles.inputIcon}
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Create a password"
-                  placeholderTextColor="#94A3B8"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-
-                <TouchableOpacity
-                  style={styles.eyeButton}
-                  onPress={() =>
-                    setShowPassword(!showPassword)
-                  }
-                >
-                  <Ionicons
-                    name={
-                      showPassword
-                        ? "eye-off-outline"
-                        : "eye-outline"
-                    }
-                    size={21}
-                    color="#64748B"
-                  />
-                </TouchableOpacity>
-              </View>
-
-              <Text style={styles.helperText}>
-                Use at least 8 characters.
-              </Text>
-            </View>
-
-            {/* CONFIRM PASSWORD */}
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Confirm password</Text>
-
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={20}
-                  color="#64748B"
-                  style={styles.inputIcon}
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Confirm your password"
-                  placeholderTextColor="#94A3B8"
-                  value={confirmPassword}
-                  onChangeText={setConfirmPassword}
-                  secureTextEntry={!showConfirmPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-
-                <TouchableOpacity
-                  style={styles.eyeButton}
-                  onPress={() =>
-                    setShowConfirmPassword(
-                      !showConfirmPassword
-                    )
-                  }
-                >
-                  <Ionicons
-                    name={
-                      showConfirmPassword
-                        ? "eye-off-outline"
-                        : "eye-outline"
-                    }
-                    size={21}
-                    color="#64748B"
-                  />
-                </TouchableOpacity>
               </View>
             </View>
 
@@ -322,9 +243,7 @@ export default function SignupScreen() {
             <TouchableOpacity
               style={styles.termsRow}
               activeOpacity={0.7}
-              onPress={() =>
-                setAcceptedTerms(!acceptedTerms)
-              }
+              onPress={() => setAcceptedTerms(!acceptedTerms)}
             >
               <View
                 style={[
@@ -333,24 +252,14 @@ export default function SignupScreen() {
                 ]}
               >
                 {acceptedTerms && (
-                  <Ionicons
-                    name="checkmark"
-                    size={15}
-                    color="#FFFFFF"
-                  />
+                  <Ionicons name="checkmark" size={15} color="#FFFFFF" />
                 )}
               </View>
 
               <Text style={styles.termsText}>
                 I agree to the{" "}
-                <Text style={styles.termsLink}>
-                  Terms of Service
-                </Text>{" "}
-                and{" "}
-                <Text style={styles.termsLink}>
-                  Privacy Policy
-                </Text>
-                .
+                <Text style={styles.termsLink}>Terms of Service</Text> and{" "}
+                <Text style={styles.termsLink}>Privacy Policy</Text>.
               </Text>
             </TouchableOpacity>
 
@@ -366,20 +275,14 @@ export default function SignupScreen() {
               disabled={loading}
             >
               {loading ? (
-                <Text style={styles.signupButtonText}>
-                  Creating account...
-                </Text>
+                <>
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <Text style={styles.signupButtonText}>Sending code...</Text>
+                </>
               ) : (
                 <>
-                  <Text style={styles.signupButtonText}>
-                    Create Account
-                  </Text>
-
-                  <Ionicons
-                    name="arrow-forward"
-                    size={20}
-                    color="#FFFFFF"
-                  />
+                  <Text style={styles.signupButtonText}>Create Account</Text>
+                  <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
                 </>
               )}
             </TouchableOpacity>
@@ -388,26 +291,20 @@ export default function SignupScreen() {
 
             <View style={styles.dividerContainer}>
               <View style={styles.divider} />
-
               <Text style={styles.dividerText}>OR</Text>
-
               <View style={styles.divider} />
             </View>
 
             {/* SIGN IN */}
 
             <View style={styles.loginContainer}>
-              <Text style={styles.loginText}>
-                Already have an account?
-              </Text>
+              <Text style={styles.loginText}>Already have an account?</Text>
 
               <TouchableOpacity
                 onPress={() => router.replace("/")}
                 activeOpacity={0.7}
               >
-                <Text style={styles.loginLink}>
-                  Sign In
-                </Text>
+                <Text style={styles.loginLink}>Sign In</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -424,22 +321,18 @@ export default function SignupScreen() {
             </View>
 
             <View style={styles.securityContent}>
-              <Text style={styles.securityTitle}>
-                Your safety matters
-              </Text>
+              <Text style={styles.securityTitle}>Your safety matters</Text>
 
               <Text style={styles.securityText}>
-                Your information is securely handled and
-                used to provide emergency assistance.
+                Your information is securely handled and used to provide
+                emergency assistance.
               </Text>
             </View>
           </View>
 
           {/* FOOTER */}
 
-          <Text style={styles.footer}>
-            © 2026 SafeSync. All rights reserved.
-          </Text>
+          <Text style={styles.footer}>© 2026 SafeSync. All rights reserved.</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -447,21 +340,9 @@ export default function SignupScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#F8FAFC",
-  },
-
-  keyboardView: {
-    flex: 1,
-  },
-
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 35,
-  },
-
-  /* HEADER */
+  safeArea: { flex: 1, backgroundColor: "#F8FAFC" },
+  keyboardView: { flex: 1 },
+  scrollContent: { flexGrow: 1, paddingBottom: 35 },
 
   header: {
     height: 70,
@@ -473,7 +354,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#E2E8F0",
   },
-
   backButton: {
     width: 42,
     height: 42,
@@ -484,12 +364,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#FFFFFF",
   },
-
-  logoContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-
+  logoContainer: { flexDirection: "row", alignItems: "center" },
   logoBadge: {
     width: 38,
     height: 38,
@@ -499,55 +374,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginRight: 9,
   },
+  logoText: { fontSize: 21, fontWeight: "800", color: "#0F172A" },
+  headerSpacer: { width: 42 },
 
-  logoText: {
-    fontSize: 21,
-    fontWeight: "800",
-    color: "#0F172A",
-  },
+  introSection: { paddingHorizontal: 24, paddingTop: 30, paddingBottom: 22 },
+  title: { fontSize: 30, fontWeight: "800", color: "#0F172A", marginBottom: 10 },
+  subtitle: { fontSize: 15, lineHeight: 23, color: "#64748B" },
 
-  headerSpacer: {
-    width: 42,
-  },
-
-  /* INTRO */
-
-  introSection: {
-    paddingHorizontal: 24,
-    paddingTop: 30,
-    paddingBottom: 22,
-  },
-
-  title: {
-    fontSize: 30,
-    fontWeight: "800",
-    color: "#0F172A",
-    marginBottom: 10,
-  },
-
-  subtitle: {
-    fontSize: 15,
-    lineHeight: 23,
-    color: "#64748B",
-  },
-
-  /* FORM */
-
-  formContainer: {
-    paddingHorizontal: 24,
-  },
-
-  inputGroup: {
-    marginBottom: 18,
-  },
-
-  label: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#334155",
-    marginBottom: 8,
-  },
-
+  formContainer: { paddingHorizontal: 24 },
+  inputGroup: { marginBottom: 18 },
+  label: { fontSize: 13, fontWeight: "700", color: "#334155", marginBottom: 8 },
   inputWrapper: {
     height: 54,
     flexDirection: "row",
@@ -558,38 +394,10 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingHorizontal: 14,
   },
+  inputIcon: { marginRight: 10 },
+  input: { flex: 1, height: "100%", fontSize: 15, color: "#0F172A", paddingVertical: 0 },
 
-  inputIcon: {
-    marginRight: 10,
-  },
-
-  input: {
-    flex: 1,
-    height: "100%",
-    fontSize: 15,
-    color: "#0F172A",
-    paddingVertical: 0,
-  },
-
-  eyeButton: {
-    padding: 5,
-  },
-
-  helperText: {
-    fontSize: 11,
-    color: "#94A3B8",
-    marginTop: 6,
-  },
-
-  /* TERMS */
-
-  termsRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    marginTop: 2,
-    marginBottom: 22,
-  },
-
+  termsRow: { flexDirection: "row", alignItems: "flex-start", marginTop: 2, marginBottom: 22 },
   checkbox: {
     width: 21,
     height: 21,
@@ -602,25 +410,9 @@ const styles = StyleSheet.create({
     marginRight: 10,
     marginTop: 1,
   },
-
-  checkboxActive: {
-    backgroundColor: "#DC2626",
-    borderColor: "#DC2626",
-  },
-
-  termsText: {
-    flex: 1,
-    fontSize: 12,
-    lineHeight: 19,
-    color: "#64748B",
-  },
-
-  termsLink: {
-    color: "#DC2626",
-    fontWeight: "700",
-  },
-
-  /* BUTTON */
+  checkboxActive: { backgroundColor: "#DC2626", borderColor: "#DC2626" },
+  termsText: { flex: 1, fontSize: 12, lineHeight: 19, color: "#64748B" },
+  termsLink: { color: "#DC2626", fontWeight: "700" },
 
   signupButton: {
     height: 56,
@@ -630,70 +422,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 20,
-
+    gap: 10,
     shadowColor: "#DC2626",
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
+    shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.2,
     shadowRadius: 10,
     elevation: 6,
   },
+  signupButtonDisabled: { opacity: 0.65 },
+  signupButtonText: { color: "#FFFFFF", fontSize: 15, fontWeight: "800" },
 
-  signupButtonDisabled: {
-    opacity: 0.65,
-  },
+  dividerContainer: { flexDirection: "row", alignItems: "center", marginVertical: 25 },
+  divider: { flex: 1, height: 1, backgroundColor: "#E2E8F0" },
+  dividerText: { fontSize: 11, fontWeight: "700", color: "#94A3B8", marginHorizontal: 14 },
 
-  signupButtonText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "800",
-    marginRight: 10,
-  },
-
-  /* DIVIDER */
-
-  dividerContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 25,
-  },
-
-  divider: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "#E2E8F0",
-  },
-
-  dividerText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#94A3B8",
-    marginHorizontal: 14,
-  },
-
-  /* LOGIN */
-
-  loginContainer: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  loginText: {
-    fontSize: 14,
-    color: "#64748B",
-    marginRight: 5,
-  },
-
-  loginLink: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#DC2626",
-  },
-
-  /* SECURITY */
+  loginContainer: { flexDirection: "row", justifyContent: "center", alignItems: "center" },
+  loginText: { fontSize: 14, color: "#64748B", marginRight: 5 },
+  loginLink: { fontSize: 14, fontWeight: "800", color: "#DC2626" },
 
   securityBox: {
     marginHorizontal: 24,
@@ -706,7 +451,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
   },
-
   securityIcon: {
     width: 34,
     height: 34,
@@ -716,30 +460,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginRight: 11,
   },
+  securityContent: { flex: 1 },
+  securityTitle: { fontSize: 13, fontWeight: "800", color: "#9F1239", marginBottom: 3 },
+  securityText: { fontSize: 11, lineHeight: 17, color: "#881337" },
 
-  securityContent: {
-    flex: 1,
-  },
-
-  securityTitle: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#9F1239",
-    marginBottom: 3,
-  },
-
-  securityText: {
-    fontSize: 11,
-    lineHeight: 17,
-    color: "#881337",
-  },
-
-  /* FOOTER */
-
-  footer: {
-    textAlign: "center",
-    fontSize: 10,
-    color: "#94A3B8",
-    marginTop: 25,
-  },
+  footer: { textAlign: "center", fontSize: 10, color: "#94A3B8", marginTop: 25 },
 });
