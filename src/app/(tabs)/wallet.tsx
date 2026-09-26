@@ -23,7 +23,7 @@ const API_BASE =
 
 const PAYHERO_STK_ENDPOINT =
   process.env.EXPO_PUBLIC_PAYHERO_STK_ENDPOINT ||
-  `${API_BASE}/api/v1/payments/payhero/stk-push`;
+  `${API_BASE}/api/v1/payments/deposit`;
 
 /*
 |--------------------------------------------------------------------------
@@ -46,7 +46,7 @@ const PAYHERO_STK_ENDPOINT =
 
 const PAYHERO_STATUS_ENDPOINT =
   process.env.EXPO_PUBLIC_PAYHERO_STATUS_ENDPOINT ||
-  `${API_BASE}/api/v1/payments/payhero/status`;
+  `${API_BASE}/api/v1/payments/deposit`;
 
 const STATUS_POLL_INTERVAL_MS = 3000;
 const STATUS_POLL_MAX_ATTEMPTS = 20; // ~60s total before giving up
@@ -66,21 +66,22 @@ type Transaction = {
   status?: string;
 };
 
-type PayHeroResponse = {
-  success?: boolean;
-  status?: string;
-  message?: string;
-  error?: string;
-  error_code?: string;
-  error_message?: string;
+// Matches the FastAPI DepositCreated schema exactly.
+type DepositCreated = {
+  reference: string;
+  status: string; // always "PENDING" at creation time
+};
 
-  reference?: string;
-  external_reference?: string;
+// Matches the FastAPI DepositStatus schema exactly.
+type DepositStatus = {
+  status: string; // "PENDING" | "SUCCESS" | "FAILED"
+  receipt?: string | null;
+  reason?: string | null;
+};
 
-  checkout_request_id?: string;
-  CheckoutRequestID?: string;
-
-  transaction_id?: string;
+// FastAPI's default error envelope for a raised HTTPException.
+type ApiErrorResponse = {
+  detail?: string;
 };
 
 /*
@@ -274,7 +275,7 @@ export default function Wallet() {
           setTimeout(resolve, STATUS_POLL_INTERVAL_MS);
         });
 
-        let statusData: PayHeroResponse = {};
+        let statusData: DepositStatus = { status: "" };
 
         try {
           const statusResponse = await fetch(
@@ -289,6 +290,9 @@ export default function Wallet() {
           if (statusResponse.ok) {
             statusData = await statusResponse.json();
           }
+          // A 404 here just means the transaction row isn't visible
+          // yet (or the reference is momentarily wrong) — treat like
+          // PENDING and keep polling rather than failing outright.
         } catch {
           // Transient network error — just try again next attempt.
           continue;
@@ -296,32 +300,28 @@ export default function Wallet() {
 
         const status = String(statusData.status || "").toUpperCase();
 
-        if (status === "SUCCESS" || status === "COMPLETED") {
+        if (status === "SUCCESS") {
           Alert.alert(
             "Payment confirmed",
-            "Your M-Pesa payment was confirmed by SafeSync and your wallet has been credited."
+            statusData.receipt
+              ? `Your M-Pesa payment was confirmed (receipt ${statusData.receipt}) and your wallet has been credited.`
+              : "Your M-Pesa payment was confirmed and your wallet has been credited."
           );
 
           handleRefresh();
           return;
         }
 
-        if (
-          status === "FAILED" ||
-          status === "CANCELLED" ||
-          status === "REJECTED"
-        ) {
+        if (status === "FAILED") {
           Alert.alert(
             "Payment not completed",
-            statusData.message ||
-              statusData.error_message ||
-              "The M-Pesa payment was not completed."
+            statusData.reason || "The M-Pesa payment was not completed."
           );
 
           return;
         }
 
-        // Anything else (PENDING, QUEUED, no data yet) — keep polling.
+        // Anything else (PENDING, no data yet) — keep polling.
       }
 
       Alert.alert(
@@ -431,11 +431,13 @@ export default function Wallet() {
 
       /*
        * --------------------------------------------------------------
-       * SAFE SYNC PAYMENT REFERENCE
+       * INITIATE THE DEPOSIT (POST /api/v1/payments/deposit)
        * --------------------------------------------------------------
+       *
+       * The backend generates and owns the payment reference — it is
+       * not something the app invents, so the request body is just
+       * what DepositRequest expects.
        */
-
-      const externalReference = `SAFE-${Date.now()}`;
 
       const response = await fetch(PAYHERO_STK_ENDPOINT, {
         method: "POST",
@@ -452,90 +454,45 @@ export default function Wallet() {
            * PayHero should receive the Kenyan international format.
            */
           phone_number: cleanPhone,
-
-          /*
-           * Used to correlate the payment throughout SafeSync.
-           */
-          external_reference: externalReference,
         }),
       });
 
       /*
        * --------------------------------------------------------------
-       * PARSE RESPONSE
-       * --------------------------------------------------------------
-       */
-
-      let data: PayHeroResponse = {};
-
-      try {
-        data = await response.json();
-      } catch {
-        data = {};
-      }
-
-      /*
-       * --------------------------------------------------------------
        * HANDLE HTTP ERROR
        * --------------------------------------------------------------
+       *
+       * The router raises HTTPException for every business-rule
+       * failure (invalid amount, duplicate in-flight deposit, no
+       * permission, PayHero unreachable), which FastAPI serializes as
+       * {"detail": "..."} — there's no custom error envelope to parse.
        */
 
       if (!response.ok) {
-        const errorMessage =
-          data.error_message ||
-          data.message ||
-          data.error ||
-          "The payment request could not be initiated.";
+        let errorMessage = "The payment request could not be initiated.";
+
+        try {
+          const errorData: ApiErrorResponse = await response.json();
+          errorMessage = errorData.detail || errorMessage;
+        } catch {
+          // Non-JSON error body — fall back to the generic message.
+        }
 
         throw new Error(errorMessage);
       }
 
       /*
        * --------------------------------------------------------------
-       * EXTRACT PAYMENT REFERENCE
-       * --------------------------------------------------------------
-       */
-
-      const reference =
-        data.reference ||
-        data.transaction_id ||
-        data.CheckoutRequestID ||
-        data.checkout_request_id ||
-        data.external_reference ||
-        externalReference;
-
-      const status = String(
-        data.status || ""
-      ).toUpperCase();
-
-      /*
-       * --------------------------------------------------------------
-       * HANDLE EXPLICIT FAILURE
-       * --------------------------------------------------------------
-       */
-
-      if (
-        data.success === false ||
-        status === "FAILED" ||
-        status === "CANCELLED" ||
-        status === "REJECTED"
-      ) {
-        throw new Error(
-          data.message ||
-            data.error_message ||
-            "PayHero could not initiate the M-Pesa payment."
-        );
-      }
-
-      /*
-       * --------------------------------------------------------------
-       * SUCCESS / QUEUED
+       * PARSE RESPONSE — always {reference, status: "PENDING"}
        * --------------------------------------------------------------
        *
-       * At this point the STK request has been accepted/initiated.
-       *
-       * It does NOT mean that money has been received yet.
+       * A 200 here only means PayHero accepted the STK push request.
+       * It does NOT mean that money has been received yet — that only
+       * arrives later via PayHero's callback to FastAPI.
        */
+
+      const data: DepositCreated = await response.json();
+      const reference = data.reference;
 
       Alert.alert(
         "M-Pesa request sent",
@@ -562,7 +519,7 @@ export default function Wallet() {
       pollPaymentStatus(reference, session.access_token);
     } catch (error) {
       console.error(
-        "SafeSync STK Push error:",
+        "SafeSync PayHero STK Push error:",
         error
       );
 
@@ -737,7 +694,8 @@ export default function Wallet() {
                 </Text>
 
                 <Text style={styles.panelSubtitle}>
-                  Deposit securely through M-Pesa using an STK push.
+                  Deposit securely through M-Pesa using a PayHero STK
+                  push.
                 </Text>
               </View>
             </View>
@@ -1381,9 +1339,9 @@ export default function Wallet() {
 
               <Text style={styles.infoText}>
                 Enter your M-Pesa number and amount. SafeSync sends an
-                STK push through M-Pesa. After you enter your M-Pesa
-                PIN, M-Pesa confirms the payment to SafeSync
-                . Your wallet is credited only after the
+                STK push through PayHero. After you enter your M-Pesa
+                PIN, PayHero confirms the payment to the SafeSync
+                backend. Your wallet is credited only after the
                 payment has been successfully confirmed.
               </Text>
             </View>
