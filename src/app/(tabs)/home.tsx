@@ -43,7 +43,7 @@ type Coordinates = {
 
 async function reportLocationToBackend(
   coords: Coordinates,
-  role: "client" | "responder" = "client"
+  role: "client" | "super_admin" = "client"
 ) {
   try {
     await fetch("https://api.safesync.co.ke/v1/locations", {
