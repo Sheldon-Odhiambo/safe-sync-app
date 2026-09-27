@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Alert,
   ScrollView,
@@ -11,58 +11,104 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-const contacts = [
-  {
-    name: "Ama Mensah",
-    relation: "Spouse",
-    phone: "+254 712 345 678",
-  },
-  {
-    name: "Dr. J. Osei",
-    relation: "Family doctor",
-    phone: "+254 722 221 908",
-  },
-  {
-    name: "Kofi Mensah",
-    relation: "Brother",
-    phone: "+254 733 664 112",
-  },
-];
+import { useAuth } from "../../contexts/auth-context";
+
+type EmergencyContact = {
+  name: string;
+  relation: string;
+  phone: string;
+};
 
 export default function Profile() {
-  const [panicMode, setPanicMode] = useState(true);
+  const { profile } = useAuth();
+
+  // SAFETY SETTINGS
   const [shareMedical, setShareMedical] = useState(true);
-  const [recording, setRecording] = useState(true);
-  const [offlineQueue, setOfflineQueue] = useState(true);
 
-  const [firstName, setFirstName] = useState("Kevin");
-  const [lastName, setLastName] = useState("Mensah");
-  const [dob, setDob] = useState("14 Mar 1992");
-  const [language, setLanguage] = useState("English");
-
-  const [bloodGroup, setBloodGroup] = useState("O+");
-  const [insurance, setInsurance] = useState("NHIF / AAR Health");
-  const [hospital, setHospital] = useState("Lakeview Hospital");
-  const [medications, setMedications] = useState("Metformin 500mg");
-  const [allergies, setAllergies] = useState(
-    "Penicillin, shellfish"
+  // PERSONAL DETAILS — seeded from the stored user profile
+  // (core.user_profiles, loaded/cached by AuthProvider).
+  const [firstName, setFirstName] = useState(
+    profile?.first_name ?? ""
   );
-  const [preExistingConditions, setPreExistingConditions] = useState(
-    "Type 2 Diabetes, Hypertension"
+  const [lastName, setLastName] = useState(
+    profile?.last_name ?? ""
   );
 
-  const handleSaveProfile = () => {
+  // Keep in sync if the profile finishes loading (or changes)
+  // after this screen has already mounted.
+  useEffect(() => {
+    if (profile) {
+      setFirstName(profile.first_name ?? "");
+      setLastName(profile.last_name ?? "");
+    }
+  }, [profile]);
+
+  // MEDICAL INFORMATION
+  const [isEditingMedical, setIsEditingMedical] = useState(false);
+  const [dob, setDob] = useState("");
+  const [bloodGroup, setBloodGroup] = useState("");
+  const [insurance, setInsurance] = useState("");
+  const [preExistingConditions, setPreExistingConditions] = useState("");
+  const [allergies, setAllergies] = useState("");
+
+  // EMERGENCY CONTACTS
+  const [contacts, setContacts] = useState<EmergencyContact[]>([]);
+  const [showAddContactForm, setShowAddContactForm] = useState(false);
+  const [contactName, setContactName] = useState("");
+  const [contactRelation, setContactRelation] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+
+  const handleSaveMedicalInfo = () => {
+    setIsEditingMedical(false);
+
     Alert.alert(
-      "Profile saved",
-      "Your profile information has been updated successfully."
+      "Medical information saved",
+      "Your medical information has been updated successfully."
     );
   };
 
-  const handleAddContact = () => {
-    Alert.alert(
-      "Add emergency contact",
-      "The emergency contact form will be added here."
-    );
+  const handleCancelMedicalEdit = () => {
+    setIsEditingMedical(false);
+  };
+
+  const resetContactForm = () => {
+    setContactName("");
+    setContactRelation("");
+    setContactPhone("");
+  };
+
+  const handleToggleAddContactForm = () => {
+    if (showAddContactForm) {
+      resetContactForm();
+    }
+
+    setShowAddContactForm((prev) => !prev);
+  };
+
+  const handleSaveContact = () => {
+    if (
+      !contactName.trim() ||
+      !contactRelation.trim() ||
+      !contactPhone.trim()
+    ) {
+      Alert.alert(
+        "Missing details",
+        "Please fill in the name, relation and phone number before adding a contact."
+      );
+      return;
+    }
+
+    setContacts((prev) => [
+      ...prev,
+      {
+        name: contactName.trim(),
+        relation: contactRelation.trim(),
+        phone: contactPhone.trim(),
+      },
+    ]);
+
+    resetContactForm();
+    setShowAddContactForm(false);
   };
 
   const handleDeleteAccount = () => {
@@ -130,24 +176,14 @@ export default function Profile() {
             label="First name"
             value={firstName}
             onChangeText={setFirstName}
+            placeholder="Enter your first name"
           />
 
           <InputField
             label="Last name"
             value={lastName}
             onChangeText={setLastName}
-          />
-
-          <InputField
-            label="Date of birth"
-            value={dob}
-            onChangeText={setDob}
-          />
-
-          <InputField
-            label="Language preference"
-            value={language}
-            onChangeText={setLanguage}
+            placeholder="Enter your last name"
           />
         </View>
       </View>
@@ -157,92 +193,154 @@ export default function Profile() {
       {/* ========================================= */}
 
       <View style={styles.card}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionIcon}>
-            <Ionicons
-              name="medical-outline"
-              size={19}
-              color="#DC2626"
+        <View style={styles.contactHeader}>
+          <View style={styles.sectionHeaderSmall}>
+            <View style={styles.sectionIcon}>
+              <Ionicons
+                name="medical-outline"
+                size={19}
+                color="#DC2626"
+              />
+            </View>
+
+            <View>
+              <Text style={styles.sectionTitle}>
+                Medical information
+              </Text>
+
+              <Text style={styles.sectionSubtitle}>
+                Important information for emergency responders
+              </Text>
+            </View>
+          </View>
+
+          {!isEditingMedical && (
+            <TouchableOpacity
+              style={styles.editButton}
+              onPress={() => setIsEditingMedical(true)}
+            >
+              <Ionicons
+                name="create-outline"
+                size={16}
+                color="#DC2626"
+              />
+
+              <Text style={styles.editButtonText}>Edit</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {isEditingMedical ? (
+          <>
+            <View style={styles.formGrid}>
+              <InputField
+                label="Date of birth"
+                value={dob}
+                onChangeText={setDob}
+                placeholder="e.g. 14 Mar 1992"
+              />
+
+              <InputField
+                label="Blood group"
+                value={bloodGroup}
+                onChangeText={setBloodGroup}
+                placeholder="e.g. O+"
+              />
+
+              <InputField
+                label="Insurance provider"
+                value={insurance}
+                onChangeText={setInsurance}
+                placeholder="e.g. AAR"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Pre-existing conditions</Text>
+
+              <TextInput
+                value={preExistingConditions}
+                onChangeText={setPreExistingConditions}
+                multiline
+                textAlignVertical="top"
+                style={styles.textArea}
+                placeholder="Enter pre-existing medical conditions"
+                placeholderTextColor="#94A3B8"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Allergies</Text>
+
+              <TextInput
+                value={allergies}
+                onChangeText={setAllergies}
+                multiline
+                textAlignVertical="top"
+                style={styles.textArea}
+                placeholder="Enter known allergies"
+                placeholderTextColor="#94A3B8"
+              />
+            </View>
+
+            <View style={styles.medicalNotice}>
+              <Ionicons
+                name="information-circle-outline"
+                size={18}
+                color="#DC2626"
+              />
+
+              <Text style={styles.medicalNoticeText}>
+                This information may be shared with your assigned
+                emergency responder during an active incident.
+              </Text>
+            </View>
+
+            {/* SAVE / CANCEL */}
+
+            <TouchableOpacity
+              style={styles.saveButton}
+              activeOpacity={0.85}
+              onPress={handleSaveMedicalInfo}
+            >
+              <Ionicons
+                name="shield-checkmark"
+                size={19}
+                color="#FFFFFF"
+              />
+
+              <Text style={styles.saveButtonText}>
+                Save medical information
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelButton}
+              activeOpacity={0.85}
+              onPress={handleCancelMedicalEdit}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <View style={styles.readOnlyGrid}>
+            <ReadOnlyField label="Date of birth" value={dob} />
+
+            <ReadOnlyField label="Blood group" value={bloodGroup} />
+
+            <ReadOnlyField
+              label="Insurance provider"
+              value={insurance}
             />
+
+            <ReadOnlyField
+              label="Pre-existing conditions"
+              value={preExistingConditions}
+            />
+
+            <ReadOnlyField label="Allergies" value={allergies} />
           </View>
-
-          <View>
-            <Text style={styles.sectionTitle}>
-              Medical information
-            </Text>
-
-            <Text style={styles.sectionSubtitle}>
-              Important information for emergency responders
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.formGrid}>
-          <InputField
-            label="Blood group"
-            value={bloodGroup}
-            onChangeText={setBloodGroup}
-          />
-
-          <InputField
-            label="Insurance provider"
-            value={insurance}
-            onChangeText={setInsurance}
-          />
-
-          <InputField
-            label="Preferred hospital"
-            value={hospital}
-            onChangeText={setHospital}
-          />
-
-          <InputField
-            label="Current medications"
-            value={medications}
-            onChangeText={setMedications}
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Allergies</Text>
-
-          <TextInput
-            value={allergies}
-            onChangeText={setAllergies}
-            multiline
-            textAlignVertical="top"
-            style={styles.textArea}
-            placeholder="Enter known allergies"
-            placeholderTextColor="#94A3B8"
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Pre-existing conditions</Text>
-
-          <TextInput
-            value={preExistingConditions}
-            onChangeText={setPreExistingConditions}
-            multiline
-            textAlignVertical="top"
-            style={styles.textArea}
-            placeholder="Enter pre-existing medical conditions"
-            placeholderTextColor="#94A3B8"
-          />
-        </View>
-
-        <View style={styles.medicalNotice}>
-          <Ionicons
-            name="information-circle-outline"
-            size={18}
-            color="#DC2626"
-          />
-
-          <Text style={styles.medicalNoticeText}>
-            This information may be shared with your assigned
-            emergency responder during an active incident.
-          </Text>
-        </View>
+        )}
       </View>
 
       {/* ========================================= */}
@@ -273,48 +371,95 @@ export default function Profile() {
 
           <TouchableOpacity
             style={styles.addButton}
-            onPress={handleAddContact}
+            onPress={handleToggleAddContactForm}
           >
             <Ionicons
-              name="add"
+              name={showAddContactForm ? "close" : "add"}
               size={18}
               color="#DC2626"
             />
 
-            <Text style={styles.addButtonText}>Add</Text>
+            <Text style={styles.addButtonText}>
+              {showAddContactForm ? "Close" : "Add"}
+            </Text>
           </TouchableOpacity>
         </View>
 
-        <View style={styles.contactsList}>
-          {contacts.map((contact) => (
-            <View
-              key={contact.name}
-              style={styles.contactCard}
-            >
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>
-                  {contact.name.charAt(0)}
-                </Text>
-              </View>
+        {/* ADD CONTACT FORM — only shown once "Add" is pressed */}
 
-              <View style={styles.contactInfo}>
-                <Text style={styles.contactName}>
-                  {contact.name}
-                </Text>
+        {showAddContactForm && (
+          <View style={styles.addContactForm}>
+            <View style={styles.formGrid}>
+              <InputField
+                label="Name"
+                value={contactName}
+                onChangeText={setContactName}
+                placeholder="Enter contact's full name"
+              />
 
-                <Text style={styles.contactDetails}>
-                  {contact.relation} · {contact.phone}
-                </Text>
-              </View>
+              <InputField
+                label="Relation"
+                value={contactRelation}
+                onChangeText={setContactRelation}
+                placeholder="e.g. Spouse, Parent, Friend"
+              />
 
-              <View style={styles.autoAlertBadge}>
-                <Text style={styles.autoAlertText}>
-                  Auto-alert
-                </Text>
-              </View>
+              <InputField
+                label="Phone"
+                value={contactPhone}
+                onChangeText={setContactPhone}
+                placeholder="e.g. +254 712 345 678"
+              />
             </View>
-          ))}
-        </View>
+
+            <TouchableOpacity
+              style={styles.addContactSubmitButton}
+              activeOpacity={0.85}
+              onPress={handleSaveContact}
+            >
+              <Ionicons name="checkmark" size={18} color="#FFFFFF" />
+
+              <Text style={styles.addContactSubmitButtonText}>
+                Save contact
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* CONTACTS LIST */}
+
+        {contacts.length > 0 ? (
+          <View style={styles.contactsList}>
+            {contacts.map((contact, index) => (
+              <View
+                key={`${contact.name}-${index}`}
+                style={styles.contactCard}
+              >
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>
+                    {contact.name.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+
+                <View style={styles.contactInfo}>
+                  <Text style={styles.contactName}>
+                    {contact.name}
+                  </Text>
+
+                  <Text style={styles.contactDetails}>
+                    {contact.relation} · {contact.phone}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : (
+          !showAddContactForm && (
+            <Text style={styles.emptyContactsText}>
+              No emergency contacts added yet.
+            </Text>
+          )
+        )}
       </View>
 
       {/* ========================================= */}
@@ -343,50 +488,11 @@ export default function Profile() {
         </View>
 
         <SettingRow
-          title="Panic mode"
-          description="Triple-press power to dispatch silently"
-          value={panicMode}
-          onValueChange={setPanicMode}
-        />
-
-        <SettingRow
           title="Share medical profile"
           description="Send details to the assigned crew"
           value={shareMedical}
           onValueChange={setShareMedical}
         />
-
-        <SettingRow
-          title="Incident recording"
-          description="Record audio during an active incident"
-          value={recording}
-          onValueChange={setRecording}
-        />
-
-        <SettingRow
-          title="Offline request queue"
-          description="Queue requests without connectivity"
-          value={offlineQueue}
-          onValueChange={setOfflineQueue}
-        />
-
-        {/* SAVE */}
-
-        <TouchableOpacity
-          style={styles.saveButton}
-          activeOpacity={0.85}
-          onPress={handleSaveProfile}
-        >
-          <Ionicons
-            name="shield-checkmark"
-            size={19}
-            color="#FFFFFF"
-          />
-
-          <Text style={styles.saveButtonText}>
-            Save profile
-          </Text>
-        </TouchableOpacity>
 
         {/* DELETE ACCOUNT */}
 
@@ -423,10 +529,12 @@ function InputField({
   label,
   value,
   onChangeText,
+  placeholder,
 }: {
   label: string;
   value: string;
   onChangeText: (text: string) => void;
+  placeholder?: string;
 }) {
   return (
     <View style={styles.inputGroup}>
@@ -436,8 +544,36 @@ function InputField({
         value={value}
         onChangeText={onChangeText}
         style={styles.input}
+        placeholder={placeholder}
         placeholderTextColor="#94A3B8"
       />
+    </View>
+  );
+}
+
+/* ============================================= */
+/* READ-ONLY FIELD (medical info, view mode)     */
+/* ============================================= */
+
+function ReadOnlyField({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.readOnlyRow}>
+      <Text style={styles.readOnlyLabel}>{label}</Text>
+
+      <Text
+        style={[
+          styles.readOnlyValue,
+          !value && styles.readOnlyValueEmpty,
+        ]}
+      >
+        {value ? value : "Not set"}
+      </Text>
     </View>
   );
 }
@@ -497,7 +633,7 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: 20,
     paddingTop: 22,
-    paddingBottom: 30,
+    paddingBottom: 5,
   },
 
   titleSection: {
@@ -605,6 +741,59 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 
+  /* MEDICAL — EDIT TOGGLE */
+
+  editButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    backgroundColor: "#FFF1F2",
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: 11,
+  },
+
+  editButtonText: {
+    color: "#DC2626",
+    fontSize: 12,
+    fontWeight: "800",
+    marginLeft: 4,
+  },
+
+  /* MEDICAL — READ-ONLY VIEW */
+
+  readOnlyGrid: {
+    gap: 12,
+  },
+
+  readOnlyRow: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 13,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+
+  readOnlyLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#64748B",
+    textTransform: "uppercase",
+  },
+
+  readOnlyValue: {
+    marginTop: 4,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0F172A",
+  },
+
+  readOnlyValueEmpty: {
+    color: "#94A3B8",
+    fontWeight: "500",
+    fontStyle: "italic",
+  },
+
   /* MEDICAL NOTICE */
 
   medicalNotice: {
@@ -614,6 +803,7 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     padding: 12,
     marginTop: 2,
+    marginBottom: 16,
   },
 
   medicalNoticeText: {
@@ -648,6 +838,32 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     marginLeft: 3,
+  },
+
+  addContactForm: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 14,
+    marginBottom: 16,
+  },
+
+  addContactSubmitButton: {
+    height: 48,
+    backgroundColor: "#DC2626",
+    borderRadius: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+
+  addContactSubmitButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+    marginLeft: 6,
   },
 
   contactsList: {
@@ -695,17 +911,11 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
 
-  autoAlertBadge: {
-    backgroundColor: "#F1F5F9",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 10,
-  },
-
-  autoAlertText: {
-    fontSize: 9,
-    fontWeight: "800",
-    color: "#475569",
+  emptyContactsText: {
+    fontSize: 12,
+    color: "#94A3B8",
+    textAlign: "center",
+    paddingVertical: 8,
   },
 
   /* SAFETY SETTINGS */
@@ -755,6 +965,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     marginLeft: 8,
+  },
+
+  cancelButton: {
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 10,
+  },
+
+  cancelButtonText: {
+    color: "#64748B",
+    fontSize: 13,
+    fontWeight: "700",
   },
 
   deleteButton: {

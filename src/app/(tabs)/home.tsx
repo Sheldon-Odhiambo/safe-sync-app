@@ -20,6 +20,8 @@ import {
 } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
+import { useAuth } from "../../contexts/auth-context";
+
 /* ============================================================
    TYPES
    ============================================================ */
@@ -28,18 +30,6 @@ type Coordinates = {
   latitude: number;
   longitude: number;
 };
-
-/* ============================================================
-   BACKEND HELPER
-   ------------------------------------------------------------
-   Every time we get a fresh GPS fix for this client we push
-   {latitude, longitude} to the backend so dispatch can route
-   the nearest responder. Wire this to the SafeSync realtime
-   location channel (the same location-persistence path used
-   by the responder app) once the client's WebSocket connection
-   is available here — this REST call is a placeholder so the
-   UI already has somewhere to send coordinates.
-   ============================================================ */
 
 async function reportLocationToBackend(
   coords: Coordinates,
@@ -66,14 +56,10 @@ async function reportLocationToBackend(
 /* ============================================================
    GREETING
    ------------------------------------------------------------
-   Swap `loggedInUser` for whatever your auth/session state
-   exposes (e.g. from context or a hook) once that's wired up —
-   this is a stand-in so the screen has a real name to greet.
+   The name comes from the locally stored/cached profile exposed
+   by AuthProvider (core.user_profiles, cached in AsyncStorage —
+   see auth-context.tsx), not a hardcoded placeholder.
    ============================================================ */
-
-const loggedInUser = {
-  name: "Kevin",
-};
 
 function getGreeting(date: Date = new Date()): string {
   const hour = date.getHours();
@@ -92,6 +78,9 @@ function getGreeting(date: Date = new Date()): string {
 export default function Home() {
   const router = useRouter();
   const mapRef = useRef<MapView | null>(null);
+  const { profile } = useAuth();
+
+  const firstName = profile?.first_name?.trim() || "there";
 
   const nearbyUnits = [
     {
@@ -234,9 +223,9 @@ export default function Home() {
       >
         {/* Greeting */}
         <View style={styles.greetingSection}>
-          <Text style={styles.greetingText}>{getGreeting()}</Text>
-
-          <Text style={styles.userName}>{loggedInUser.name}</Text>
+          <Text style={styles.greetingLine} numberOfLines={1}>
+            {getGreeting()}, {firstName}
+          </Text>
 
           <Text style={styles.userLocation}>
             {currentLocation
@@ -481,7 +470,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 18,
-    paddingBottom: 30,
+    paddingBottom: 50,
   },
 
   /* GREETING */
@@ -490,17 +479,10 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
 
-  greetingText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#64748B",
-  },
-
-  userName: {
-    marginTop: 2,
-    fontSize: 30,
+  greetingLine: {
+    fontSize: 24,
     fontWeight: "800",
-    color: "#0F172A",
+    color: "#DC2626",
   },
 
   userLocation: {

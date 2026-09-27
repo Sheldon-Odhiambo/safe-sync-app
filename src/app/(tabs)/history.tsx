@@ -170,7 +170,12 @@ export default function HistoryScreen() {
   const [items, setItems] = useState<EmergencySummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
+
+  // Whenever loadHistory fails — network unreachable, timeout, the
+  // backend itself down — we treat it the same way: the app couldn't
+  // reach the backend, so we tell the person they're offline rather
+  // than surfacing the raw error detail.
+  const [isOffline, setIsOffline] = useState(false);
 
   const [details, setDetails] = useState<Record<string, EmergencyDetail>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -178,7 +183,7 @@ export default function HistoryScreen() {
 
   const loadHistory = useCallback(async () => {
     setLoading(true);
-    setLoadError("");
+    setIsOffline(false);
 
     try {
       const data = await apiFetch<EmergencyListResponse>(
@@ -187,11 +192,10 @@ export default function HistoryScreen() {
       setItems(data.emergencies);
       setTotal(data.total);
     } catch (err) {
-      setLoadError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load your emergency history."
-      );
+      // Any failure to reach/complete the request against the backend
+      // is surfaced the same simple way — as being offline — rather
+      // than showing the underlying error message.
+      setIsOffline(true);
     } finally {
       setLoading(false);
     }
@@ -229,8 +233,8 @@ export default function HistoryScreen() {
       setDetails((current) => ({ ...current, [item.id]: detail }));
     } catch (err) {
       Alert.alert(
-        "Couldn't load details",
-        err instanceof Error ? err.message : "Please try again."
+        "You're offline",
+        "Couldn't load details for this incident. Check your connection and try again."
       );
       setExpandedId(null);
     } finally {
@@ -267,10 +271,13 @@ export default function HistoryScreen() {
               <ActivityIndicator color={COLORS.primary} size="large" />
               <Text style={styles.emptyStateText}>Loading your history…</Text>
             </View>
-          ) : loadError ? (
+          ) : isOffline ? (
             <View style={styles.summaryCard}>
-              <Text style={styles.emptyStateTitle}>Couldn't load history</Text>
-              <Text style={styles.emptyStateText}>{loadError}</Text>
+              <Text style={styles.offlineIcon}>⚠</Text>
+              <Text style={styles.emptyStateTitle}>You're offline</Text>
+              <Text style={styles.emptyStateText}>
+                Check your internet connection and try again.
+              </Text>
               <TouchableOpacity
                 style={styles.retryButton}
                 onPress={loadHistory}
@@ -303,9 +310,8 @@ export default function HistoryScreen() {
 
               {items.length === 0 ? (
                 <View style={styles.emptyState}>
-                  <Text style={styles.emptyStateTitle}>No incidents yet</Text>
-                  <Text style={styles.emptyStateText}>
-                    Your emergency requests will show up here.
+                  <Text style={styles.emptyStateTitle}>
+                    No history available
                   </Text>
                 </View>
               ) : (
@@ -537,6 +543,13 @@ const styles = StyleSheet.create({
   },
   summaryDivider: { width: 1, height: 35, backgroundColor: COLORS.border },
 
+  offlineIcon: {
+    fontSize: 26,
+    color: COLORS.primary,
+    textAlign: "center",
+    marginBottom: 6,
+  },
+
   retryButton: {
     marginTop: 14,
     alignSelf: "center",
@@ -562,6 +575,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: COLORS.black,
     marginBottom: 4,
+    textAlign: "center",
   },
   emptyStateText: {
     fontSize: 12,
