@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import type { ToastState, ToastTone } from "./Toast";
+import type { ToastState, ToastTone } from "../components/toast";
 
 export function useToast(autoDismissMs = 4000) {
   const [toast, setToast] = useState<ToastState>(null);
