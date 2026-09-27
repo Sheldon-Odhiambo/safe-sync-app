@@ -143,18 +143,6 @@ const fleet: Fleet = {
 const EMERGENCY_ADDRESS =
   "Wood Avenue, Kilimani, Nairobi, Kenya";
 
-/* ============================================================
-   BACKEND HELPER
-   ------------------------------------------------------------
-   Every time we get a fresh GPS fix for this responder we push
-   {latitude, longitude} to the backend so dispatch and the
-   client-facing map stay in sync. Wire this to the realtime
-   location channel served by the location-persistence worker
-   once the responder app's WebSocket connection is available
-   here — this REST call is a placeholder so the UI already has
-   somewhere to send coordinates.
-   ============================================================ */
-
 async function reportLocationToBackend(
   coords: Coordinates,
   role: "client" | "responder" = "responder"

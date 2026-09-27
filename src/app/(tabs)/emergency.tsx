@@ -1,17 +1,19 @@
-import React, { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  ScrollView,
-  SafeAreaView,
-  ActivityIndicator,
-  Alert,
-} from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+
+import { useEmergencyBar } from "../../components/emergency-bar-context";
 
 const emergencyTypes = [
   {
@@ -39,12 +41,6 @@ const emergencyTypes = [
     icon: "lifebuoy",
   },
   {
-    id: "security",
-    label: "Security Emergency",
-    hint: "Threat, danger or security incident",
-    icon: "shield-alert",
-  },
-  {
     id: "other",
     label: "Other Emergency",
     hint: "Something else requiring urgent help",
@@ -54,6 +50,7 @@ const emergencyTypes = [
 
 export default function EmergencyRequest() {
   const router = useRouter();
+  const { setConfig } = useEmergencyBar();
 
   const [selected, setSelected] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
@@ -63,6 +60,10 @@ export default function EmergencyRequest() {
   const selectedType = emergencyTypes.find(
     (item) => item.id === selected
   );
+
+  const isOtherEmergency = selected === "other";
+  const notesMissing =
+    isOtherEmergency && notes.trim().length === 0;
 
   // ---------------------------------------------------------
   // Simulate GPS capture
@@ -95,6 +96,18 @@ export default function EmergencyRequest() {
       return;
     }
 
+    // "Other Emergency" has no predefined description, so the crew
+    // needs the notes field filled in before we can dispatch. The
+    // button itself stays pressable either way — we only block
+    // here and prompt the user to add details.
+    if (isOtherEmergency && notes.trim().length === 0) {
+      Alert.alert(
+        "A few more details needed",
+        "Since you selected 'Other Emergency', please describe what's happening in the notes field so the crew knows what to expect."
+      );
+      return;
+    }
+
     Alert.alert(
       "Confirm Emergency",
       `You are about to request ${selectedType.label}. Your location will be shared with the emergency response team.`,
@@ -119,6 +132,28 @@ export default function EmergencyRequest() {
       ]
     );
   };
+
+  // ---------------------------------------------------------
+  // Publish this screen's state into the shared bottom button.
+  // The tab layout renders the actual button; this screen just
+  // controls what it says and does while it's focused.
+  // ---------------------------------------------------------
+
+  useEffect(() => {
+    setConfig({
+      label: locating
+        ? "LOCATING YOU..."
+        : selectedType
+        ? "CONFIRM EMERGENCY"
+        : "SELECT AN EMERGENCY",
+      disabled: !located,
+      loading: locating,
+      onPress: handleDispatch,
+    });
+
+    return () => setConfig(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locating, located, selectedType, notes]);
 
   // ---------------------------------------------------------
   // Emergency icons
@@ -378,15 +413,32 @@ export default function EmergencyRequest() {
               <TextInput
                 value={notes}
                 onChangeText={setNotes}
-                placeholder="Optional notes for the crew (symptoms, number of people, access instructions)"
-                placeholderTextColor="#94A3B8"
+                placeholder={
+                  isOtherEmergency
+                    ? "Please describe the emergency (required)"
+                    : "Optional notes for the crew (symptoms, number of people, access instructions)"
+                }
+                placeholderTextColor={
+                  notesMissing ? "#DC2626" : "#94A3B8"
+                }
                 multiline
                 maxLength={500}
                 textAlignVertical="top"
-                style={styles.notesInput}
+                style={[
+                  styles.notesInput,
+                  notesMissing && styles.notesInputRequired,
+                ]}
               />
 
               <View style={styles.characterCount}>
+                {isOtherEmergency && (
+                  <Text style={styles.requiredHint}>
+                    {notesMissing
+                      ? "Notes are required for 'Other Emergency'"
+                      : "Looks good"}
+                  </Text>
+                )}
+
                 <Text style={styles.characterCountText}>
                   {notes.length}/500
                 </Text>
@@ -412,44 +464,6 @@ export default function EmergencyRequest() {
 
           <View style={styles.bottomSpace} />
         </ScrollView>
-
-        {/* DISPATCH BUTTON */}
-
-        <View style={styles.dispatchContainer}>
-          <TouchableOpacity
-            activeOpacity={0.85}
-            disabled={!located}
-            onPress={handleDispatch}
-            style={[
-              styles.dispatchButton,
-              !located &&
-                styles.dispatchButtonDisabled,
-            ]}
-          >
-            {locating ? (
-              <ActivityIndicator
-                color="#FFFFFF"
-                size="small"
-              />
-            ) : (
-              <MaterialCommunityIcons
-                name="siren"
-                size={24}
-                color="#FFFFFF"
-              />
-            )}
-
-            <Text
-              style={styles.dispatchButtonText}
-            >
-              {locating
-                ? "LOCATING YOU..."
-                : selectedType
-                ? `CONFIRM & DISPATCH · ${selectedType.label.toUpperCase()}`
-                : "SELECT AN EMERGENCY"}
-            </Text>
-          </TouchableOpacity>
-        </View>
       </View>
     </SafeAreaView>
   );
@@ -660,9 +674,22 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
 
+  notesInputRequired: {
+    borderColor: "#FCA5A5",
+    backgroundColor: "#FFF7F7",
+  },
+
   characterCount: {
-    alignItems: "flex-end",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginTop: 5,
+  },
+
+  requiredHint: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#DC2626",
   },
 
   characterCountText: {
@@ -689,56 +716,7 @@ const styles = StyleSheet.create({
     color: "#78350F",
   },
 
-  // DISPATCH
-
-  dispatchContainer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 18,
-    backgroundColor: "rgba(248,250,252,0.97)",
-    borderTopWidth: 1,
-    borderTopColor: "#E2E8F0",
-  },
-
-  dispatchButton: {
-    minHeight: 62,
-    borderRadius: 20,
-    backgroundColor: "#DC2626",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 18,
-    gap: 10,
-    shadowColor: "#DC2626",
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-
-  dispatchButtonDisabled: {
-    backgroundColor: "#94A3B8",
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-
-  dispatchButtonText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "900",
-    letterSpacing: 0.3,
-    textAlign: "center",
-    flexShrink: 1,
-  },
-
   bottomSpace: {
-    height: 100,
+    height: 160,
   },
 });

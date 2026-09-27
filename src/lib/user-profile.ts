@@ -33,9 +33,6 @@ export type UserProfileBundle = {
   roles: RoleSummary[];
   permissionCodes: string[];
   responder: ResponderSummary | null;
-  // A coarse, ready-to-switch-on bucket for UI branching. Adjust the
-  // "admin" name-matching below to whatever your `core.roles.name`
-  // values actually are.
   userKind: "public" | "responder" | "super_admin" | "admin" | "system_user";
   fetchedAt: number;
 };
@@ -115,16 +112,23 @@ export async function fetchUserProfileBundle(
     : null;
 
   const roleNames = roles.map((r) => r.name.toLowerCase());
-  const isAdmin = roleNames.some((n) => n.includes("admin"));
+  const hasRole = (name: string) => roleNames.includes(name);
 
   let userKind: UserProfileBundle["userKind"] = "public";
+
   if (responder) {
+    // Responder status wins even if the same user also holds an org
+    // role — matches the previous version's priority order.
     userKind = "responder";
-  } else if (organization && isAdmin) {
-    userKind = "org_admin";
-  } else if (organization) {
-    userKind = "org_member";
+  } else if (hasRole("super_admin")) {
+    userKind = "super_admin";
+  } else if (hasRole("branch_admin")) {
+    userKind = "admin";
+  } else if (hasRole("system_user")) {
+    userKind = "system_user";
   }
+  // Anything else (e.g. an org member with no role row at all) falls
+  // through to "public" — there's no 6th bucket for that case.
 
   return {
     id: profile.id,

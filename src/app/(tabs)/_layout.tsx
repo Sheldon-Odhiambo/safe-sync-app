@@ -1,21 +1,47 @@
-import React from "react";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Tabs, usePathname, useRouter } from "expo-router";
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
   Platform,
   SafeAreaView,
-  Alert,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { Tabs, useRouter } from "expo-router";
+
 import {
-  Ionicons,
-  MaterialCommunityIcons,
-} from "@expo/vector-icons";
+  EmergencyBarProvider,
+  useEmergencyBar,
+} from "../../components/emergency-bar-context";
+import { useAuth } from "../../contexts/auth-context";
+
+const ACTIVE_COLOR = "#DC2626";
+const INACTIVE_COLOR = "#94A3B8";
 
 export default function TabsLayout() {
+  return (
+    <EmergencyBarProvider>
+      <TabsLayoutContent />
+    </EmergencyBarProvider>
+  );
+}
+
+function TabsLayoutContent() {
+  const { profile } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
+  const { config } = useEmergencyBar();
+
+  const kind = profile?.userKind;
+
+  const isSuperAdmin = kind === "super_admin";
+  const isAdmin = kind === "admin" || kind === "system_user";
+  const isResponder = kind === "responder";
+
+  const isEmergencyScreen = pathname?.includes("/emergency");
+  const isTrackScreen = pathname?.includes("/track");
 
   const handleSignOut = () => {
     Alert.alert(
@@ -38,42 +64,42 @@ export default function TabsLayout() {
   };
 
   const handleEmergency = () => {
-    Alert.alert(
-      "Emergency assistance",
-      "Do you need emergency assistance?",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Continue",
-          style: "destructive",
-          onPress: () => {
-            // Later replace this with:
-            // router.push("/emergency");
-
-            console.log("Emergency request started");
-          },
-        },
-      ]
-    );
+    router.push("/emergency");
   };
 
-  const handleSignUp = () => {
-    router.push("/signup");
-  };
+  // ---------------------------------------------------------
+  // Resolve what the single global bottom button should show.
+  // - Track screen: no button at all.
+  // - Emergency screen: driven entirely by the screen itself
+  //   (via EmergencyBarProvider) — label, disabled/loading state
+  //   and the confirm action, including its own "notes required
+  //   for Other Emergency" check.
+  // - Everywhere else: the default "request help" button.
+  // ---------------------------------------------------------
+
+  const barConfig = isTrackScreen
+    ? null
+    : isEmergencyScreen
+    ? {
+        label: config?.label ?? "SELECT AN EMERGENCY",
+        disabled: config?.disabled ?? true,
+        loading: config?.loading ?? false,
+        onPress: config?.onPress ?? (() => {}),
+      }
+    : {
+        label: "REQUEST EMERGENCY HELP",
+        disabled: false,
+        loading: false,
+        onPress: handleEmergency,
+      };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-
         {/* ================================================= */}
         {/* GLOBAL SAFESYNC HEADER                            */}
         {/* ================================================= */}
-
         <View style={styles.header}>
-
           <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
               <Ionicons
@@ -82,25 +108,11 @@ export default function TabsLayout() {
                 color="#FFFFFF"
               />
             </View>
-
-            <Text style={styles.brandTitle}>
-              SafeSync
-            </Text>
+            <Text style={styles.brandTitle}>SafeSync</Text>
           </View>
 
           {/* HEADER ACTIONS */}
           <View style={styles.headerActions}>
-
-            {/* SIGN UP */}
-            <TouchableOpacity
-              style={styles.signUpButton}
-              activeOpacity={0.7}
-              onPress={handleSignUp}
-            >
-              <Text style={styles.signUpText}>
-                Sign Up
-              </Text>
-            </TouchableOpacity>
 
             {/* SIGN OUT */}
             <TouchableOpacity
@@ -114,129 +126,178 @@ export default function TabsLayout() {
                 color="#0F172A"
               />
             </TouchableOpacity>
-
           </View>
         </View>
 
         {/* ================================================= */}
         {/* PAGE CONTENT + TAB NAVIGATION                     */}
         {/* ================================================= */}
-
         <View style={styles.tabsContainer}>
           <Tabs
             screenOptions={{
               headerShown: false,
-              tabBarActiveTintColor: "#DC2626",
-              tabBarInactiveTintColor: "#94A3B8",
+              tabBarActiveTintColor: ACTIVE_COLOR,
+              tabBarInactiveTintColor: INACTIVE_COLOR,
               tabBarStyle: styles.tabBar,
               tabBarLabelStyle: styles.tabLabel,
               tabBarItemStyle: styles.tabItem,
               tabBarHideOnKeyboard: true,
             }}
           >
-
-            {/* HOME */}
+            {/* ---------------------------------------------------
+                HOME — superadmin, admin, public. Not responder.
+            --------------------------------------------------- */}
             <Tabs.Screen
               name="home"
               options={{
                 title: "Home",
-                tabBarIcon: ({ color, focused }) => (
+                href: isResponder ? null : undefined,
+                tabBarIcon: ({ color, focused, size }) => (
                   <Ionicons
-                    name={
-                      focused
-                        ? "grid"
-                        : "grid-outline"
-                    }
-                    size={22}
+                    name={focused ? "grid" : "grid-outline"}
+                    size={size || 22}
                     color={color}
                   />
                 ),
               }}
             />
 
-            {/* HISTORY */}
+            {/* ---------------------------------------------------
+                HISTORY — responder, public. Not superadmin/admin.
+            --------------------------------------------------- */}
             <Tabs.Screen
               name="history"
               options={{
                 title: "History",
-                tabBarIcon: ({ color, focused }) => (
+                href: isSuperAdmin || isAdmin ? null : undefined,
+                tabBarIcon: ({ color, focused, size }) => (
                   <Ionicons
-                    name={
-                      focused
-                        ? "time"
-                        : "time-outline"
-                    }
-                    size={22}
+                    name={focused ? "time" : "time-outline"}
+                    size={size || 22}
                     color={color}
                   />
                 ),
               }}
             />
 
-            {/* WALLET */}
+            {/* ---------------------------------------------------
+                WALLET — superadmin, public. Not admin/responder.
+            --------------------------------------------------- */}
             <Tabs.Screen
               name="wallet"
               options={{
                 title: "Wallet",
-                tabBarIcon: ({ color, focused }) => (
+                href: isAdmin || isResponder ? null : undefined,
+                tabBarIcon: ({ color, focused, size }) => (
                   <Ionicons
-                    name={
-                      focused
-                        ? "wallet"
-                        : "wallet-outline"
-                    }
-                    size={22}
+                    name={focused ? "wallet" : "wallet-outline"}
+                    size={size || 22}
                     color={color}
                   />
                 ),
               }}
             />
 
-            {/* PROFILE */}
+            {/* ---------------------------------------------------
+                ADMIN — admin only.
+            --------------------------------------------------- */}
+            <Tabs.Screen
+              name="admin/index"
+              options={{
+                title: "Admin",
+                href: isAdmin ? undefined : null,
+                tabBarIcon: ({ color, size }) => (
+                  <Ionicons name="briefcase-outline" size={size || 22} color={color} />
+                ),
+              }}
+            />
+
+            {/* ---------------------------------------------------
+                SUPER ADMIN — superadmin only.
+            --------------------------------------------------- */}
+            <Tabs.Screen
+              name="super-admin/index"
+              options={{
+                title: "Super Admin",
+                href: isSuperAdmin ? undefined : null,
+                tabBarIcon: ({ color, size }) => (
+                  <MaterialCommunityIcons
+                    name="shield-crown-outline"
+                    size={size || 22}
+                    color={color}
+                  />
+                ),
+              }}
+            />
+
+            {/* ---------------------------------------------------
+                RESPONDER — responder only.
+            --------------------------------------------------- */}
+            <Tabs.Screen
+              name="responder/index"
+              options={{
+                title: "Responder",
+                href: isResponder ? undefined : null,
+                tabBarIcon: ({ color, size }) => (
+                  <MaterialCommunityIcons
+                    name="ambulance"
+                    size={size || 22}
+                    color={color}
+                  />
+                ),
+              }}
+            />
+
+            {/* ---------------------------------------------------
+                PROFILE — everyone.
+            --------------------------------------------------- */}
             <Tabs.Screen
               name="profile"
               options={{
                 title: "Profile",
-                tabBarIcon: ({ color, focused }) => (
+                tabBarIcon: ({ color, focused, size }) => (
                   <Ionicons
-                    name={
-                      focused
-                        ? "person"
-                        : "person-outline"
-                    }
-                    size={22}
+                    name={focused ? "person" : "person-outline"}
+                    size={size || 22}
                     color={color}
                   />
                 ),
               }}
             />
 
+            {/* HIDDEN SCREENS */}
+            <Tabs.Screen name="emergency" options={{ href: null }} />
+            <Tabs.Screen name="track" options={{ href: null }} />
           </Tabs>
 
-          {/* ================================================= */}
-          {/* GLOBAL EMERGENCY BUTTON                           */}
-          {/* ================================================= */}
-
-          <View style={styles.emergencyWrapper}>
-            <TouchableOpacity
-              style={styles.emergencyButton}
-              activeOpacity={0.85}
-              onPress={handleEmergency}
-            >
-              <View style={styles.emergencyIcon}>
-                <MaterialCommunityIcons
-                  name="alarm-light"
-                  size={21}
-                  color="#FFFFFF"
-                />
-              </View>
-
-              <Text style={styles.emergencyText}>
-                REQUEST EMERGENCY HELP
-              </Text>
-            </TouchableOpacity>
-          </View>
-
+          {barConfig && (
+            <View style={styles.emergencyWrapper}>
+              <TouchableOpacity
+                style={[
+                  styles.emergencyButton,
+                  barConfig.disabled && styles.emergencyButtonDisabled,
+                ]}
+                activeOpacity={0.85}
+                disabled={barConfig.disabled}
+                onPress={barConfig.onPress}
+              >
+                <View style={styles.emergencyIcon}>
+                  {barConfig.loading ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <MaterialCommunityIcons
+                      name={isEmergencyScreen ? "siren" : "alarm-light"}
+                      size={21}
+                      color="#FFFFFF"
+                    />
+                  )}
+                </View>
+                <Text style={styles.emergencyText}>
+                  {barConfig.label}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       </View>
     </SafeAreaView>
@@ -254,16 +315,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
   },
 
-  /* =============================================
-     HEADER
-  ============================================= */
-
+  /* HEADER */
   header: {
     height: 64,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
+    marginTop:35,
     backgroundColor: "#FFFFFF",
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
@@ -291,19 +350,12 @@ const styles = StyleSheet.create({
     color: "#0F172A",
   },
 
-  /* =============================================
-     HEADER ACTIONS
-  ============================================= */
-
+  /* HEADER ACTIONS */
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-
-  /* =============================================
-     SIGN UP
-  ============================================= */
 
   signUpButton: {
     height: 40,
@@ -320,10 +372,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  /* =============================================
-     SIGN OUT
-  ============================================= */
-
   signOutButton: {
     width: 40,
     height: 40,
@@ -335,18 +383,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
 
-  /* =============================================
-     TABS CONTAINER
-  ============================================= */
-
+  /* TABS CONTAINER */
   tabsContainer: {
     flex: 1,
   },
 
-  /* =============================================
-     BOTTOM NAVIGATION
-  ============================================= */
-
+  /* BOTTOM NAVIGATION */
   tabBar: {
     position: "absolute",
     left: 12,
@@ -380,10 +422,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  /* =============================================
-     GLOBAL EMERGENCY BUTTON
-  ============================================= */
-
+  /* GLOBAL BOTTOM BUTTON */
   emergencyWrapper: {
     position: "absolute",
     left: 20,
@@ -409,6 +448,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 8,
+  },
+
+  emergencyButtonDisabled: {
+    backgroundColor: "#94A3B8",
+    shadowOpacity: 0,
+    elevation: 0,
   },
 
   emergencyIcon: {

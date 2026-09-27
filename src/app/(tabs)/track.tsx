@@ -1,4 +1,7 @@
-import React, {
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Location from "expo-location";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -17,10 +20,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
-import * as Location from "expo-location";
 
 // ============================================================
 // TYPES
@@ -1685,6 +1685,7 @@ const styles = StyleSheet.create({
   cancelButton: {
     minHeight: 54,
     marginTop: 8,
+    marginBottom:60,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",

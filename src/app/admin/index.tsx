@@ -302,22 +302,32 @@ export default function AdminScreen() {
   };
 
   /* ---------------------------------------------------------
-     REMOVE (client-side only — no delete endpoints exist yet)
+     REMOVE
   --------------------------------------------------------- */
 
   const handleRemoveVehicle = (vehicle: Vehicle) => {
     Alert.alert(
       "Remove vehicle",
-      "Vehicle removal isn't wired up to the backend yet — this only hides it locally.",
+      `Are you sure you want to remove ${vehicle.registration_number}?`,
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Hide locally",
+          text: "Remove",
           style: "destructive",
-          onPress: () => {
-            setVehicles((current) =>
-              current.filter((item) => item.id !== vehicle.id)
-            );
+          onPress: async () => {
+            try {
+              await apiFetch<void>(`/api/v1/vehicles/${vehicle.id}`, {
+                method: "DELETE",
+              });
+              setVehicles((current) =>
+                current.filter((item) => item.id !== vehicle.id)
+              );
+            } catch (err) {
+              Alert.alert(
+                "Couldn't remove vehicle",
+                err instanceof Error ? err.message : "Please try again."
+              );
+            }
           },
         },
       ]
@@ -327,16 +337,26 @@ export default function AdminScreen() {
   const handleRemoveDriver = (driver: Driver) => {
     Alert.alert(
       "Remove driver",
-      "Driver removal isn't wired up to the backend yet — this only hides it locally.",
+      `Are you sure you want to remove ${driver.first_name} ${driver.last_name}?`,
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Hide locally",
+          text: "Remove",
           style: "destructive",
-          onPress: () => {
-            setDrivers((current) =>
-              current.filter((item) => item.id !== driver.id)
-            );
+          onPress: async () => {
+            try {
+              await apiFetch<void>(`/api/v1/responders/${driver.id}`, {
+                method: "DELETE",
+              });
+              setDrivers((current) =>
+                current.filter((item) => item.id !== driver.id)
+              );
+            } catch (err) {
+              Alert.alert(
+                "Couldn't remove driver",
+                err instanceof Error ? err.message : "Please try again."
+              );
+            }
           },
         },
       ]

@@ -428,15 +428,6 @@ export default function Home() {
 
                 <Stat label="VEHICLE" value={unit.vehicle} />
               </View>
-
-              {/* Request */}
-              <TouchableOpacity
-                style={styles.requestButton}
-                activeOpacity={0.8}
-                onPress={() => router.push}
-              >
-                <Text style={styles.requestButtonText}>Request</Text>
-              </TouchableOpacity>
             </View>
           ))}
         </View>
@@ -490,7 +481,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 18,
-    paddingBottom: 120,
+    paddingBottom: 30,
   },
 
   /* GREETING */
