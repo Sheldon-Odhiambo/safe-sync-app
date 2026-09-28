@@ -19,59 +19,7 @@ import {
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
 
-/* =========================================================
-   API
-========================================================= */
-
-// Point this at wherever your FastAPI backend is served from.
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://api.safesync.co.ke";
-
-// TODO: wire this up to however SafeSync already stores the signed-in
-// admin's Supabase session (e.g. `supabase.auth.getSession()`, or a
-// token kept in AsyncStorage/SecureStore). It just needs to resolve to
-// the current access token so requests below can send
-// `Authorization: Bearer <token>`.
-async function getAccessToken(): Promise<string | null> {
-  return null;
-}
-
-class ApiError extends Error {}
-
-async function apiFetch<T>(
-  path: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const token = await getAccessToken();
-
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers as Record<string, string> | undefined),
-    },
-  });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new ApiError(
-      body?.detail ?? `Something went wrong (${response.status}).`
-    );
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json();
-}
-
-/* =========================================================
-   TYPES
-   These mirror VehicleResponse / VehicleTypeResponse /
-   ResponderResponse+email from the backend.
-========================================================= */
+import { apiFetch } from "@/lib/api-client"
 
 type VehicleKind = "Ambulance" | "Fire Engine";
 
