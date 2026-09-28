@@ -1339,9 +1339,9 @@ export default function Wallet() {
 
               <Text style={styles.infoText}>
                 Enter your M-Pesa number and amount. SafeSync sends an
-                STK push through PayHero. After you enter your M-Pesa
-                PIN, PayHero confirms the payment to the SafeSync
-                backend. Your wallet is credited only after the
+                STK push through M-Pesa. After you enter your M-Pesa
+                PIN, M-Pesa confirms the payment to SafeSync.
+                Your wallet is credited only after the
                 payment has been successfully confirmed.
               </Text>
             </View>
