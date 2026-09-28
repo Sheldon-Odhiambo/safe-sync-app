@@ -11,7 +11,7 @@ import {
 } from "react-native";
 
 import { ToastBanner } from "@/components/toast";
-import { useToast } from "@/hooks/use-toast"
+import { useToast } from "@/hooks/use-toast";
 
 const COLORS = {
   primary: "#DC2626",
@@ -32,51 +32,7 @@ const COLORS = {
    API
 ========================================================= */
 
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://api.safesync.co.ke";
-
-// TODO: wire this to however the app already resolves the signed-in
-// user's Supabase session/access token — same TODO as in
-// AdminScreen.tsx. Worth extracting into one shared helper once both
-// exist, rather than duplicating it per screen.
-async function getAccessToken(): Promise<string | null> {
-  return null;
-}
-
-async function apiFetch<T>(
-  path: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const token = await getAccessToken();
-
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers as Record<string, string> | undefined),
-    },
-  });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(
-      body?.detail ?? `Something went wrong (${response.status}).`
-    );
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json();
-}
-
-/* =========================================================
-   TYPES
-   Mirror EmergencySummary / EmergencyResponse / EmergencyListResponse
-   from the backend schemas — nothing here that isn't actually returned.
-========================================================= */
+import { apiFetch } from "../../lib/api-client";
 
 type EmergencyType = "fire" | "ambulance";
 
