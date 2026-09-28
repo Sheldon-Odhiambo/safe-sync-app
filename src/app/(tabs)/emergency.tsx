@@ -133,12 +133,6 @@ export default function EmergencyRequest() {
     );
   };
 
-  // ---------------------------------------------------------
-  // Publish this screen's state into the shared bottom button.
-  // The tab layout renders the actual button; this screen just
-  // controls what it says and does while it's focused.
-  // ---------------------------------------------------------
-
   useEffect(() => {
     setConfig({
       label: locating
