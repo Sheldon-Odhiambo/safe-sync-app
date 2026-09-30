@@ -1,5 +1,9 @@
 import { supabase } from "./supabase";
 
+export const PROFILE_SCHEMA_VERSION = 2;
+
+export type UserKind = "public" | "responder" | "admin" | "super_admin";
+
 export type OrganizationSummary = {
   id: string;
   name: string;
@@ -22,115 +26,175 @@ export type ResponderSummary = {
 };
 
 export type UserProfileBundle = {
+  schemaVersion: number;
+
   id: string;
   first_name: string;
   last_name: string;
   phone: string | null;
   avatar_url: string | null;
   status: string;
-  account_type: string; // e.g. 'public' | 'organization'
+  account_type: string; // 'public' | 'organization'
+
+  // Organization the user belongs to (null for public users).
   organization: OrganizationSummary | null;
+  // All active memberships, in case a user belongs to more than one.
+  organizations: OrganizationSummary[];
+  isOrgMember: boolean;
+  // Branches the user is attached to, from their role rows and responder record.
+  branchIds: string[];
+
   roles: RoleSummary[];
   permissionCodes: string[];
   responder: ResponderSummary | null;
-  userKind: "public" | "responder" | "super_admin" | "admin" | "system_user";
+
+  userKind: UserKind;
   fetchedAt: number;
 };
+
+/** Thrown when Auth has a user but core.user_profiles has no row for them. */
+export class ProfileNotFoundError extends Error {
+  constructor(message = "No user_profiles row found for this user.") {
+    super(message);
+    this.name = "PROFILE_NOT_FOUND";
+  }
+}
+
+function first<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
 
 export async function fetchUserProfileBundle(
   userId: string
 ): Promise<UserProfileBundle> {
   const core = supabase.schema("core");
 
-  const [
-    { data: profile, error: profileError },
-    { data: orgMembership },
-    { data: userRoles },
-    { data: responder },
-  ] = await Promise.all([
-    core
-      .from("user_profiles")
-      .select(
-        "id, first_name, last_name, phone, avatar_url, status, account_type"
-      )
-      .eq("id", userId)
-      .maybeSingle(),
-    core
-      .from("organisation_members")
-      .select("organisation_id, status, organizations(id, name, organization_type)")
-      .eq("user_id", userId)
-      .maybeSingle(),
-    core
-      .from("user_roles")
-      .select("organization_id, branch_id, roles(id, name)")
-      .eq("user_id", userId),
-    core
-      .from("responders")
-      .select("id, responder_type, verification_status, status, branch_id")
-      .eq("user_id", userId)
-      .maybeSingle(),
-  ]);
+  const [profileRes, membershipRes, rolesRes, responderRes] =
+    await Promise.all([
+      core
+        .from("user_profiles")
+        .select(
+          "id, first_name, last_name, phone, avatar_url, status, account_type"
+        )
+        .eq("id", userId)
+        .maybeSingle(),
 
-  if (profileError) throw profileError;
-  if (!profile) {
-    throw new Error("No user_profiles row found for this user.");
-  }
+      core
+        .from("organisation_members")
+        .select(
+          "organisation_id, status, organizations(id, name, organization_type)"
+        )
+        .eq("user_id", userId)
+        .eq("status", "active"),
 
-  const roles: RoleSummary[] = (userRoles || [])
-    .filter((r: any) => r.roles)
-    .map((r: any) => ({
-      id: r.roles.id,
-      name: r.roles.name,
-      organization_id: r.organization_id,
-      branch_id: r.branch_id,
-    }));
+      core
+        .from("user_roles")
+        .select("organization_id, branch_id, roles(id, name)")
+        .eq("user_id", userId),
 
+      core
+        .from("responders")
+        .select("id, responder_type, verification_status, status, branch_id")
+        .eq("user_id", userId)
+        .maybeSingle(),
+    ]);
+
+  // Any failure must throw. If a role or membership query silently failed,
+  // an admin would be treated as a public user and that result would be cached.
+  if (profileRes.error) throw profileRes.error;
+  if (membershipRes.error) throw membershipRes.error;
+  if (rolesRes.error) throw rolesRes.error;
+  if (responderRes.error) throw responderRes.error;
+
+  const profile = profileRes.data;
+  if (!profile) throw new ProfileNotFoundError();
+
+  // ---------- Roles ----------
+  const roles: RoleSummary[] = (rolesRes.data || [])
+    .map((row: any) => {
+      const role = first<any>(row.roles);
+      if (!role) return null;
+      return {
+        id: role.id,
+        name: role.name,
+        organization_id: row.organization_id ?? null,
+        branch_id: row.branch_id ?? null,
+      } as RoleSummary;
+    })
+    .filter((r): r is RoleSummary => r !== null);
+
+  // ---------- Permissions ----------
+  let permissionCodes: string[] = [];
   const roleIds = roles.map((r) => r.id);
 
-  let permissionCodes: string[] = [];
   if (roleIds.length > 0) {
-    const { data: rolePermissions } = await core
+    const { data: rolePermissions, error: permError } = await core
       .from("role_permissions")
       .select("permission_id, permissions(code)")
       .in("role_id", roleIds);
 
+    if (permError) throw permError;
+
     permissionCodes = Array.from(
       new Set(
         (rolePermissions || [])
-          .map((rp: any) => rp.permissions?.code)
+          .map((rp: any) => first<any>(rp.permissions)?.code)
           .filter(Boolean)
       )
     );
   }
 
-  const organization: OrganizationSummary | null = orgMembership?.organizations
-    ? {
-        id: orgMembership.organizations.id,
-        name: orgMembership.organizations.name,
-        organization_type: orgMembership.organizations.organization_type,
-      }
-    : null;
+  // ---------- Organization(s) ----------
+  const organizations: OrganizationSummary[] = (membershipRes.data || [])
+    .map((m: any) => {
+      const org = first<any>(m.organizations);
+      if (!org) return null;
+      return {
+        id: org.id,
+        name: org.name,
+        organization_type: org.organization_type,
+      } as OrganizationSummary;
+    })
+    .filter((o): o is OrganizationSummary => o !== null);
 
-  const roleNames = roles.map((r) => r.name.toLowerCase());
-  const hasRole = (name: string) => roleNames.includes(name);
+  // Primary organization: prefer the one the user holds a role in.
+  const roleOrgIds = new Set(
+    roles.map((r) => r.organization_id).filter(Boolean) as string[]
+  );
+  const organization =
+    organizations.find((o) => roleOrgIds.has(o.id)) ??
+    organizations[0] ??
+    null;
 
-  let userKind: UserProfileBundle["userKind"] = "public";
+  // ---------- Branches ----------
+  const responder = (responderRes.data as ResponderSummary | null) ?? null;
+  const branchIds = Array.from(
+    new Set(
+      [
+        ...roles.map((r) => r.branch_id),
+        responder?.branch_id ?? null,
+      ].filter(Boolean) as string[]
+    )
+  );
 
-  if (responder) {
-    // Responder status wins even if the same user also holds an org
-    // role — matches the previous version's priority order.
+  // ---------- User kind (drives which UI is shown) ----------
+  const roleNames = new Set(roles.map((r) => r.name.toLowerCase()));
+
+  let userKind: UserKind = "public";
+  if (responder || roleNames.has("responder")) {
+    // Responder status wins even if the user also holds an org role.
     userKind = "responder";
-  } else if (hasRole("super_admin")) {
+  } else if (roleNames.has("super_admin")) {
     userKind = "super_admin";
-  } else if (hasRole("branch_admin")) {
+  } else if (roleNames.has("admin")) {
     userKind = "admin";
-  } else if (hasRole("system_user")) {
-    userKind = "system_user";
   }
-  // Anything else (e.g. an org member with no role row at all) falls
-  // through to "public" — there's no 6th bucket for that case.
+  // Anything else, including an org member with no role row, is "public".
 
   return {
+    schemaVersion: PROFILE_SCHEMA_VERSION,
+
     id: profile.id,
     first_name: profile.first_name,
     last_name: profile.last_name,
@@ -138,10 +202,16 @@ export async function fetchUserProfileBundle(
     avatar_url: profile.avatar_url,
     status: profile.status,
     account_type: profile.account_type,
+
     organization,
+    organizations,
+    isOrgMember: organization !== null,
+    branchIds,
+
     roles,
     permissionCodes,
-    responder: responder || null,
+    responder,
+
     userKind,
     fetchedAt: Date.now(),
   };
