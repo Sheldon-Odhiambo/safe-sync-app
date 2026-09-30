@@ -1,20 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  SafeAreaView,
   View,
   Text,
   ScrollView,
   TextInput,
   Pressable,
   StyleSheet,
-  Alert,
   ActivityIndicator,
   RefreshControl,
   Modal,
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { useRouter } from "expo-router";
 import {
   Building2,
   Siren,
@@ -27,12 +24,11 @@ import {
   AlertTriangle,
   Ambulance,
   UserCog,
-  LogOut,
   Mail,
   X,
 } from "lucide-react-native";
 
-import { useAuth } from "@/contexts/auth-context";
+import { RoleGate } from "@/components/role-gate";
 import { apiFetch } from "@/lib/api-client";
 
 const COLORS = {
@@ -53,6 +49,13 @@ const COLORS = {
   amberLight: "#FFFBEB",
   redLight: "#FEF2F2",
 };
+
+/**
+ * Space to keep clear at the bottom of the scroll area. The tab bar
+ * (68 + 12 margin) and the global emergency button (54, sitting 88 up)
+ * both float over the content.
+ */
+const BOTTOM_CLEARANCE = 170;
 
 /* =========================================================
    TYPES — mirror SuperAdminOverviewResponse / SuperAdminBranchResponse
@@ -82,12 +85,30 @@ type Branch = {
 
 type StatusFilter = "All" | "Active" | "Pending";
 
+/* =========================================================
+   SCREEN ENTRY
+   The tabs layout already redirects other roles away from this route.
+   RoleGate is the second check, so the screen can never render (or
+   fetch anything) for someone who isn't a super admin.
+========================================================= */
+
 export default function SuperAdminScreen() {
-  const router = useRouter();
-  const { profile, signOut } = useAuth();
+  return (
+    <RoleGate
+      kinds={["super_admin"]}
+      redirectTo="/home"
+      loadingFallback={
+        <View style={styles.centered}>
+          <ActivityIndicator color={COLORS.primary} size="large" />
+        </View>
+      }
+    >
+      <SuperAdminContent />
+    </RoleGate>
+  );
+}
 
-  const isSuperAdmin = profile?.userKind === "super_admin";
-
+function SuperAdminContent() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(true);
@@ -109,37 +130,40 @@ export default function SuperAdminScreen() {
      LOAD DATA
   --------------------------------------------------------- */
 
-  const loadData = useCallback(async (mode: "initial" | "refresh" = "initial") => {
-    if (mode === "refresh") {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    setLoadError("");
+  const loadData = useCallback(
+    async (mode: "initial" | "refresh" = "initial") => {
+      if (mode === "refresh") {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setLoadError("");
 
-    try {
-      const [overviewData, branchesData] = await Promise.all([
-        apiFetch<Overview>("/api/v1/superadmin/overview"),
-        apiFetch<Branch[]>("/api/v1/superadmin/branches"),
-      ]);
+      try {
+        const [overviewData, branchesData] = await Promise.all([
+          apiFetch<Overview>("/api/v1/superadmin/overview"),
+          apiFetch<Branch[]>("/api/v1/superadmin/branches"),
+        ]);
 
-      setOverview(overviewData);
-      setBranches(branchesData);
-    } catch (err) {
-      setLoadError(
-        err instanceof Error ? err.message : "Failed to load your organization."
-      );
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+        setOverview(overviewData);
+        setBranches(branchesData);
+      } catch (err) {
+        setLoadError(
+          err instanceof Error
+            ? err.message
+            : "Failed to load your organization."
+        );
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
-    if (isSuperAdmin) {
-      loadData();
-    }
-  }, [isSuperAdmin, loadData]);
+    loadData();
+  }, [loadData]);
 
   /* ---------------------------------------------------------
      FILTERED BRANCHES
@@ -169,20 +193,6 @@ export default function SuperAdminScreen() {
   /* ---------------------------------------------------------
      ACTIONS
   --------------------------------------------------------- */
-
-  const handleLogout = () => {
-    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Sign Out",
-        style: "destructive",
-        onPress: async () => {
-          await signOut();
-          router.replace("/");
-        },
-      },
-    ]);
-  };
 
   const openAddBranch = () => {
     setBranchName("");
@@ -240,30 +250,13 @@ export default function SuperAdminScreen() {
   };
 
   /* ---------------------------------------------------------
-     ACCESS GUARD — the tab is hidden for other roles, but the
-     route is still reachable directly.
-  --------------------------------------------------------- */
-
-  if (!isSuperAdmin) {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.centered}>
-          <ShieldCheck size={32} color={COLORS.slate500} strokeWidth={2} />
-          <Text style={styles.centeredTitle}>Super admin access only</Text>
-          <Text style={styles.centeredText}>
-            This area is only available to your organization's super admin.
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  /* ---------------------------------------------------------
      RENDER
+     The SafeSync header, organization name and sign out button
+     come from the tabs layout, so they're not repeated here.
   --------------------------------------------------------- */
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={styles.root}>
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}
@@ -277,30 +270,6 @@ export default function SuperAdminScreen() {
           />
         }
       >
-        {/* HEADER */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.logo}>
-              <ShieldCheck size={22} color={COLORS.white} strokeWidth={2.3} />
-            </View>
-
-            <View style={styles.headerTextBlock}>
-              <Text style={styles.brand}>SafeSync</Text>
-              <Text style={styles.headerSubtitle} numberOfLines={1}>
-                {profile?.organization?.name ?? "Super Admin"}
-              </Text>
-            </View>
-          </View>
-
-          <Pressable
-            onPress={handleLogout}
-            style={({ pressed }) => [styles.logoutButton, pressed && styles.pressed]}
-          >
-            <LogOut size={16} color={COLORS.primary} strokeWidth={2.3} />
-            <Text style={styles.logoutText}>Sign Out</Text>
-          </Pressable>
-        </View>
-
         {loading ? (
           <View style={styles.loadingState}>
             <ActivityIndicator color={COLORS.primary} size="large" />
@@ -308,11 +277,16 @@ export default function SuperAdminScreen() {
           </View>
         ) : loadError ? (
           <View style={styles.errorCard}>
-            <Text style={styles.centeredTitle}>Couldn't load your organization</Text>
+            <Text style={styles.centeredTitle}>
+              Couldn't load your organization
+            </Text>
             <Text style={styles.centeredText}>{loadError}</Text>
             <Pressable
               onPress={() => loadData()}
-              style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+              style={({ pressed }) => [
+                styles.retryButton,
+                pressed && styles.pressed,
+              ]}
             >
               <RefreshCw size={15} color={COLORS.white} strokeWidth={2.3} />
               <Text style={styles.retryButtonText}>Retry</Text>
@@ -331,9 +305,16 @@ export default function SuperAdminScreen() {
 
               <Pressable
                 onPress={() => loadData("refresh")}
-                style={({ pressed }) => [styles.refreshButton, pressed && styles.pressed]}
+                style={({ pressed }) => [
+                  styles.refreshButton,
+                  pressed && styles.pressed,
+                ]}
               >
-                <RefreshCw size={17} color={COLORS.slate700} strokeWidth={2.2} />
+                <RefreshCw
+                  size={17}
+                  color={COLORS.slate700}
+                  strokeWidth={2.2}
+                />
               </Pressable>
             </View>
 
@@ -341,9 +322,15 @@ export default function SuperAdminScreen() {
             <View style={styles.statsGrid}>
               <View style={styles.statCard}>
                 <View style={[styles.statIcon, { backgroundColor: "#FFF1F2" }]}>
-                  <Building2 size={18} color={COLORS.primary} strokeWidth={2.2} />
+                  <Building2
+                    size={18}
+                    color={COLORS.primary}
+                    strokeWidth={2.2}
+                  />
                 </View>
-                <Text style={styles.statNumber}>{overview?.branch_count ?? 0}</Text>
+                <Text style={styles.statNumber}>
+                  {overview?.branch_count ?? 0}
+                </Text>
                 <Text style={styles.statLabel}>Branches</Text>
               </View>
 
@@ -351,7 +338,9 @@ export default function SuperAdminScreen() {
                 <View style={[styles.statIcon, { backgroundColor: "#ECFDF5" }]}>
                   <Users size={18} color={COLORS.green} strokeWidth={2.2} />
                 </View>
-                <Text style={styles.statNumber}>{overview?.admin_count ?? 0}</Text>
+                <Text style={styles.statNumber}>
+                  {overview?.admin_count ?? 0}
+                </Text>
                 <Text style={styles.statLabel}>Admins</Text>
               </View>
 
@@ -359,7 +348,9 @@ export default function SuperAdminScreen() {
                 <View style={[styles.statIcon, { backgroundColor: "#FFFBEB" }]}>
                   <Ambulance size={18} color={COLORS.amber} strokeWidth={2.2} />
                 </View>
-                <Text style={styles.statNumber}>{overview?.responder_count ?? 0}</Text>
+                <Text style={styles.statNumber}>
+                  {overview?.responder_count ?? 0}
+                </Text>
                 <Text style={styles.statLabel}>Responders</Text>
               </View>
 
@@ -382,7 +373,10 @@ export default function SuperAdminScreen() {
             <View style={styles.quickActions}>
               <Pressable
                 onPress={openAddBranch}
-                style={({ pressed }) => [styles.primaryAction, pressed && styles.pressed]}
+                style={({ pressed }) => [
+                  styles.primaryAction,
+                  pressed && styles.pressed,
+                ]}
               >
                 <Plus size={18} color={COLORS.white} strokeWidth={2.5} />
                 <Text style={styles.primaryActionText}>Add Branch</Text>
@@ -392,7 +386,9 @@ export default function SuperAdminScreen() {
             {/* SEARCH & FILTER */}
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Branches</Text>
-              <Text style={styles.countText}>{filteredBranches.length} shown</Text>
+              <Text style={styles.countText}>
+                {filteredBranches.length} shown
+              </Text>
             </View>
 
             <View style={styles.searchBox}>
@@ -413,7 +409,10 @@ export default function SuperAdminScreen() {
                   <Pressable
                     key={tab}
                     onPress={() => setFilterStatus(tab)}
-                    style={[styles.filterPill, isSelected && styles.filterPillActive]}
+                    style={[
+                      styles.filterPill,
+                      isSelected && styles.filterPillActive,
+                    ]}
                   >
                     <Text
                       style={[
@@ -433,7 +432,9 @@ export default function SuperAdminScreen() {
               {filteredBranches.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.centeredTitle}>
-                    {branches.length === 0 ? "No branches yet" : "No matching branches"}
+                    {branches.length === 0
+                      ? "No branches yet"
+                      : "No matching branches"}
                   </Text>
                   <Text style={styles.centeredText}>
                     {branches.length === 0
@@ -446,14 +447,21 @@ export default function SuperAdminScreen() {
                   <View key={branch.id} style={styles.organizationCard}>
                     <View style={styles.orgTopRow}>
                       <View style={styles.organizationIcon}>
-                        <Building2 size={19} color={COLORS.primary} strokeWidth={2} />
+                        <Building2
+                          size={19}
+                          color={COLORS.primary}
+                          strokeWidth={2}
+                        />
                       </View>
 
                       <View style={styles.organizationInfo}>
                         <Text style={styles.organizationName} numberOfLines={1}>
                           {branch.name}
                         </Text>
-                        <Text style={styles.organizationLocation} numberOfLines={1}>
+                        <Text
+                          style={styles.organizationLocation}
+                          numberOfLines={1}
+                        >
                           {branch.location}
                         </Text>
                       </View>
@@ -461,7 +469,9 @@ export default function SuperAdminScreen() {
                       <View
                         style={[
                           styles.statusBadge,
-                          branch.status ? styles.activeBadge : styles.pendingBadge,
+                          branch.status
+                            ? styles.activeBadge
+                            : styles.pendingBadge,
                         ]}
                       >
                         {branch.status ? (
@@ -472,7 +482,9 @@ export default function SuperAdminScreen() {
                         <Text
                           style={[
                             styles.statusText,
-                            branch.status ? styles.activeText : styles.pendingText,
+                            branch.status
+                              ? styles.activeText
+                              : styles.pendingText,
                           ]}
                         >
                           {branch.status ? "Active" : "Pending"}
@@ -493,7 +505,9 @@ export default function SuperAdminScreen() {
                         <Ambulance size={13} color={COLORS.slate500} />
                         <Text style={styles.metaText}>
                           {branch.responder_count}{" "}
-                          {branch.responder_count === 1 ? "Responder" : "Responders"}
+                          {branch.responder_count === 1
+                            ? "Responder"
+                            : "Responders"}
                         </Text>
                       </View>
                     </View>
@@ -587,7 +601,10 @@ export default function SuperAdminScreen() {
               <Pressable
                 onPress={() => setModalVisible(false)}
                 disabled={creating}
-                style={({ pressed }) => [styles.modalCancel, pressed && styles.pressed]}
+                style={({ pressed }) => [
+                  styles.modalCancel,
+                  pressed && styles.pressed,
+                ]}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </Pressable>
@@ -611,7 +628,7 @@ export default function SuperAdminScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -619,9 +636,13 @@ export default function SuperAdminScreen() {
    STYLES
 ========================================================= */
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: COLORS.background },
+  root: { flex: 1, backgroundColor: COLORS.background },
   container: { flex: 1 },
-  content: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 36 },
+  content: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: BOTTOM_CLEARANCE,
+  },
 
   centered: {
     flex: 1,
@@ -666,47 +687,9 @@ const styles = StyleSheet.create({
   },
   retryButtonText: { color: COLORS.white, fontSize: 12, fontWeight: "800" },
 
-  // Header
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: COLORS.white,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.slate200,
-  },
-  headerLeft: { flexDirection: "row", alignItems: "center", flex: 1, paddingRight: 8 },
-  headerTextBlock: { flex: 1 },
-  logo: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: COLORS.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 9,
-  },
-  brand: { fontSize: 16, fontWeight: "900", color: COLORS.slate900 },
-  headerSubtitle: { fontSize: 10, color: COLORS.slate500, fontWeight: "700" },
-  logoutButton: {
-    height: 32,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: COLORS.redLight,
-    borderWidth: 1,
-    borderColor: "#FECACA",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  logoutText: { fontSize: 11, color: COLORS.primary, fontWeight: "800" },
-
   // Welcome
   welcomeSection: {
-    marginTop: 18,
+    marginTop: 6,
     marginBottom: 12,
     flexDirection: "row",
     alignItems: "center",
@@ -744,7 +727,12 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   statNumber: { fontSize: 18, fontWeight: "900", color: COLORS.slate900 },
-  statLabel: { marginTop: 2, fontSize: 10, color: COLORS.slate500, fontWeight: "700" },
+  statLabel: {
+    marginTop: 2,
+    fontSize: 10,
+    color: COLORS.slate500,
+    fontWeight: "700",
+  },
 
   // Sections / actions
   sectionHeader: {
@@ -790,7 +778,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.slate200,
   },
-  filterPillActive: { backgroundColor: COLORS.slate900, borderColor: COLORS.slate900 },
+  filterPillActive: {
+    backgroundColor: COLORS.slate900,
+    borderColor: COLORS.slate900,
+  },
   filterPillText: { fontSize: 10, fontWeight: "700", color: COLORS.slate600 },
   filterPillTextActive: { color: COLORS.white },
 
@@ -830,7 +821,12 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 8, fontWeight: "900" },
   activeText: { color: COLORS.green },
   pendingText: { color: COLORS.amber },
-  organizationMeta: { flexDirection: "row", alignItems: "center", gap: 12, paddingTop: 4 },
+  organizationMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingTop: 4,
+  },
   metaItem: { flexDirection: "row", alignItems: "center", gap: 4 },
   metaText: { fontSize: 10, color: COLORS.slate500, fontWeight: "700" },
 
@@ -873,7 +869,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  inputLabel: { fontSize: 11, fontWeight: "800", color: COLORS.slate700, marginBottom: 6 },
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: COLORS.slate700,
+    marginBottom: 6,
+  },
   modalInput: {
     height: 46,
     borderRadius: 10,
