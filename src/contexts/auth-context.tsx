@@ -6,10 +6,14 @@ import React, {
   useState,
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { Session } from "@supabase/supabase-js";
+import { router } from "expo-router";
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import {
   fetchUserProfileBundle,
+  PROFILE_SCHEMA_VERSION,
+  OrganizationSummary,
+  UserKind,
   UserProfileBundle,
 } from "../lib/user-profile";
 
@@ -19,11 +23,17 @@ type AuthContextType = {
   session: Session | null;
   profile: UserProfileBundle | null;
 
-  // True until we've checked the current Supabase session and,
-  // when applicable, loaded the cached profile.
-  initializing: boolean;
+  // Shortcuts for deciding what the UI shows.
+  userKind: UserKind | null;
+  organization: OrganizationSummary | null;
+  isOrgMember: boolean;
 
-  // True while a background profile refresh is running.
+  // True until the stored session (and cached profile) has been checked.
+  initializing: boolean;
+  // True while the profile is loading and nothing cached is available yet.
+  // Route guards should wait on this instead of treating the user as "public".
+  loadingProfile: boolean;
+  // True while a background refresh runs on top of a cached profile.
   refreshingProfile: boolean;
 
   signOut: () => Promise<void>;
@@ -31,18 +41,28 @@ type AuthContextType = {
 
   hasPermission: (code: string) => boolean;
   hasRole: (roleName: string) => boolean;
+  hasAnyRole: (...roleNames: string[]) => boolean;
 };
 
 const AuthContext = createContext<AuthContextType>({
   session: null,
   profile: null,
+  userKind: null,
+  organization: null,
+  isOrgMember: false,
   initializing: true,
+  loadingProfile: false,
   refreshingProfile: false,
   signOut: async () => {},
   refreshProfile: async () => {},
   hasPermission: () => false,
   hasRole: () => false,
+  hasAnyRole: () => false,
 });
+
+// ------------------------------------------------------------------
+// Local cache (includes the organization the user belongs to)
+// ------------------------------------------------------------------
 
 function cacheKeyFor(userId: string) {
   return `${PROFILE_CACHE_PREFIX}${userId}`;
@@ -53,12 +73,17 @@ async function loadCachedProfile(
 ): Promise<UserProfileBundle | null> {
   try {
     const raw = await AsyncStorage.getItem(cacheKeyFor(userId));
+    if (!raw) return null;
 
-    if (!raw) {
+    const parsed = JSON.parse(raw) as UserProfileBundle;
+
+    // Discard caches written by an older version of the app.
+    if (parsed.schemaVersion !== PROFILE_SCHEMA_VERSION) {
+      await AsyncStorage.removeItem(cacheKeyFor(userId));
       return null;
     }
 
-    return JSON.parse(raw) as UserProfileBundle;
+    return parsed;
   } catch (error) {
     console.warn("Failed to load cached profile:", error);
     return null;
@@ -67,12 +92,9 @@ async function loadCachedProfile(
 
 async function saveCachedProfile(bundle: UserProfileBundle) {
   try {
-    await AsyncStorage.setItem(
-      cacheKeyFor(bundle.id),
-      JSON.stringify(bundle)
-    );
+    await AsyncStorage.setItem(cacheKeyFor(bundle.id), JSON.stringify(bundle));
   } catch (error) {
-    // Non-fatal. The next launch will simply fetch the profile again.
+    // Non-fatal. The next launch will just fetch again.
     console.warn("Failed to cache user profile:", error);
   }
 }
@@ -81,159 +103,86 @@ async function clearCachedProfile(userId: string) {
   try {
     await AsyncStorage.removeItem(cacheKeyFor(userId));
   } catch (error) {
-    // Ignore cache deletion errors.
     console.warn("Failed to clear cached profile:", error);
   }
 }
 
-/**
- * Loads the profile from the backend/database.
- *
- * Important:
- * A missing profile is treated differently from a temporary
- * network/database error.
- */
 function isProfileNotFoundError(error: unknown): boolean {
-  if (!error) {
-    return false;
-  }
+  if (!error || typeof error !== "object") return false;
 
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    (error as { name?: string }).name === "PROFILE_NOT_FOUND"
-  ) {
-    return true;
-  }
+  const e = error as { name?: string; message?: unknown };
+  if (e.name === "PROFILE_NOT_FOUND") return true;
 
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error
-  ) {
-    const message = String(
-      (error as { message?: unknown }).message ?? ""
-    ).toLowerCase();
-
-    return (
-      message.includes("no user_profiles row found") ||
-      message.includes("profile not found")
-    );
-  }
-
-  return false;
+  const message = String(e.message ?? "").toLowerCase();
+  return (
+    message.includes("no user_profiles row found") ||
+    message.includes("profile not found")
+  );
 }
 
-export function AuthProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+// ------------------------------------------------------------------
+// Provider
+// ------------------------------------------------------------------
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<UserProfileBundle | null>(null);
 
   const [initializing, setInitializing] = useState(true);
+  const [loadingProfile, setLoadingProfile] = useState(false);
   const [refreshingProfile, setRefreshingProfile] = useState(false);
 
   const lastLoadedUserId = useRef<string | null>(null);
 
   /**
-   * Handles a user whose Supabase Auth account exists but whose
-   * core.user_profiles row does not exist.
-   *
-   * This should send the user back through signup rather than
-   * leaving them authenticated with an unusable account.
+   * The Auth account exists but core.user_profiles has no row for it.
+   * Sign out and send the user back to signup.
    */
   const handleMissingProfile = async (userId: string) => {
-    console.warn(
-      "No user profile found. Returning user to signup:",
-      userId
-    );
+    console.warn("No user profile found. Returning user to signup:", userId);
 
-    // Remove any stale cached profile.
     await clearCachedProfile(userId);
 
-    // Clear local state immediately.
     setProfile(null);
     setSession(null);
     lastLoadedUserId.current = null;
 
-    // End the Supabase session.
-    //
-    // onAuthStateChange will also receive SIGNED_OUT and perform
-    // its normal cleanup.
     await supabase.auth.signOut();
 
-    // Redirect to signup.
-    //
-    // We use window-independent navigation through Expo Router's
-    // global router so this context does not need to receive
-    // navigation props.
     try {
-      const { router } = await import("expo-router");
       router.replace("/signup");
     } catch (navigationError) {
-      console.error(
-        "Failed to redirect to signup:",
-        navigationError
-      );
+      console.error("Failed to redirect to signup:", navigationError);
     }
   };
 
-  /**
-   * Fetch the current user's profile bundle.
-   */
   const loadProfileForUser = async (
     userId: string,
     opts: { background?: boolean } = {}
   ) => {
     if (opts.background) {
       setRefreshingProfile(true);
+    } else {
+      setLoadingProfile(true);
     }
 
     try {
       const fresh = await fetchUserProfileBundle(userId);
-
-      // Profile exists.
       setProfile(fresh);
-
-      // Keep a local copy for fast startup.
       await saveCachedProfile(fresh);
     } catch (err) {
-      console.error(
-        "Failed to load user profile bundle:",
-        err
-      );
+      console.error("Failed to load user profile bundle:", err);
 
-      /**
-       * IMPORTANT:
-       *
-       * Do not sign the user out for every error.
-       *
-       * For example:
-       * - network unavailable
-       * - Supabase temporarily unavailable
-       * - expired request
-       * - JWT timing issue
-       *
-       * These are not proof that the profile doesn't exist.
-       *
-       * Only a confirmed missing-profile error should send the
-       * user back to signup.
-       */
+      // Only a confirmed missing profile sends the user back to signup.
+      // Network or database errors keep whatever is already in state.
       if (isProfileNotFoundError(err)) {
         await handleMissingProfile(userId);
-        return;
       }
-
-      /**
-       * For transient errors, preserve whatever is already in
-       * state (cached or previously loaded profile).
-       */
     } finally {
       if (opts.background) {
         setRefreshingProfile(false);
+      } else {
+        setLoadingProfile(false);
       }
     }
   };
@@ -241,9 +190,42 @@ export function AuthProvider({
   useEffect(() => {
     let mounted = true;
 
-    /**
-     * Initial authentication/session restoration.
-     */
+    const handleAuthEvent = async (
+      event: AuthChangeEvent,
+      newSession: Session | null
+    ) => {
+      if (!mounted) return;
+
+      if (event === "SIGNED_OUT") {
+        const previousUserId = lastLoadedUserId.current;
+        if (previousUserId) await clearCachedProfile(previousUserId);
+
+        lastLoadedUserId.current = null;
+        if (mounted) setProfile(null);
+        return;
+      }
+
+      if (!newSession?.user) {
+        lastLoadedUserId.current = null;
+        if (mounted) setProfile(null);
+        return;
+      }
+
+      const userId = newSession.user.id;
+
+      // Token refreshes and repeat events for the same user need no reload.
+      if (userId === lastLoadedUserId.current) return;
+
+      lastLoadedUserId.current = userId;
+
+      const cached = await loadCachedProfile(userId);
+      if (!mounted) return;
+
+      setProfile(cached ?? null);
+
+      await loadProfileForUser(userId, { background: !!cached });
+    };
+
     const initializeAuth = async () => {
       try {
         const {
@@ -252,28 +234,18 @@ export function AuthProvider({
         } = await supabase.auth.getSession();
 
         if (sessionError) {
-          console.error(
-            "Failed to restore Supabase session:",
-            sessionError
-          );
-
+          console.error("Failed to restore Supabase session:", sessionError);
           if (mounted) {
             setSession(null);
             setProfile(null);
           }
-
           return;
         }
 
-        if (!mounted) {
-          return;
-        }
+        if (!mounted) return;
 
         setSession(initialSession);
 
-        /**
-         * There is no authenticated user.
-         */
         if (!initialSession?.user) {
           lastLoadedUserId.current = null;
           setProfile(null);
@@ -281,117 +253,39 @@ export function AuthProvider({
         }
 
         const userId = initialSession.user.id;
-
         lastLoadedUserId.current = userId;
 
-        /**
-         * First load the cached profile so the application can
-         * render immediately.
-         */
+        // Show the cached profile immediately, then confirm it.
         const cached = await loadCachedProfile(userId);
+        if (!mounted) return;
 
-        if (!mounted) {
-          return;
-        }
+        if (cached) setProfile(cached);
 
-        if (cached) {
-          setProfile(cached);
-        }
-
-        /**
-         * Confirm the cached profile against the database.
-         *
-         * If there is no cache, this is a normal foreground load.
-         * If there is a cache, it happens in the background.
-         */
-        await loadProfileForUser(userId, {
-          background: !!cached,
-        });
+        await loadProfileForUser(userId, { background: !!cached });
       } catch (error) {
-        console.error(
-          "Failed to initialize authentication:",
-          error
-        );
+        console.error("Failed to initialize authentication:", error);
       } finally {
-        if (mounted) {
-          setInitializing(false);
-        }
+        if (mounted) setInitializing(false);
       }
     };
 
     initializeAuth();
 
-    /**
-     * Listen for Supabase authentication changes.
-     */
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      async (event, newSession) => {
-        if (!mounted) {
-          return;
-        }
+    } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (!mounted) return;
 
-        setSession(newSession);
+      setSession(newSession);
 
-        /**
-         * User signed out.
-         */
-        if (event === "SIGNED_OUT") {
-          const previousUserId = lastLoadedUserId.current;
-
-          if (previousUserId) {
-            await clearCachedProfile(previousUserId);
-          }
-
-          lastLoadedUserId.current = null;
-
-          if (mounted) {
-            setProfile(null);
-          }
-
-          return;
-        }
-
-        /**
-         * No authenticated user.
-         */
-        if (!newSession?.user) {
-          lastLoadedUserId.current = null;
-
-          if (mounted) {
-            setProfile(null);
-          }
-
-          return;
-        }
-
-        const userId = newSession.user.id;
-
-        /**
-         * Only reload the profile when this is a different user.
-         */
-        if (userId !== lastLoadedUserId.current) {
-          lastLoadedUserId.current = userId;
-
-          const cached = await loadCachedProfile(userId);
-
-          if (!mounted) {
-            return;
-          }
-
-          if (cached) {
-            setProfile(cached);
-          } else {
-            setProfile(null);
-          }
-
-          await loadProfileForUser(userId, {
-            background: !!cached,
-          });
-        }
-      }
-    );
+      // Do NOT await Supabase calls inside this callback. supabase-js holds
+      // an internal lock while it runs, so a query made here can deadlock,
+      // which shows up as the app hanging after the OTP is verified.
+      // Deferring with setTimeout runs the work after the lock is released.
+      setTimeout(() => {
+        void handleAuthEvent(event, newSession);
+      }, 0);
+    });
 
     return () => {
       mounted = false;
@@ -399,14 +293,6 @@ export function AuthProvider({
     };
   }, []);
 
-  /**
-   * Explicit sign-out.
-   *
-   * Supabase's SIGNED_OUT event handles:
-   * - clearing profile state
-   * - clearing the cached profile
-   * - resetting lastLoadedUserId
-   */
   const signOut = async () => {
     try {
       await supabase.auth.signOut();
@@ -415,47 +301,38 @@ export function AuthProvider({
     }
   };
 
-  /**
-   * Manually refresh the current user's profile.
-   */
   const refreshProfile = async () => {
-    if (!session?.user) {
-      return;
-    }
-
-    await loadProfileForUser(session.user.id, {
-      background: true,
-    });
+    if (!session?.user) return;
+    await loadProfileForUser(session.user.id, { background: true });
   };
 
-  /**
-   * Permission helper.
-   */
-  const hasPermission = (code: string) => {
-    return !!profile?.permissionCodes?.includes(code);
-  };
+  const hasPermission = (code: string) =>
+    !!profile?.permissionCodes?.includes(code);
 
-  /**
-   * Role helper.
-   */
-  const hasRole = (roleName: string) => {
-    return !!profile?.roles?.some(
-      (role) =>
-        role.name.toLowerCase() === roleName.toLowerCase()
+  const hasRole = (roleName: string) =>
+    !!profile?.roles?.some(
+      (role) => role.name.toLowerCase() === roleName.toLowerCase()
     );
-  };
+
+  const hasAnyRole = (...roleNames: string[]) =>
+    roleNames.some((name) => hasRole(name));
 
   return (
     <AuthContext.Provider
       value={{
         session,
         profile,
+        userKind: profile?.userKind ?? null,
+        organization: profile?.organization ?? null,
+        isOrgMember: profile?.isOrgMember ?? false,
         initializing,
+        loadingProfile,
         refreshingProfile,
         signOut,
         refreshProfile,
         hasPermission,
         hasRole,
+        hasAnyRole,
       }}
     >
       {children}
