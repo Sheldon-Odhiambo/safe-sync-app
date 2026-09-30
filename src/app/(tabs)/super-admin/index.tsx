@@ -1,3 +1,4 @@
+// src/app/super-admin/index.tsx
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
@@ -271,7 +272,7 @@ function SuperAdminContent() {
   ========================================================= */
 
   const openBranch = (branchId: string) => {
-    router.push(`/super-admin/branch/${branchId}`);
+    router.push(`./super-admin/branch/${branchId}`);
   };
 
   /* =========================================================
