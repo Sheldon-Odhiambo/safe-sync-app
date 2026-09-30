@@ -1,5 +1,5 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { Tabs, usePathname, useRouter } from "expo-router";
+import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
 import type { Href } from "expo-router";
 import { useEffect, useState } from "react";
 import {
@@ -23,6 +23,9 @@ import type { UserKind } from "../../lib/user-profile";
 const ACTIVE_COLOR = "#DC2626";
 const INACTIVE_COLOR = "#94A3B8";
 
+// How long to wait for the profile before offering "Try again".
+const PROFILE_TIMEOUT_MS = 8000;
+
 /**
  * Which kinds of user may open which routes.
  * `href: null` below only hides the tab button. This map is what stops
@@ -38,6 +41,12 @@ const ROUTE_ACCESS: { prefix: string; kinds: UserKind[] }[] = [
   { prefix: "/responder", kinds: ["responder"] },
 ];
 
+function findRule(pathname: string) {
+  return ROUTE_ACCESS.find(
+    (r) => pathname === r.prefix || pathname.startsWith(`${r.prefix}/`)
+  );
+}
+
 function homeRouteFor(kind: UserKind): Href {
   return (kind === "responder" ? "/responder" : "/home") as Href;
 }
@@ -50,15 +59,27 @@ export default function TabsLayout() {
   );
 }
 
+function LoadingScreen() {
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={ACTIVE_COLOR} />
+      </View>
+    </SafeAreaView>
+  );
+}
+
 function TabsLayoutContent() {
-  const { profile, initializing, loadingProfile, refreshProfile, signOut } =
-    useAuth();
+  const { session, profile, initializing, refreshProfile, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const { config } = useEmergencyBar();
 
   const [signingOut, setSigningOut] = useState(false);
+  const [stalled, setStalled] = useState(false);
 
+  const hasSession = !!session;
+  const hasProfile = !!profile;
   const kind = profile?.userKind;
 
   const isSuperAdmin = kind === "super_admin";
@@ -68,22 +89,38 @@ function TabsLayoutContent() {
   const isEmergencyScreen = pathname?.includes("/emergency");
   const isTrackScreen = pathname?.includes("/track");
 
+  // Is the user standing on a route their role doesn't allow?
+  const rule = pathname ? findRule(pathname) : undefined;
+  const routeBlocked = !!(kind && rule && !rule.kinds.includes(kind));
+
   // ---------------------------------------------------------
   // Route guard: send users away from screens their role
-  // doesn't allow (also catches deep links and the default
-  // first tab, e.g. a responder landing on Home).
+  // doesn't allow (deep links, or the default first tab, e.g. a
+  // responder landing on Home right after login).
   // ---------------------------------------------------------
   useEffect(() => {
-    if (!kind || !pathname) return;
-
-    const rule = ROUTE_ACCESS.find(
-      (r) => pathname === r.prefix || pathname.startsWith(`${r.prefix}/`)
-    );
-
-    if (rule && !rule.kinds.includes(kind)) {
+    if (routeBlocked && kind) {
       router.replace(homeRouteFor(kind));
     }
-  }, [kind, pathname]);
+  }, [routeBlocked, kind]);
+
+  // ---------------------------------------------------------
+  // Profile timeout. Right after login there is a short gap where
+  // a session exists but the profile hasn't loaded yet. That is
+  // normal, so we show a spinner. Only if it takes too long do we
+  // offer a retry.
+  // ---------------------------------------------------------
+  useEffect(() => {
+    if (hasProfile || !hasSession) {
+      if (stalled) setStalled(false);
+      return;
+    }
+
+    if (stalled) return;
+
+    const timer = setTimeout(() => setStalled(true), PROFILE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [hasProfile, hasSession, stalled]);
 
   // ---------------------------------------------------------
   // Sign out
@@ -124,22 +161,21 @@ function TabsLayoutContent() {
     router.push("/emergency");
   };
 
-  // ---------------------------------------------------------
-  // Don't render tabs until we know who the user is, otherwise
-  // a super admin briefly sees the public tab set.
-  // ---------------------------------------------------------
-  if (initializing || (loadingProfile && !profile)) {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={ACTIVE_COLOR} />
-        </View>
-      </SafeAreaView>
-    );
-  }
+  // =========================================================
+  // Gates. Everything below runs only for a signed-in user whose
+  // profile is loaded and who is allowed on this route.
+  // =========================================================
 
-  // Signed in but the profile couldn't be loaded (e.g. offline, no cache).
-  if (!profile) {
+  // Still restoring the stored session.
+  if (initializing) return <LoadingScreen />;
+
+  // Not signed in (or just signed out): back to the login screen.
+  if (!hasSession) return <Redirect href="/" />;
+
+  // Signed in, profile not here yet.
+  if (!hasProfile) {
+    if (!stalled) return <LoadingScreen />;
+
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.centered}>
@@ -152,6 +188,7 @@ function TabsLayoutContent() {
             style={styles.retryButton}
             activeOpacity={0.85}
             onPress={() => {
+              setStalled(false);
               void refreshProfile();
             }}
           >
@@ -171,6 +208,10 @@ function TabsLayoutContent() {
       </SafeAreaView>
     );
   }
+
+  // Wrong route for this role: the effect above is redirecting.
+  // Show a spinner instead of flashing the wrong screen.
+  if (routeBlocked) return <LoadingScreen />;
 
   // ---------------------------------------------------------
   // Resolve what the single global bottom button should show.
