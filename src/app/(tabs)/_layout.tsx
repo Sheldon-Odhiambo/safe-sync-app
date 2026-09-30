@@ -1,5 +1,7 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Tabs, usePathname, useRouter } from "expo-router";
+import type { Href } from "expo-router";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,9 +18,29 @@ import {
   useEmergencyBar,
 } from "../../components/emergency-bar-context";
 import { useAuth } from "../../contexts/auth-context";
+import type { UserKind } from "../../lib/user-profile";
 
 const ACTIVE_COLOR = "#DC2626";
 const INACTIVE_COLOR = "#94A3B8";
+
+/**
+ * Which kinds of user may open which routes.
+ * `href: null` below only hides the tab button. This map is what stops
+ * someone reaching a screen by deep link or by navigating to it directly.
+ * Routes not listed here (emergency, track, profile) are open to everyone.
+ */
+const ROUTE_ACCESS: { prefix: string; kinds: UserKind[] }[] = [
+  { prefix: "/home", kinds: ["super_admin", "admin", "public"] },
+  { prefix: "/history", kinds: ["responder", "public"] },
+  { prefix: "/wallet", kinds: ["super_admin", "public"] },
+  { prefix: "/admin", kinds: ["admin"] },
+  { prefix: "/super-admin", kinds: ["super_admin"] },
+  { prefix: "/responder", kinds: ["responder"] },
+];
+
+function homeRouteFor(kind: UserKind): Href {
+  return (kind === "responder" ? "/responder" : "/home") as Href;
+}
 
 export default function TabsLayout() {
   return (
@@ -29,38 +51,73 @@ export default function TabsLayout() {
 }
 
 function TabsLayoutContent() {
-  const { profile } = useAuth();
+  const { profile, initializing, loadingProfile, refreshProfile, signOut } =
+    useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const { config } = useEmergencyBar();
 
+  const [signingOut, setSigningOut] = useState(false);
+
   const kind = profile?.userKind;
 
   const isSuperAdmin = kind === "super_admin";
-  const isAdmin = kind === "admin" || kind === "system_user";
+  const isAdmin = kind === "admin";
   const isResponder = kind === "responder";
 
   const isEmergencyScreen = pathname?.includes("/emergency");
   const isTrackScreen = pathname?.includes("/track");
 
-  const handleSignOut = () => {
-    Alert.alert(
-      "Sign out",
-      "Are you sure you want to sign out?",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Sign out",
-          style: "destructive",
-          onPress: () => {
-            router.replace("/");
-          },
-        },
-      ]
+  // ---------------------------------------------------------
+  // Route guard: send users away from screens their role
+  // doesn't allow (also catches deep links and the default
+  // first tab, e.g. a responder landing on Home).
+  // ---------------------------------------------------------
+  useEffect(() => {
+    if (!kind || !pathname) return;
+
+    const rule = ROUTE_ACCESS.find(
+      (r) => pathname === r.prefix || pathname.startsWith(`${r.prefix}/`)
     );
+
+    if (rule && !rule.kinds.includes(kind)) {
+      router.replace(homeRouteFor(kind));
+    }
+  }, [kind, pathname]);
+
+  // ---------------------------------------------------------
+  // Sign out
+  // ---------------------------------------------------------
+  const performSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await signOut();
+    } finally {
+      setSigningOut(false);
+      router.replace("/");
+    }
+  };
+
+  const confirmSignOut = () => {
+    // Alert.alert with buttons does nothing on web.
+    if (Platform.OS === "web") {
+      if (window.confirm("Are you sure you want to sign out?")) {
+        void performSignOut();
+      }
+      return;
+    }
+
+    Alert.alert("Sign out", "Are you sure you want to sign out?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Sign out",
+        style: "destructive",
+        onPress: () => {
+          void performSignOut();
+        },
+      },
+    ]);
   };
 
   const handleEmergency = () => {
@@ -68,15 +125,60 @@ function TabsLayoutContent() {
   };
 
   // ---------------------------------------------------------
+  // Don't render tabs until we know who the user is, otherwise
+  // a super admin briefly sees the public tab set.
+  // ---------------------------------------------------------
+  if (initializing || (loadingProfile && !profile)) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={ACTIVE_COLOR} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Signed in but the profile couldn't be loaded (e.g. offline, no cache).
+  if (!profile) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centered}>
+          <Text style={styles.errorTitle}>Couldn't load your account</Text>
+          <Text style={styles.errorText}>
+            Check your connection and try again.
+          </Text>
+
+          <TouchableOpacity
+            style={styles.retryButton}
+            activeOpacity={0.85}
+            onPress={() => {
+              void refreshProfile();
+            }}
+          >
+            <Text style={styles.retryText}>Try again</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.linkButton}
+            activeOpacity={0.7}
+            onPress={() => {
+              void performSignOut();
+            }}
+          >
+            <Text style={styles.linkText}>Sign out</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ---------------------------------------------------------
   // Resolve what the single global bottom button should show.
   // - Track screen: no button at all.
   // - Emergency screen: driven entirely by the screen itself
-  //   (via EmergencyBarProvider) — label, disabled/loading state
-  //   and the confirm action, including its own "notes required
-  //   for Other Emergency" check.
+  //   (via EmergencyBarProvider).
   // - Everywhere else: the default "request help" button.
   // ---------------------------------------------------------
-
   const barConfig = isTrackScreen
     ? null
     : isEmergencyScreen
@@ -102,29 +204,33 @@ function TabsLayoutContent() {
         <View style={styles.header}>
           <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
-              <Ionicons
-                name="shield-checkmark"
-                size={18}
-                color="#FFFFFF"
-              />
+              <Ionicons name="shield-checkmark" size={18} color="#FFFFFF" />
             </View>
-            <Text style={styles.brandTitle}>SafeSync</Text>
+            <View>
+              <Text style={styles.brandTitle}>SafeSync</Text>
+              {profile.organization ? (
+                <Text style={styles.orgName} numberOfLines={1}>
+                  {profile.organization.name}
+                </Text>
+              ) : null}
+            </View>
           </View>
 
-          {/* HEADER ACTIONS */}
           <View style={styles.headerActions}>
-
-            {/* SIGN OUT */}
             <TouchableOpacity
-              style={styles.signOutButton}
+              style={[
+                styles.signOutButton,
+                signingOut && styles.signOutButtonBusy,
+              ]}
               activeOpacity={0.7}
-              onPress={handleSignOut}
+              onPress={confirmSignOut}
+              disabled={signingOut}
             >
-              <Ionicons
-                name="log-out-outline"
-                size={20}
-                color="#0F172A"
-              />
+              {signingOut ? (
+                <ActivityIndicator size="small" color="#0F172A" />
+              ) : (
+                <Ionicons name="log-out-outline" size={20} color="#0F172A" />
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -144,9 +250,7 @@ function TabsLayoutContent() {
               tabBarHideOnKeyboard: true,
             }}
           >
-            {/* ---------------------------------------------------
-                HOME — superadmin, admin, public. Not responder.
-            --------------------------------------------------- */}
+            {/* HOME: super admin, admin, public. Not responder. */}
             <Tabs.Screen
               name="home"
               options={{
@@ -162,9 +266,7 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* ---------------------------------------------------
-                HISTORY — responder, public. Not superadmin/admin.
-            --------------------------------------------------- */}
+            {/* HISTORY: responder, public. Not super admin / admin. */}
             <Tabs.Screen
               name="history"
               options={{
@@ -180,9 +282,7 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* ---------------------------------------------------
-                WALLET — superadmin, public. Not admin/responder.
-            --------------------------------------------------- */}
+            {/* WALLET: super admin, public. Not admin / responder. */}
             <Tabs.Screen
               name="wallet"
               options={{
@@ -198,23 +298,23 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* ---------------------------------------------------
-                ADMIN — admin only.
-            --------------------------------------------------- */}
+            {/* ADMIN: admin only. */}
             <Tabs.Screen
               name="admin/index"
               options={{
                 title: "Admin",
                 href: isAdmin ? undefined : null,
                 tabBarIcon: ({ color, size }) => (
-                  <Ionicons name="briefcase-outline" size={size || 22} color={color} />
+                  <Ionicons
+                    name="briefcase-outline"
+                    size={size || 22}
+                    color={color}
+                  />
                 ),
               }}
             />
 
-            {/* ---------------------------------------------------
-                SUPER ADMIN — superadmin only.
-            --------------------------------------------------- */}
+            {/* SUPER ADMIN: super admin only. */}
             <Tabs.Screen
               name="super-admin/index"
               options={{
@@ -230,9 +330,7 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* ---------------------------------------------------
-                RESPONDER — responder only.
-            --------------------------------------------------- */}
+            {/* RESPONDER: responder only. */}
             <Tabs.Screen
               name="responder/index"
               options={{
@@ -248,9 +346,7 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* ---------------------------------------------------
-                PROFILE — everyone.
-            --------------------------------------------------- */}
+            {/* PROFILE: everyone. */}
             <Tabs.Screen
               name="profile"
               options={{
@@ -292,9 +388,7 @@ function TabsLayoutContent() {
                     />
                   )}
                 </View>
-                <Text style={styles.emergencyText}>
-                  {barConfig.label}
-                </Text>
+                <Text style={styles.emergencyText}>{barConfig.label}</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -315,6 +409,53 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
   },
 
+  centered: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+  },
+
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0F172A",
+    marginBottom: 6,
+  },
+
+  errorText: {
+    fontSize: 14,
+    color: "#64748B",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+
+  retryButton: {
+    height: 48,
+    paddingHorizontal: 28,
+    borderRadius: 14,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  retryText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  linkButton: {
+    marginTop: 14,
+    padding: 8,
+  },
+
+  linkText: {
+    color: "#64748B",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
   /* HEADER */
   header: {
     height: 64,
@@ -322,7 +463,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    marginTop:35,
+    marginTop: 35,
     backgroundColor: "#FFFFFF",
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
@@ -332,6 +473,7 @@ const styles = StyleSheet.create({
   brandContainer: {
     flexDirection: "row",
     alignItems: "center",
+    flexShrink: 1,
   },
 
   logoBadge: {
@@ -350,26 +492,18 @@ const styles = StyleSheet.create({
     color: "#0F172A",
   },
 
+  orgName: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#64748B",
+    maxWidth: 200,
+  },
+
   /* HEADER ACTIONS */
   headerActions: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-  },
-
-  signUpButton: {
-    height: 40,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: "#DC2626",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  signUpText: {
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "800",
   },
 
   signOutButton: {
@@ -381,6 +515,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#FFFFFF",
+  },
+
+  signOutButtonBusy: {
+    opacity: 0.6,
   },
 
   /* TABS CONTAINER */
@@ -403,10 +541,7 @@ const styles = StyleSheet.create({
     paddingBottom: Platform.OS === "ios" ? 8 : 6,
 
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
     shadowRadius: 12,
     elevation: 8,
@@ -441,10 +576,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
 
     shadowColor: "#DC2626",
-    shadowOffset: {
-      width: 0,
-      height: 5,
-    },
+    shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 8,
