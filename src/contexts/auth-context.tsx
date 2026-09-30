@@ -295,9 +295,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     try {
-      await supabase.auth.signOut();
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        console.warn("Server sign-out failed, clearing local session:", error);
+        await supabase.auth.signOut({ scope: "local" });
+      }
     } catch (error) {
       console.error("Failed to sign out:", error);
+      await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+    } finally {
+      try {
+        const keys = await AsyncStorage.getAllKeys();
+        await AsyncStorage.multiRemove(
+          keys.filter((k) => k.startsWith(PROFILE_CACHE_PREFIX))
+        );
+      } catch (error) {
+        console.warn("Failed to clear cached profiles:", error);
+      }
+
+      lastLoadedUserId.current = null;
+      setProfile(null);
+      setSession(null);
     }
   };
 
