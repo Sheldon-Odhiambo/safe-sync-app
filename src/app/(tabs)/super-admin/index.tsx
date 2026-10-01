@@ -1,3 +1,4 @@
+// src/app/super-admin/index.tsx
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
@@ -12,6 +13,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
+import { useRouter } from "expo-router";
 import {
   Building2,
   Siren,
@@ -25,17 +27,24 @@ import {
   Ambulance,
   UserCog,
   Mail,
+  ChevronRight,
   X,
 } from "lucide-react-native";
 
 import { RoleGate } from "@/components/role-gate";
 import { apiFetch } from "@/lib/api-client";
 
+/* =========================================================
+   COLORS
+========================================================= */
+
 const COLORS = {
   primary: "#E11D48",
   primaryDark: "#BE123C",
+
   background: "#F8FAFC",
   white: "#FFFFFF",
+
   slate900: "#0F172A",
   slate700: "#334155",
   slate600: "#475569",
@@ -43,32 +52,42 @@ const COLORS = {
   slate300: "#CBD5E1",
   slate200: "#E2E8F0",
   slate100: "#F1F5F9",
+
   green: "#059669",
   greenLight: "#ECFDF5",
+
   amber: "#D97706",
   amberLight: "#FFFBEB",
+
   redLight: "#FEF2F2",
 };
 
-/**
- * Space to keep clear at the bottom of the scroll area. The tab bar
- * (68 + 12 margin) and the global emergency button (54, sitting 88 up)
- * both float over the content.
- */
 const BOTTOM_CLEARANCE = 170;
 
 /* =========================================================
-   TYPES — mirror SuperAdminOverviewResponse / SuperAdminBranchResponse
+   API ENDPOINTS
+========================================================= */
+
+const API_ENDPOINTS = {
+  overview: "/api/v1/superadmin/overview",
+  branches: "/api/v1/superadmin/branches",
+};
+
+/* =========================================================
+   API TYPES
 ========================================================= */
 
 type Overview = {
   organization_id: string;
   organization_name: string;
   organization_type: string;
+
   branch_count: number;
   active_branch_count: number;
+
   admin_count: number;
   responder_count: number;
+
   active_incident_count: number;
 };
 
@@ -77,19 +96,31 @@ type Branch = {
   name: string;
   email: string;
   location: string;
-  status: boolean; // true = Active, false = Pending
+
+  /*
+   * core.branch.status is BOOLEAN.
+   *
+   * true  = active (payment made)
+   * false = pending (default for a new branch)
+   */
+  status: boolean;
+
   admin_count: number;
   responder_count: number;
+
   created_at: string;
+};
+
+type CreateBranchPayload = {
+  name: string;
+  email: string;
+  location: string;
 };
 
 type StatusFilter = "All" | "Active" | "Pending";
 
 /* =========================================================
    SCREEN ENTRY
-   The tabs layout already redirects other roles away from this route.
-   RoleGate is the second check, so the screen can never render (or
-   fetch anything) for someone who isn't a super admin.
 ========================================================= */
 
 export default function SuperAdminScreen() {
@@ -108,27 +139,40 @@ export default function SuperAdminScreen() {
   );
 }
 
+/* =========================================================
+   CONTENT
+========================================================= */
+
 function SuperAdminContent() {
+  const router = useRouter();
+
   const [overview, setOverview] = useState<Overview | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
   const [loadError, setLoadError] = useState("");
 
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<StatusFilter>("All");
 
-  // Add-branch modal
+  /* ---------------------------------------------------------
+     ADD BRANCH MODAL
+  --------------------------------------------------------- */
+
   const [modalVisible, setModalVisible] = useState(false);
+
   const [branchName, setBranchName] = useState("");
   const [branchLocation, setBranchLocation] = useState("");
   const [branchEmail, setBranchEmail] = useState("");
+
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
 
-  /* ---------------------------------------------------------
-     LOAD DATA
-  --------------------------------------------------------- */
+  /* =========================================================
+     LOAD OVERVIEW + BRANCHES
+  ========================================================= */
 
   const loadData = useCallback(
     async (mode: "initial" | "refresh" = "initial") => {
@@ -137,13 +181,24 @@ function SuperAdminContent() {
       } else {
         setLoading(true);
       }
+
       setLoadError("");
 
       try {
         const [overviewData, branchesData] = await Promise.all([
-          apiFetch<Overview>("/api/v1/superadmin/overview"),
-          apiFetch<Branch[]>("/api/v1/superadmin/branches"),
+          apiFetch<Overview>(API_ENDPOINTS.overview),
+          apiFetch<Branch[]>(API_ENDPOINTS.branches),
         ]);
+
+        if (!overviewData || typeof overviewData !== "object") {
+          throw new Error(
+            "The server returned an invalid organization overview."
+          );
+        }
+
+        if (!Array.isArray(branchesData)) {
+          throw new Error("The server returned an invalid branch list.");
+        }
 
         setOverview(overviewData);
         setBranches(branchesData);
@@ -162,12 +217,12 @@ function SuperAdminContent() {
   );
 
   useEffect(() => {
-    loadData();
+    loadData("initial");
   }, [loadData]);
 
-  /* ---------------------------------------------------------
-     FILTERED BRANCHES
-  --------------------------------------------------------- */
+  /* =========================================================
+     FILTER BRANCHES
+  ========================================================= */
 
   const filteredBranches = useMemo(() => {
     const value = search.trim().toLowerCase();
@@ -183,63 +238,102 @@ function SuperAdminContent() {
         filterStatus === "All"
           ? true
           : filterStatus === "Active"
-          ? branch.status
-          : !branch.status;
+            ? branch.status === true
+            : branch.status === false;
 
       return matchesSearch && matchesStatus;
     });
   }, [search, filterStatus, branches]);
 
-  /* ---------------------------------------------------------
-     ACTIONS
-  --------------------------------------------------------- */
+  /* =========================================================
+     OPEN / CLOSE ADD BRANCH
+  ========================================================= */
 
   const openAddBranch = () => {
+    if (creating) return;
+
     setBranchName("");
     setBranchLocation("");
     setBranchEmail("");
     setCreateError("");
+
     setModalVisible(true);
   };
 
+  const closeAddBranch = () => {
+    if (creating) return;
+
+    setModalVisible(false);
+    setCreateError("");
+  };
+
+  /* =========================================================
+     OPEN BRANCH DETAIL
+  ========================================================= */
+
+  const openBranch = (branchId: string) => {
+    router.push(`./super-admin/branch/${branchId}`);
+  };
+
+  /* =========================================================
+     CREATE BRANCH
+  ========================================================= */
+
   const handleCreateBranch = async () => {
+    if (creating) return;
+
     setCreateError("");
 
     const name = branchName.trim();
     const location = branchLocation.trim();
     const email = branchEmail.trim().toLowerCase();
 
-    if (!name || !location || !email) {
-      setCreateError("Branch name, location and email are all required.");
+    if (!name) {
+      setCreateError("Please enter the branch name.");
       return;
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!location) {
+      setCreateError("Please enter the branch location.");
+      return;
+    }
+
+    if (!email) {
+      setCreateError("Please enter the branch email.");
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(email)) {
       setCreateError("Please enter a valid email address.");
       return;
     }
 
+    const payload: CreateBranchPayload = { name, email, location };
+
     setCreating(true);
 
     try {
-      const created = await apiFetch<Branch>("/api/v1/superadmin/branches", {
+      /*
+       * The backend creates the branch as PENDING (status = false).
+       * It becomes active once the subscription payment is applied.
+       * organization_id is never sent: it comes from the
+       * authenticated super_admin.
+       */
+      await apiFetch<Branch>(API_ENDPOINTS.branches, {
         method: "POST",
-        body: JSON.stringify({ name, location, email }),
+        body: JSON.stringify(payload),
       });
 
-      setBranches((current) => [created, ...current]);
-      setOverview((current) =>
-        current
-          ? {
-              ...current,
-              branch_count: current.branch_count + 1,
-              active_branch_count:
-                current.active_branch_count + (created.status ? 1 : 0),
-            }
-          : current
-      );
-
       setModalVisible(false);
+
+      setBranchName("");
+      setBranchLocation("");
+      setBranchEmail("");
+      setCreateError("");
+
+      await loadData("refresh");
     } catch (err) {
       setCreateError(
         err instanceof Error ? err.message : "Couldn't create the branch."
@@ -249,11 +343,34 @@ function SuperAdminContent() {
     }
   };
 
-  /* ---------------------------------------------------------
+  /* =========================================================
+     HELPERS
+  ========================================================= */
+
+  const formatDate = (value: string) => {
+    if (!value) return "";
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    return date.toLocaleDateString(undefined, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  };
+
+  const organizationTypeLabel =
+    overview?.organization_type === "service_provider"
+      ? "Service Provider"
+      : overview?.organization_type === "client"
+        ? "Client Organization"
+        : overview?.organization_type || "";
+
+  /* =========================================================
      RENDER
-     The SafeSync header, organization name and sign out button
-     come from the tabs layout, so they're not repeated here.
-  --------------------------------------------------------- */
+  ========================================================= */
 
   return (
     <View style={styles.root}>
@@ -273,31 +390,53 @@ function SuperAdminContent() {
         {loading ? (
           <View style={styles.loadingState}>
             <ActivityIndicator color={COLORS.primary} size="large" />
-            <Text style={styles.centeredText}>Loading your organization…</Text>
+
+            <Text style={styles.centeredText}>
+              Loading your organization…
+            </Text>
           </View>
         ) : loadError ? (
           <View style={styles.errorCard}>
+            <AlertTriangle size={28} color={COLORS.primary} />
+
             <Text style={styles.centeredTitle}>
               Couldn't load your organization
             </Text>
+
             <Text style={styles.centeredText}>{loadError}</Text>
+
             <Pressable
-              onPress={() => loadData()}
+              onPress={() => loadData("initial")}
               style={({ pressed }) => [
                 styles.retryButton,
                 pressed && styles.pressed,
               ]}
             >
               <RefreshCw size={15} color={COLORS.white} strokeWidth={2.3} />
+
               <Text style={styles.retryButtonText}>Retry</Text>
             </Pressable>
           </View>
         ) : (
           <>
-            {/* OVERVIEW HEADER */}
+            {/* ORGANIZATION HEADER */}
+
             <View style={styles.welcomeSection}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.welcomeTitle}>Organization Overview</Text>
+              <View style={styles.welcomeTextContainer}>
+                <Text style={styles.welcomeTitle} numberOfLines={2}>
+                  Organization Overview
+                </Text>
+
+                <Text style={styles.organizationNameHeader} numberOfLines={2}>
+                  {overview?.organization_name || "Your organization"}
+                </Text>
+
+                {organizationTypeLabel ? (
+                  <Text style={styles.organizationType}>
+                    {organizationTypeLabel}
+                  </Text>
+                ) : null}
+
                 <Text style={styles.welcomeSubtitle}>
                   Monitor your branches, admins and responders.
                 </Text>
@@ -305,20 +444,26 @@ function SuperAdminContent() {
 
               <Pressable
                 onPress={() => loadData("refresh")}
+                disabled={refreshing}
                 style={({ pressed }) => [
                   styles.refreshButton,
                   pressed && styles.pressed,
                 ]}
               >
-                <RefreshCw
-                  size={17}
-                  color={COLORS.slate700}
-                  strokeWidth={2.2}
-                />
+                {refreshing ? (
+                  <ActivityIndicator size="small" color={COLORS.slate700} />
+                ) : (
+                  <RefreshCw
+                    size={17}
+                    color={COLORS.slate700}
+                    strokeWidth={2.2}
+                  />
+                )}
               </Pressable>
             </View>
 
             {/* STAT CARDS */}
+
             <View style={styles.statsGrid}>
               <View style={styles.statCard}>
                 <View style={[styles.statIcon, { backgroundColor: "#FFF1F2" }]}>
@@ -328,29 +473,43 @@ function SuperAdminContent() {
                     strokeWidth={2.2}
                   />
                 </View>
+
                 <Text style={styles.statNumber}>
                   {overview?.branch_count ?? 0}
                 </Text>
+
                 <Text style={styles.statLabel}>Branches</Text>
+
+                <Text style={styles.statSecondary}>
+                  {overview?.active_branch_count ?? 0} active
+                </Text>
               </View>
 
               <View style={styles.statCard}>
                 <View style={[styles.statIcon, { backgroundColor: "#ECFDF5" }]}>
                   <Users size={18} color={COLORS.green} strokeWidth={2.2} />
                 </View>
+
                 <Text style={styles.statNumber}>
                   {overview?.admin_count ?? 0}
                 </Text>
+
                 <Text style={styles.statLabel}>Admins</Text>
               </View>
 
               <View style={styles.statCard}>
                 <View style={[styles.statIcon, { backgroundColor: "#FFFBEB" }]}>
-                  <Ambulance size={18} color={COLORS.amber} strokeWidth={2.2} />
+                  <Ambulance
+                    size={18}
+                    color={COLORS.amber}
+                    strokeWidth={2.2}
+                  />
                 </View>
+
                 <Text style={styles.statNumber}>
                   {overview?.responder_count ?? 0}
                 </Text>
+
                 <Text style={styles.statLabel}>Responders</Text>
               </View>
 
@@ -358,14 +517,17 @@ function SuperAdminContent() {
                 <View style={[styles.statIcon, { backgroundColor: "#EFF6FF" }]}>
                   <Siren size={18} color="#2563EB" strokeWidth={2.2} />
                 </View>
+
                 <Text style={styles.statNumber}>
                   {overview?.active_incident_count ?? 0}
                 </Text>
+
                 <Text style={styles.statLabel}>Active incidents</Text>
               </View>
             </View>
 
             {/* QUICK ACTIONS */}
+
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Quick Actions</Text>
             </View>
@@ -373,38 +535,56 @@ function SuperAdminContent() {
             <View style={styles.quickActions}>
               <Pressable
                 onPress={openAddBranch}
+                disabled={creating}
                 style={({ pressed }) => [
                   styles.primaryAction,
                   pressed && styles.pressed,
                 ]}
               >
                 <Plus size={18} color={COLORS.white} strokeWidth={2.5} />
+
                 <Text style={styles.primaryActionText}>Add Branch</Text>
               </Pressable>
             </View>
 
-            {/* SEARCH & FILTER */}
+            {/* BRANCHES HEADER */}
+
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Branches</Text>
+
               <Text style={styles.countText}>
                 {filteredBranches.length} shown
               </Text>
             </View>
 
+            {/* SEARCH */}
+
             <View style={styles.searchBox}>
               <Search size={17} color={COLORS.slate500} strokeWidth={2} />
+
               <TextInput
                 value={search}
                 onChangeText={setSearch}
                 placeholder="Search by name, location or email..."
                 placeholderTextColor={COLORS.slate500}
                 style={styles.searchInput}
+                autoCapitalize="none"
+                autoCorrect={false}
               />
+
+              {search.length > 0 && (
+                <Pressable onPress={() => setSearch("")} hitSlop={8}>
+                  <X size={16} color={COLORS.slate500} />
+                </Pressable>
+              )}
             </View>
+
+            {/* FILTERS */}
 
             <View style={styles.filterPillsRow}>
               {(["All", "Active", "Pending"] as const).map((tab) => {
                 const isSelected = filterStatus === tab;
+
                 return (
                   <Pressable
                     key={tab}
@@ -428,23 +608,52 @@ function SuperAdminContent() {
             </View>
 
             {/* BRANCH LIST */}
+
             <View style={styles.organizationList}>
               {filteredBranches.length === 0 ? (
                 <View style={styles.emptyState}>
+                  <Building2 size={28} color={COLORS.slate300} />
+
                   <Text style={styles.centeredTitle}>
                     {branches.length === 0
                       ? "No branches yet"
                       : "No matching branches"}
                   </Text>
+
                   <Text style={styles.centeredText}>
                     {branches.length === 0
                       ? "Add your first branch to get started."
                       : "Try a different search or filter."}
                   </Text>
+
+                  {branches.length === 0 && (
+                    <Pressable
+                      onPress={openAddBranch}
+                      style={({ pressed }) => [
+                        styles.emptyAddButton,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Plus size={15} color={COLORS.white} />
+
+                      <Text style={styles.emptyAddButtonText}>Add Branch</Text>
+                    </Pressable>
+                  )}
                 </View>
               ) : (
                 filteredBranches.map((branch) => (
-                  <View key={branch.id} style={styles.organizationCard}>
+                  <Pressable
+                    key={branch.id}
+                    onPress={() => openBranch(branch.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open ${branch.name}`}
+                    style={({ pressed }) => [
+                      styles.organizationCard,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    {/* TOP ROW */}
+
                     <View style={styles.orgTopRow}>
                       <View style={styles.organizationIcon}>
                         <Building2
@@ -458,6 +667,7 @@ function SuperAdminContent() {
                         <Text style={styles.organizationName} numberOfLines={1}>
                           {branch.name}
                         </Text>
+
                         <Text
                           style={styles.organizationLocation}
                           numberOfLines={1}
@@ -479,6 +689,7 @@ function SuperAdminContent() {
                         ) : (
                           <AlertTriangle size={12} color={COLORS.amber} />
                         )}
+
                         <Text
                           style={[
                             styles.statusText,
@@ -490,11 +701,20 @@ function SuperAdminContent() {
                           {branch.status ? "Active" : "Pending"}
                         </Text>
                       </View>
+
+                      <ChevronRight
+                        size={16}
+                        color={COLORS.slate300}
+                        style={styles.chevron}
+                      />
                     </View>
+
+                    {/* META */}
 
                     <View style={styles.organizationMeta}>
                       <View style={styles.metaItem}>
                         <UserCog size={13} color={COLORS.slate500} />
+
                         <Text style={styles.metaText}>
                           {branch.admin_count}{" "}
                           {branch.admin_count === 1 ? "Admin" : "Admins"}
@@ -503,6 +723,7 @@ function SuperAdminContent() {
 
                       <View style={styles.metaItem}>
                         <Ambulance size={13} color={COLORS.slate500} />
+
                         <Text style={styles.metaText}>
                           {branch.responder_count}{" "}
                           {branch.responder_count === 1
@@ -512,13 +733,24 @@ function SuperAdminContent() {
                       </View>
                     </View>
 
+                    {/* EMAIL */}
+
                     <View style={styles.metaItem}>
                       <Mail size={13} color={COLORS.slate500} />
+
                       <Text style={styles.metaText} numberOfLines={1}>
                         {branch.email}
                       </Text>
                     </View>
-                  </View>
+
+                    {/* CREATED DATE */}
+
+                    {branch.created_at ? (
+                      <Text style={styles.createdText}>
+                        Created {formatDate(branch.created_at)}
+                      </Text>
+                    ) : null}
+                  </Pressable>
                 ))
               )}
             </View>
@@ -526,22 +758,23 @@ function SuperAdminContent() {
         )}
 
         {/* FOOTER */}
+
         <View style={styles.footer}>
           <ShieldCheck size={14} color={COLORS.slate500} />
+
           <Text style={styles.footerText}>
             SafeSync Super Admin • Enterprise Command Center
           </Text>
         </View>
       </ScrollView>
 
-      {/* =========================================================
-          ADD BRANCH MODAL
-      ========================================================= */}
+      {/* ADD BRANCH MODAL */}
+
       <Modal
         visible={modalVisible}
         animationType="slide"
         transparent
-        onRequestClose={() => !creating && setModalVisible(false)}
+        onRequestClose={closeAddBranch}
       >
         <KeyboardAvoidingView
           style={styles.modalBackdrop}
@@ -549,9 +782,19 @@ function SuperAdminContent() {
         >
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add Branch</Text>
+              <View style={styles.modalHeaderText}>
+                <Text style={styles.modalTitle}>Add Branch</Text>
+
+                <Text style={styles.modalSubtitle} numberOfLines={2}>
+                  Add a new branch to{" "}
+                  {overview?.organization_name || "your organization"}. It
+                  stays pending until payment is made.
+                </Text>
+              </View>
+
               <Pressable
-                onPress={() => !creating && setModalVisible(false)}
+                onPress={closeAddBranch}
+                disabled={creating}
                 style={styles.modalClose}
               >
                 <X size={18} color={COLORS.slate700} strokeWidth={2.3} />
@@ -559,6 +802,7 @@ function SuperAdminContent() {
             </View>
 
             <Text style={styles.inputLabel}>Branch name</Text>
+
             <TextInput
               value={branchName}
               onChangeText={setBranchName}
@@ -566,9 +810,13 @@ function SuperAdminContent() {
               placeholderTextColor={COLORS.slate500}
               style={styles.modalInput}
               editable={!creating}
+              maxLength={150}
+              autoCapitalize="words"
+              autoCorrect={false}
             />
 
             <Text style={styles.inputLabel}>Location</Text>
+
             <TextInput
               value={branchLocation}
               onChangeText={setBranchLocation}
@@ -576,9 +824,13 @@ function SuperAdminContent() {
               placeholderTextColor={COLORS.slate500}
               style={styles.modalInput}
               editable={!creating}
+              maxLength={300}
+              autoCapitalize="words"
+              autoCorrect={false}
             />
 
             <Text style={styles.inputLabel}>Branch email</Text>
+
             <TextInput
               value={branchEmail}
               onChangeText={setBranchEmail}
@@ -589,17 +841,20 @@ function SuperAdminContent() {
               autoCapitalize="none"
               autoCorrect={false}
               editable={!creating}
+              maxLength={254}
             />
 
             {createError ? (
               <View style={styles.errorBox}>
+                <AlertTriangle size={15} color="#B91C1C" />
+
                 <Text style={styles.errorText}>{createError}</Text>
               </View>
             ) : null}
 
             <View style={styles.modalActions}>
               <Pressable
-                onPress={() => setModalVisible(false)}
+                onPress={closeAddBranch}
                 disabled={creating}
                 style={({ pressed }) => [
                   styles.modalCancel,
@@ -619,9 +874,17 @@ function SuperAdminContent() {
                 ]}
               >
                 {creating ? (
-                  <ActivityIndicator size="small" color={COLORS.white} />
+                  <>
+                    <ActivityIndicator size="small" color={COLORS.white} />
+
+                    <Text style={styles.modalSubmitText}>Creating...</Text>
+                  </>
                 ) : (
-                  <Text style={styles.modalSubmitText}>Create branch</Text>
+                  <>
+                    <Plus size={16} color={COLORS.white} strokeWidth={2.5} />
+
+                    <Text style={styles.modalSubmitText}>Create branch</Text>
+                  </>
                 )}
               </Pressable>
             </View>
@@ -635,9 +898,17 @@ function SuperAdminContent() {
 /* =========================================================
    STYLES
 ========================================================= */
+
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: COLORS.background },
-  container: { flex: 1 },
+  root: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+
+  container: {
+    flex: 1,
+  },
+
   content: {
     paddingHorizontal: 16,
     paddingTop: 10,
@@ -651,19 +922,27 @@ const styles = StyleSheet.create({
     padding: 24,
     gap: 8,
   },
+
   centeredTitle: {
     fontSize: 15,
     fontWeight: "900",
     color: COLORS.slate900,
     textAlign: "center",
   },
+
   centeredText: {
     fontSize: 12,
     color: COLORS.slate500,
     textAlign: "center",
     lineHeight: 18,
   },
-  loadingState: { alignItems: "center", paddingVertical: 60, gap: 12 },
+
+  loadingState: {
+    alignItems: "center",
+    paddingVertical: 60,
+    gap: 12,
+  },
+
   errorCard: {
     marginTop: 14,
     backgroundColor: COLORS.white,
@@ -674,7 +953,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  emptyState: { alignItems: "center", paddingVertical: 32, gap: 6 },
+
+  emptyState: {
+    alignItems: "center",
+    paddingVertical: 36,
+    paddingHorizontal: 20,
+    gap: 7,
+  },
+
   retryButton: {
     marginTop: 6,
     height: 38,
@@ -683,20 +969,57 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 6,
   },
-  retryButtonText: { color: COLORS.white, fontSize: 12, fontWeight: "800" },
 
-  // Welcome
+  retryButtonText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
   welcomeSection: {
     marginTop: 6,
-    marginBottom: 12,
+    marginBottom: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  welcomeTitle: { fontSize: 20, fontWeight: "900", color: COLORS.slate900 },
-  welcomeSubtitle: { marginTop: 2, fontSize: 11, color: COLORS.slate500 },
+
+  welcomeTextContainer: {
+    flex: 1,
+    paddingRight: 8,
+  },
+
+  welcomeTitle: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
+  organizationNameHeader: {
+    marginTop: 2,
+    fontSize: 13,
+    fontWeight: "800",
+    color: COLORS.primary,
+  },
+
+  organizationType: {
+    marginTop: 2,
+    fontSize: 9,
+    fontWeight: "800",
+    color: COLORS.slate600,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+
+  welcomeSubtitle: {
+    marginTop: 3,
+    fontSize: 11,
+    color: COLORS.slate500,
+  },
+
   refreshButton: {
     width: 36,
     height: 36,
@@ -706,10 +1029,15 @@ const styles = StyleSheet.create({
     borderColor: COLORS.slate200,
     alignItems: "center",
     justifyContent: "center",
+    marginLeft: 10,
   },
 
-  // Stats
-  statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  statsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
   statCard: {
     width: "48.5%",
     backgroundColor: COLORS.white,
@@ -718,6 +1046,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.slate200,
   },
+
   statIcon: {
     width: 32,
     height: 32,
@@ -726,7 +1055,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 6,
   },
-  statNumber: { fontSize: 18, fontWeight: "900", color: COLORS.slate900 },
+
+  statNumber: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
   statLabel: {
     marginTop: 2,
     fontSize: 10,
@@ -734,7 +1069,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  // Sections / actions
+  statSecondary: {
+    marginTop: 2,
+    fontSize: 9,
+    color: COLORS.green,
+    fontWeight: "700",
+  },
+
   sectionHeader: {
     marginTop: 18,
     marginBottom: 8,
@@ -742,9 +1083,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  sectionTitle: { fontSize: 14, fontWeight: "900", color: COLORS.slate900 },
-  countText: { fontSize: 10, color: COLORS.slate500, fontWeight: "700" },
-  quickActions: { flexDirection: "row", gap: 8 },
+
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
+  countText: {
+    fontSize: 10,
+    color: COLORS.slate500,
+    fontWeight: "700",
+  },
+
+  quickActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+
   primaryAction: {
     flex: 1,
     height: 42,
@@ -755,9 +1111,31 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 6,
   },
-  primaryActionText: { color: COLORS.white, fontSize: 11, fontWeight: "800" },
 
-  // Search & filter
+  primaryActionText: {
+    color: COLORS.white,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+
+  emptyAddButton: {
+    marginTop: 8,
+    height: 38,
+    paddingHorizontal: 14,
+    borderRadius: 9,
+    backgroundColor: COLORS.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+
+  emptyAddButtonText: {
+    color: COLORS.white,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+
   searchBox: {
     height: 42,
     borderRadius: 10,
@@ -768,8 +1146,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 12,
   },
-  searchInput: { flex: 1, marginLeft: 8, fontSize: 12, color: COLORS.slate900 },
-  filterPillsRow: { flexDirection: "row", gap: 6, marginTop: 8 },
+
+  searchInput: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 12,
+    color: COLORS.slate900,
+  },
+
+  filterPillsRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 8,
+  },
+
   filterPill: {
     paddingHorizontal: 12,
     paddingVertical: 5,
@@ -778,15 +1168,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.slate200,
   },
+
   filterPillActive: {
     backgroundColor: COLORS.slate900,
     borderColor: COLORS.slate900,
   },
-  filterPillText: { fontSize: 10, fontWeight: "700", color: COLORS.slate600 },
-  filterPillTextActive: { color: COLORS.white },
 
-  // Branch list
-  organizationList: { marginTop: 10, gap: 10 },
+  filterPillText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: COLORS.slate600,
+  },
+
+  filterPillTextActive: {
+    color: COLORS.white,
+  },
+
+  organizationList: {
+    marginTop: 10,
+    gap: 10,
+  },
+
   organizationCard: {
     backgroundColor: COLORS.white,
     borderRadius: 14,
@@ -795,7 +1197,12 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 8,
   },
-  orgTopRow: { flexDirection: "row", alignItems: "center" },
+
+  orgTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
   organizationIcon: {
     width: 36,
     height: 36,
@@ -805,9 +1212,24 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginRight: 9,
   },
-  organizationInfo: { flex: 1, paddingRight: 8 },
-  organizationName: { fontSize: 13, fontWeight: "900", color: COLORS.slate900 },
-  organizationLocation: { fontSize: 10, color: COLORS.slate500, marginTop: 1 },
+
+  organizationInfo: {
+    flex: 1,
+    paddingRight: 8,
+  },
+
+  organizationName: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
+  organizationLocation: {
+    fontSize: 10,
+    color: COLORS.slate500,
+    marginTop: 1,
+  },
+
   statusBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -816,21 +1238,59 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 6,
   },
-  activeBadge: { backgroundColor: COLORS.greenLight },
-  pendingBadge: { backgroundColor: COLORS.amberLight },
-  statusText: { fontSize: 8, fontWeight: "900" },
-  activeText: { color: COLORS.green },
-  pendingText: { color: COLORS.amber },
+
+  chevron: {
+    marginLeft: 6,
+  },
+
+  activeBadge: {
+    backgroundColor: COLORS.greenLight,
+  },
+
+  pendingBadge: {
+    backgroundColor: COLORS.amberLight,
+  },
+
+  statusText: {
+    fontSize: 8,
+    fontWeight: "900",
+  },
+
+  activeText: {
+    color: COLORS.green,
+  },
+
+  pendingText: {
+    color: COLORS.amber,
+  },
+
   organizationMeta: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
     paddingTop: 4,
   },
-  metaItem: { flexDirection: "row", alignItems: "center", gap: 4 },
-  metaText: { fontSize: 10, color: COLORS.slate500, fontWeight: "700" },
 
-  // Footer
+  metaItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    flexShrink: 1,
+  },
+
+  metaText: {
+    fontSize: 10,
+    color: COLORS.slate500,
+    fontWeight: "700",
+    flexShrink: 1,
+  },
+
+  createdText: {
+    fontSize: 9,
+    color: COLORS.slate500,
+    marginTop: -2,
+  },
+
   footer: {
     marginTop: 20,
     flexDirection: "row",
@@ -838,15 +1298,24 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 5,
   },
-  footerText: { fontSize: 10, color: COLORS.slate500, fontWeight: "600" },
-  pressed: { opacity: 0.8, transform: [{ scale: 0.99 }] },
 
-  // Modal
+  footerText: {
+    fontSize: 10,
+    color: COLORS.slate500,
+    fontWeight: "600",
+  },
+
+  pressed: {
+    opacity: 0.8,
+    transform: [{ scale: 0.99 }],
+  },
+
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.45)",
     justifyContent: "flex-end",
   },
+
   modalSheet: {
     backgroundColor: COLORS.white,
     borderTopLeftRadius: 20,
@@ -854,13 +1323,32 @@ const styles = StyleSheet.create({
     padding: 18,
     paddingBottom: 28,
   },
+
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 14,
+    marginBottom: 16,
   },
-  modalTitle: { fontSize: 17, fontWeight: "900", color: COLORS.slate900 },
+
+  modalHeaderText: {
+    flex: 1,
+    paddingRight: 12,
+  },
+
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: "900",
+    color: COLORS.slate900,
+  },
+
+  modalSubtitle: {
+    marginTop: 2,
+    fontSize: 10,
+    color: COLORS.slate500,
+    lineHeight: 15,
+  },
+
   modalClose: {
     width: 32,
     height: 32,
@@ -869,12 +1357,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+
   inputLabel: {
     fontSize: 11,
     fontWeight: "800",
     color: COLORS.slate700,
     marginBottom: 6,
   },
+
   modalInput: {
     height: 46,
     borderRadius: 10,
@@ -886,15 +1376,31 @@ const styles = StyleSheet.create({
     color: COLORS.slate900,
     marginBottom: 12,
   },
+
   errorBox: {
     marginBottom: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 9,
     backgroundColor: COLORS.redLight,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
   },
-  errorText: { color: "#B91C1C", fontSize: 12, fontWeight: "600" },
-  modalActions: { flexDirection: "row", gap: 8, marginTop: 4 },
+
+  errorText: {
+    flex: 1,
+    color: "#B91C1C",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+
+  modalActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  },
+
   modalCancel: {
     flex: 1,
     height: 46,
@@ -904,15 +1410,31 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  modalCancelText: { fontSize: 13, fontWeight: "800", color: COLORS.slate700 },
+
+  modalCancelText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: COLORS.slate700,
+  },
+
   modalSubmit: {
     flex: 1.4,
     height: 46,
     borderRadius: 10,
     backgroundColor: COLORS.primary,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 6,
   },
-  modalSubmitDisabled: { opacity: 0.7 },
-  modalSubmitText: { fontSize: 13, fontWeight: "800", color: COLORS.white },
+
+  modalSubmitDisabled: {
+    opacity: 0.7,
+  },
+
+  modalSubmitText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: COLORS.white,
+  },
 });

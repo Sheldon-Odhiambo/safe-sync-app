@@ -26,12 +26,6 @@ const INACTIVE_COLOR = "#94A3B8";
 // How long to wait for the profile before offering "Try again".
 const PROFILE_TIMEOUT_MS = 8000;
 
-/**
- * Which kinds of user may open which routes.
- * `href: null` below only hides the tab button. This map is what stops
- * someone reaching a screen by deep link or by navigating to it directly.
- * Routes not listed here (emergency, track, profile) are open to everyone.
- */
 const ROUTE_ACCESS: { prefix: string; kinds: UserKind[] }[] = [
   { prefix: "/home", kinds: ["super_admin", "admin", "public"] },
   { prefix: "/history", kinds: ["responder", "public"] },
@@ -405,6 +399,12 @@ function TabsLayoutContent() {
             {/* HIDDEN SCREENS */}
             <Tabs.Screen name="emergency" options={{ href: null }} />
             <Tabs.Screen name="track" options={{ href: null }} />
+            <Tabs.Screen
+              name="super-admin/branch/[branchId]"
+              options={{
+                href: null,
+              }}
+            />
           </Tabs>
 
           {barConfig && (

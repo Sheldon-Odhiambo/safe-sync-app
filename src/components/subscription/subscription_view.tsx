@@ -27,14 +27,14 @@ const FALLBACK_PLANS: Plan[] = [
     code: "semi_annual",
     name: "6 months",
     description: "Full platform access for 6 months",
-    price: 6000,
+    price: 60,
     duration_months: 6,
   },
   {
     code: "annual",
     name: "12 months",
     description: "Full platform access for 12 months",
-    price: 12000,
+    price: 120,
     duration_months: 12,
   },
 ];
