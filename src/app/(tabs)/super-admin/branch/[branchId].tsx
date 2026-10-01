@@ -1,4 +1,4 @@
-// src/app/super-admin/branch/[id].tsx
+// src/app/(tabs)/super-admin/branch/[branchId].tsx
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
@@ -13,7 +13,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import {
   Building2,
   Siren,
@@ -27,6 +27,8 @@ import {
   Mail,
   MapPin,
   Activity,
+  ArrowLeft,
+  RefreshCw,
   X,
 } from "lucide-react-native";
 
@@ -52,6 +54,7 @@ const COLORS = {
 };
 
 const BOTTOM_CLEARANCE = 170;
+const REQUEST_TIMEOUT_MS = 15000;
 
 type BranchAdmin = {
   user_id: string;
@@ -75,8 +78,28 @@ type BranchDetail = {
   active_incident_count: number;
   total_incident_count: number;
   incidents_last_30_days: number;
-  admins: BranchAdmin[];
+  admins?: BranchAdmin[];
 };
+
+/** Rejects if the promise takes longer than `ms`, so the screen can never spin forever. */
+function withTimeout<T>(promise: Promise<T>, ms = REQUEST_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("The request timed out. Check your connection and try again.")),
+      ms
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 export default function BranchDetailScreen() {
   return (
@@ -95,7 +118,12 @@ export default function BranchDetailScreen() {
 }
 
 function BranchDetailContent() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
+
+  // The file is named [branchId].tsx, so the param is `branchId`, not `id`.
+  const params = useLocalSearchParams<{ branchId?: string | string[] }>();
+  const rawId = params.branchId;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
 
   const [branch, setBranch] = useState<BranchDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,18 +139,34 @@ function BranchDetailContent() {
 
   const load = useCallback(
     async (mode: "initial" | "refresh" = "initial") => {
-      if (!id) return;
-      mode === "refresh" ? setRefreshing(true) : setLoading(true);
+      if (!id) {
+        console.error("[BranchScreen] No branch id in route params:", params);
+        setLoadError("No branch ID was supplied. Check how this page is being opened.");
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
+      if (mode === "refresh") {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       setLoadError("");
+
+      const endpoint = `/api/v1/superadmin/branches/${id}`;
+
       try {
-        const data = await apiFetch<BranchDetail>(
-          `/api/v1/superadmin/branches/${id}`
-        );
+        console.log("[BranchScreen] GET", endpoint);
+        const data = await withTimeout(apiFetch<BranchDetail>(endpoint));
+
         if (!data || typeof data !== "object") {
           throw new Error("The server returned an invalid branch.");
         }
-        setBranch(data);
+
+        setBranch({ ...data, admins: data.admins ?? [] });
       } catch (err) {
+        console.error("[BranchScreen] Request failed:", err);
         setLoadError(
           err instanceof Error ? err.message : "Failed to load this branch."
         );
@@ -131,11 +175,12 @@ function BranchDetailContent() {
         setRefreshing(false);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [id]
   );
 
   useEffect(() => {
-    load("initial");
+    void load("initial");
   }, [load]);
 
   const openAdd = () => {
@@ -152,7 +197,7 @@ function BranchDetailContent() {
   };
 
   const handleAddAdmin = async () => {
-    if (creating) return;
+    if (creating || !id) return;
     setCreateError("");
 
     const fn = firstName.trim();
@@ -170,10 +215,12 @@ function BranchDetailContent() {
 
     setCreating(true);
     try {
-      await apiFetch(`/api/v1/superadmin/branches/${id}/admins`, {
-        method: "POST",
-        body: JSON.stringify({ first_name: fn, last_name: ln, email: em }),
-      });
+      await withTimeout(
+        apiFetch(`/api/v1/superadmin/branches/${id}/admins`, {
+          method: "POST",
+          body: JSON.stringify({ first_name: fn, last_name: ln, email: em }),
+        })
+      );
       setModalVisible(false);
       await load("refresh");
     } catch (err) {
@@ -184,6 +231,8 @@ function BranchDetailContent() {
       setCreating(false);
     }
   };
+
+  const admins = branch?.admins ?? [];
 
   const stats = branch
     ? [
@@ -237,7 +286,7 @@ function BranchDetailContent() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => load("refresh")}
+            onRefresh={() => void load("refresh")}
             tintColor={COLORS.primary}
           />
         }
@@ -250,9 +299,16 @@ function BranchDetailContent() {
           <View style={styles.card}>
             <AlertTriangle size={28} color={COLORS.primary} />
             <Text style={styles.title}>Couldn't load this branch</Text>
-            <Text style={styles.muted}>{loadError}</Text>
-            <Pressable onPress={() => load("initial")} style={styles.retry}>
+            <Text style={styles.muted}>
+              {loadError || "No branch data was returned."}
+            </Text>
+            <Pressable onPress={() => void load("initial")} style={styles.retry}>
+              <RefreshCw size={14} color={COLORS.white} strokeWidth={2.3} />
               <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+            <Pressable onPress={() => router.back()} style={styles.backBtn}>
+              <ArrowLeft size={14} color={COLORS.slate700} strokeWidth={2.3} />
+              <Text style={styles.backBtnText}>Go back</Text>
             </Pressable>
           </View>
         ) : (
@@ -266,7 +322,11 @@ function BranchDetailContent() {
                 <View
                   style={[
                     styles.badge,
-                    { backgroundColor: branch.status ? COLORS.greenLight : COLORS.amberLight },
+                    {
+                      backgroundColor: branch.status
+                        ? COLORS.greenLight
+                        : COLORS.amberLight,
+                    },
                   ]}
                 >
                   {branch.status ? (
@@ -309,7 +369,7 @@ function BranchDetailContent() {
                   <View style={[styles.statIcon, { backgroundColor: s.bg }]}>
                     {s.icon}
                   </View>
-                  <Text style={styles.statNumber}>{s.value}</Text>
+                  <Text style={styles.statNumber}>{s.value ?? 0}</Text>
                   <Text style={styles.statLabel}>{s.label}</Text>
                   {"secondary" in s && s.secondary ? (
                     <Text style={styles.statSecondary}>{s.secondary}</Text>
@@ -330,7 +390,7 @@ function BranchDetailContent() {
               </Pressable>
             </View>
 
-            {branch.admins.length === 0 ? (
+            {admins.length === 0 ? (
               <View style={styles.card}>
                 <UserCog size={28} color={COLORS.slate300} />
                 <Text style={styles.title}>No admins yet</Text>
@@ -341,7 +401,7 @@ function BranchDetailContent() {
               </View>
             ) : (
               <View style={{ gap: 10 }}>
-                {branch.admins.map((a) => (
+                {admins.map((a) => (
                   <View key={a.user_id} style={styles.adminCard}>
                     <View style={styles.adminIcon}>
                       <UserCog size={18} color={COLORS.primary} />
@@ -387,7 +447,11 @@ function BranchDetailContent() {
                   email code.
                 </Text>
               </View>
-              <Pressable onPress={closeAdd} disabled={creating} style={styles.close}>
+              <Pressable
+                onPress={closeAdd}
+                disabled={creating}
+                style={styles.close}
+              >
                 <X size={18} color={COLORS.slate700} />
               </Pressable>
             </View>
@@ -440,7 +504,11 @@ function BranchDetailContent() {
             ) : null}
 
             <View style={styles.modalActions}>
-              <Pressable onPress={closeAdd} disabled={creating} style={styles.cancel}>
+              <Pressable
+                onPress={closeAdd}
+                disabled={creating}
+                style={styles.cancel}
+              >
                 <Text style={styles.cancelText}>Cancel</Text>
               </Pressable>
               <Pressable
@@ -467,10 +535,23 @@ function BranchDetailContent() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.background },
-  content: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: BOTTOM_CLEARANCE },
-  centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  content: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: BOTTOM_CLEARANCE,
+  },
+  centered: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
   loadingState: { alignItems: "center", paddingVertical: 60 },
-  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
 
   card: {
     backgroundColor: COLORS.white,
@@ -481,18 +562,43 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  title: { fontSize: 15, fontWeight: "900", color: COLORS.slate900, textAlign: "center" },
-  muted: { fontSize: 12, color: COLORS.slate500, textAlign: "center", lineHeight: 18 },
+  title: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: COLORS.slate900,
+    textAlign: "center",
+  },
+  muted: {
+    fontSize: 12,
+    color: COLORS.slate500,
+    textAlign: "center",
+    lineHeight: 18,
+  },
   retry: {
     marginTop: 6,
     height: 38,
     paddingHorizontal: 16,
     borderRadius: 10,
     backgroundColor: COLORS.primary,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 6,
   },
   retryText: { color: COLORS.white, fontSize: 12, fontWeight: "800" },
+  backBtn: {
+    height: 38,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.slate200,
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  backBtnText: { color: COLORS.slate700, fontSize: 12, fontWeight: "800" },
 
   headerCard: {
     backgroundColor: COLORS.white,
@@ -502,7 +608,13 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 6,
   },
-  branchName: { flex: 1, fontSize: 18, fontWeight: "900", color: COLORS.slate900, paddingRight: 8 },
+  branchName: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: "900",
+    color: COLORS.slate900,
+    paddingRight: 8,
+  },
   badge: {
     flexDirection: "row",
     alignItems: "center",
@@ -513,7 +625,12 @@ const styles = StyleSheet.create({
   },
   badgeText: { fontSize: 9, fontWeight: "900" },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 5 },
-  metaText: { fontSize: 11, color: COLORS.slate500, fontWeight: "600", flexShrink: 1 },
+  metaText: {
+    fontSize: 11,
+    color: COLORS.slate500,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
   pendingNote: {
     marginTop: 4,
     fontSize: 11,
@@ -542,8 +659,18 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   statNumber: { fontSize: 18, fontWeight: "900", color: COLORS.slate900 },
-  statLabel: { marginTop: 2, fontSize: 10, color: COLORS.slate500, fontWeight: "700" },
-  statSecondary: { marginTop: 2, fontSize: 9, color: COLORS.green, fontWeight: "700" },
+  statLabel: {
+    marginTop: 2,
+    fontSize: 10,
+    color: COLORS.slate500,
+    fontWeight: "700",
+  },
+  statSecondary: {
+    marginTop: 2,
+    fontSize: 9,
+    color: COLORS.green,
+    fontWeight: "700",
+  },
 
   sectionHeader: {
     marginTop: 18,
@@ -586,7 +713,11 @@ const styles = StyleSheet.create({
   adminName: { fontSize: 13, fontWeight: "900", color: COLORS.slate900 },
   roleText: { fontSize: 10, fontWeight: "800", color: COLORS.slate600 },
 
-  backdrop: { flex: 1, backgroundColor: "rgba(15, 23, 42, 0.45)", justifyContent: "flex-end" },
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    justifyContent: "flex-end",
+  },
   sheet: {
     backgroundColor: COLORS.white,
     borderTopLeftRadius: 20,
@@ -596,7 +727,12 @@ const styles = StyleSheet.create({
   },
   modalHeader: { flexDirection: "row", alignItems: "center", marginBottom: 16 },
   modalTitle: { fontSize: 17, fontWeight: "900", color: COLORS.slate900 },
-  modalSubtitle: { marginTop: 2, fontSize: 10, color: COLORS.slate500, lineHeight: 15 },
+  modalSubtitle: {
+    marginTop: 2,
+    fontSize: 10,
+    color: COLORS.slate500,
+    lineHeight: 15,
+  },
   close: {
     width: 32,
     height: 32,
@@ -605,7 +741,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  label: { fontSize: 11, fontWeight: "800", color: COLORS.slate700, marginBottom: 6 },
+  label: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: COLORS.slate700,
+    marginBottom: 6,
+  },
   input: {
     height: 46,
     borderRadius: 10,
