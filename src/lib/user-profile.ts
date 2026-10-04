@@ -1,6 +1,9 @@
 import { supabase } from "./supabase";
+import { log } from "./debug-log";
 
-export const PROFILE_SCHEMA_VERSION = 2;
+// Bumped to 3 so profiles cached by older builds are rebuilt (they have no
+// organisation for drivers).
+export const PROFILE_SCHEMA_VERSION = 3;
 
 export type UserKind = "public" | "responder" | "admin" | "super_admin";
 
@@ -70,6 +73,8 @@ export async function fetchUserProfileBundle(
 ): Promise<UserProfileBundle> {
   const core = supabase.schema("core");
 
+  log.info("profile", "fetching profile bundle", { userId });
+
   const [profileRes, membershipRes, rolesRes, responderRes] =
     await Promise.all([
       core
@@ -102,13 +107,33 @@ export async function fetchUserProfileBundle(
 
   // Any failure must throw. If a role or membership query silently failed,
   // an admin would be treated as a public user and that result would be cached.
-  if (profileRes.error) throw profileRes.error;
-  if (membershipRes.error) throw membershipRes.error;
-  if (rolesRes.error) throw rolesRes.error;
-  if (responderRes.error) throw responderRes.error;
+  // Each failure is logged with its table so RLS problems are easy to spot.
+  if (profileRes.error) {
+    log.error("profile", "user_profiles query failed (check RLS)", profileRes.error);
+    throw profileRes.error;
+  }
+  if (membershipRes.error) {
+    log.error(
+      "profile",
+      "organisation_members query failed (check RLS)",
+      membershipRes.error
+    );
+    throw membershipRes.error;
+  }
+  if (rolesRes.error) {
+    log.error("profile", "user_roles query failed (check RLS)", rolesRes.error);
+    throw rolesRes.error;
+  }
+  if (responderRes.error) {
+    log.error("profile", "responders query failed (check RLS)", responderRes.error);
+    throw responderRes.error;
+  }
 
   const profile = profileRes.data;
-  if (!profile) throw new ProfileNotFoundError();
+  if (!profile) {
+    log.warn("profile", "no user_profiles row (or RLS hid it)", { userId });
+    throw new ProfileNotFoundError();
+  }
 
   // ---------- Roles ----------
   const roles: RoleSummary[] = (rolesRes.data || [])
@@ -134,7 +159,14 @@ export async function fetchUserProfileBundle(
       .select("permission_id, permissions(code)")
       .in("role_id", roleIds);
 
-    if (permError) throw permError;
+    if (permError) {
+      log.error(
+        "profile",
+        "role_permissions query failed (check RLS)",
+        permError
+      );
+      throw permError;
+    }
 
     permissionCodes = Array.from(
       new Set(
@@ -162,7 +194,7 @@ export async function fetchUserProfileBundle(
   const roleOrgIds = new Set(
     roles.map((r) => r.organization_id).filter(Boolean) as string[]
   );
-  const organization =
+  let organization: OrganizationSummary | null =
     organizations.find((o) => roleOrgIds.has(o.id)) ??
     organizations[0] ??
     null;
@@ -178,6 +210,39 @@ export async function fetchUserProfileBundle(
     )
   );
 
+  // Drivers are attached to a BRANCH, not organisation_members, so derive
+  // their organisation from the branch.
+  if (!organization && branchIds.length > 0) {
+    const { data: branchRows, error: branchError } = await core
+      .from("branch")
+      .select("id, organizations(id, name, organization_type)")
+      .in("id", branchIds);
+
+    if (branchError) {
+      log.error(
+        "profile",
+        "branch→organisation lookup failed (check RLS on core.branch / core.organizations)",
+        branchError
+      );
+    } else {
+      const org = first<any>(first<any>(branchRows)?.organizations);
+      if (org) {
+        organization = {
+          id: org.id,
+          name: org.name,
+          organization_type: org.organization_type,
+        };
+        organizations.push(organization);
+      } else {
+        log.warn(
+          "profile",
+          "branch found no organisation (RLS may be hiding core.organizations)",
+          { branchIds }
+        );
+      }
+    }
+  }
+
   // ---------- User kind (drives which UI is shown) ----------
   const roleNames = new Set(roles.map((r) => r.name.toLowerCase()));
 
@@ -191,6 +256,18 @@ export async function fetchUserProfileBundle(
     userKind = "admin";
   }
   // Anything else, including an org member with no role row, is "public".
+
+  log.info("profile", "bundle built", {
+    userId: profile.id,
+    name: `${profile.first_name} ${profile.last_name}`,
+    userKind,
+    roles: roles.map(
+      (r) => `${r.name}@${r.branch_id ?? r.organization_id ?? "-"}`
+    ),
+    branchIds,
+    organization: organization?.name ?? null,
+    hasResponder: !!responder,
+  });
 
   return {
     schemaVersion: PROFILE_SCHEMA_VERSION,

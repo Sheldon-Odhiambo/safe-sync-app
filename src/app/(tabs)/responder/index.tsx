@@ -2,12 +2,14 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -31,26 +33,86 @@ import MapView, {
 
 import * as Location from "expo-location";
 
+import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
+import { DebugLogButton } from "@/components/debug-log-panel";
+import { log } from "@/lib/debug-log";
+
+
+const API = {
+  me: "/api/v1/drivers/me",
+  vehicles: "/api/v1/drivers/vehicles",
+  checklist: (vehicleId: string) =>
+    `/api/v1/drivers/vehicles/${vehicleId}/checklist`,
+  shiftStart: "/api/v1/drivers/shift/start",
+  shiftEnd: "/api/v1/drivers/shift/end",
+  location: "/api/v1/drivers/location",
+  dispatch: "/api/v1/drivers/dispatch",
+  dispatches: "/api/v1/drivers/dispatches",
+  stats: "/api/v1/drivers/stats",
+};
+
+const DISPATCH_POLL_MS = 10_000;
+
 /* ============================================================
    TYPES
    ============================================================ */
 
+type Profile = {
+  id: string;
+  user_id: string;
+  branch_id: string;
+  branch_name: string;
+  organization_name: string;
+  first_name: string;
+  last_name: string;
+  responder_type: string;
+  badge_number: string | null;
+  verification_status: string;
+  status: string;
+  shift_status: string; // "on_shift" | "off_shift"
+  active_vehicle_id: string | null;
+  shift_started_at: string | null;
+};
+
 type Vehicle = {
   id: string;
-  plate: string;
-  kind: string;
+  registration_number: string;
+  vehicle_type_code: string; // "AMBULANCE" | "FIRE_ENGINE"
+  vehicle_type_name: string;
   station: string;
-  inUse?: boolean;
 };
 
-type Driver = {
+type InspectionItem = {
   id: string;
-  name: string;
+  label: string;
+  is_mandatory: boolean;
 };
 
-type Fleet = {
-  company: string;
-  vehicles: Vehicle[];
+type DispatchStep = {
+  id: string;
+  label: string;
+  done: boolean;
+};
+
+type Dispatch = {
+  id: string;
+  status: string;
+  emergency_type: string;
+  severity: string;
+  caller_name: string | null;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  distance_km: number | null;
+  eta_minutes: number | null;
+  notes: string | null;
+  completed_steps: number;
+  steps: DispatchStep[];
+};
+
+type Stats = {
+  avg_response_seconds: number | null;
+  completed_30d: number;
 };
 
 type Coordinates = {
@@ -58,112 +120,23 @@ type Coordinates = {
   longitude: number;
 };
 
-/* ============================================================
-   MOCK DATA
-   Replace these with your backend data later
-   ============================================================ */
+/* HELPERS */
 
-const ambulanceChecklist = [
-  "Engine and fluids checked",
-  "Fuel level checked",
-  "Tires inspected",
-  "Lights and sirens working",
-  "First aid kit available",
-  "Oxygen cylinder checked",
-  "Medical equipment checked",
-  "Fire extinguisher available",
-  "Communication radio working",
-];
+const isFireEngine = (vehicle?: Vehicle) =>
+  vehicle?.vehicle_type_code === "FIRE_ENGINE";
 
-const fireChecklist = [
-  "Engine and fluids checked",
-  "Fuel level checked",
-  "Tires inspected",
-  "Lights working",
-  "Fire hoses checked",
-  "Water tank checked",
-  "Fire extinguisher checked",
-  "Radio communication working",
-  "Protective equipment available",
-];
+const titleCase = (value: string) =>
+  value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 
-const responseActions = [
-  "Arrived",
-  "Patient Located",
-  "Treatment Started",
-  "Transport Started",
-  "Reached Destination",
-  "Incident Completed",
-];
-
-const currentDriver: Driver = {
-  id: "driver-001",
-  name: "Sheldon Ouma",
+const formatDuration = (seconds: number | null) => {
+  if (seconds == null) return "—";
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}m ${s}s`;
 };
 
-const fleet: Fleet = {
-  company: "SafeSync Technologies",
-  vehicles: [
-    {
-      id: "AMB-001",
-      plate: "KDA 245A",
-      kind: "Ambulance",
-      station: "Kilimani Station",
-      inUse: false,
-    },
-    {
-      id: "AMB-002",
-      plate: "KDB 731B",
-      kind: "Ambulance",
-      station: "Westlands Station",
-      inUse: false,
-    },
-    {
-      id: "FIRE-001",
-      plate: "KDC 902C",
-      kind: "Fire Engine",
-      station: "Industrial Area Station",
-      inUse: false,
-    },
-  ],
-};
-
-/*
- * This is currently supplied as an address in the mock emergency.
- *
- * Later, replace this with:
- *
- * const emergencyLocation = {
- *   latitude: incident.latitude,
- *   longitude: incident.longitude,
- * };
- *
- * from your FastAPI emergency response.
- */
-const EMERGENCY_ADDRESS =
-  "Wood Avenue, Kilimani, Nairobi, Kenya";
-
-async function reportLocationToBackend(
-  coords: Coordinates,
-  role: "client" | "responder" = "responder"
-) {
-  try {
-    await fetch("https://api.safesync.co.ke/v1/locations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        role,
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        recorded_at: new Date().toISOString(),
-      }),
-    });
-  } catch {
-    // Non-fatal: the map already reflects the location locally.
-    // The location-persistence worker will pick up the next
-    // successful report.
-  }
-}
+const errorMessage = (err: unknown, fallback: string) =>
+  err instanceof Error ? err.message : fallback;
 
 /* ============================================================
    MAIN COMPONENT
@@ -172,64 +145,236 @@ async function reportLocationToBackend(
 export default function ResponderConsole() {
   const router = useRouter();
 
-  const driver = currentDriver;
+  /* ---------------- backend data ---------------- */
+
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [dispatch, setDispatch] = useState<Dispatch | null>(null);
+  const [stats, setStats] = useState<Stats | null>(null);
+
+  const [checklistItems, setChecklistItems] = useState<InspectionItem[]>([]);
+  const [checklistLoaded, setChecklistLoaded] = useState(false);
+  const [checklistLoading, setChecklistLoading] = useState(false);
+  const [checklistError, setChecklistError] = useState("");
+  const [checklistReload, setChecklistReload] = useState(0);
+
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [shiftBusy, setShiftBusy] = useState(false);
+  const [dispatchBusy, setDispatchBusy] = useState(false);
+
+  /* ---------------- local UI state ---------------- */
 
   const [online, setOnline] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState("");
   const [vehicleDropdownOpen, setVehicleDropdownOpen] = useState(false);
-  const [checked, setChecked] = useState<string[]>([]);
-  const [accepted, setAccepted] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<string[]>([]);
 
-  const [checklistType, setChecklistType] = useState<
-    "ambulance" | "fire"
-  >("ambulance");
-
-  /* ============================================================
-     LOCATION STATE
-     ============================================================ */
+  /* ---------------- location state ---------------- */
 
   const [currentLocation, setCurrentLocation] =
     useState<Coordinates | null>(null);
-
-  const [emergencyLocation, setEmergencyLocation] =
+  const [geocodedEmergency, setGeocodedEmergency] =
     useState<Coordinates | null>(null);
-
-  const [locationLoading, setLocationLoading] =
-    useState(true);
-
-  const [locationError, setLocationError] =
-    useState<string | null>(null);
-
+  const [locationLoading, setLocationLoading] = useState(true);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
-  /* ============================================================
-     MAP REFERENCE
-     ============================================================ */
-
-  const mapRef = React.useRef<MapView | null>(null);
+  const mapRef = useRef<MapView | null>(null);
+  const currentLocationRef = useRef<Coordinates | null>(null);
+  const dispatchRef = useRef<Dispatch | null>(null);
 
   /* ============================================================
-     ACTIVE VEHICLE
+     DERIVED
      ============================================================ */
 
-  const activeVehicle = useMemo(() => {
-    return fleet.vehicles.find(
-      (vehicle) => vehicle.id === selectedVehicle
-    );
-  }, [selectedVehicle]);
+  const driverName = profile
+    ? `${profile.first_name} ${profile.last_name}`
+    : "";
 
-  const checklist =
-    checklistType === "ambulance"
-      ? ambulanceChecklist
-      : fireChecklist;
+  const activeVehicle = useMemo(
+    () => vehicles.find((vehicle) => vehicle.id === selectedVehicle),
+    [vehicles, selectedVehicle]
+  );
 
-  const ready =
-    checked.length === checklist.length;
+  const mandatoryIds = useMemo(
+    () => checklistItems.filter((i) => i.is_mandatory).map((i) => i.id),
+    [checklistItems]
+  );
+
+  // While a shift is running the inspection was already done (and stored
+  // server-side) before it started, so it is shown as complete.
+  const inspectionPassed =
+    checklistLoaded && mandatoryIds.every((id) => checkedIds.includes(id));
+  const ready = online || inspectionPassed;
+  const checkedCount = online ? checklistItems.length : checkedIds.length;
+
+  const accepted = !!dispatch && dispatch.status !== "pending";
+  const completedSteps = dispatch?.completed_steps ?? 0;
+
+  const dispatchLat = dispatch?.latitude ?? null;
+  const dispatchLng = dispatch?.longitude ?? null;
+
+  // Prefer coordinates from the backend; fall back to geocoding the address.
+  const emergencyLocation = useMemo<Coordinates | null>(() => {
+    if (dispatchLat != null && dispatchLng != null) {
+      return { latitude: dispatchLat, longitude: dispatchLng };
+    }
+    return geocodedEmergency;
+  }, [dispatchLat, dispatchLng, geocodedEmergency]);
 
   /* ============================================================
-     GET CURRENT LOCATION — runs automatically as soon as the
-     responder opens/logs into the console.
+     LOAD BACKEND DATA
      ============================================================ */
+
+  const refreshVehicles = useCallback(async () => {
+    try {
+      const data = await apiFetch<Vehicle[]>(API.vehicles);
+      setVehicles(Array.isArray(data) ? data : []);
+    } catch {
+      /* keep the previous list */
+    }
+  }, []);
+
+  const refreshStats = useCallback(async () => {
+    try {
+      const summary = await apiFetch<Stats>(API.stats);
+      setStats(summary ?? null);
+    } catch {
+      /* keep the previous stats */
+    }
+  }, []);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+
+    try {
+      // Dispatch and stats are non-critical: a failure there shouldn't
+      // block the console, only profile + vehicles are required.
+      const [me, available, activeDispatch, summary] = await Promise.all([
+        apiFetch<Profile>(API.me),
+        apiFetch<Vehicle[]>(API.vehicles),
+        apiFetch<Dispatch | null>(API.dispatch).catch(() => null),
+        apiFetch<Stats>(API.stats).catch(() => null),
+      ]);
+
+      setProfile(me);
+      log.info("responder", "console loaded", {
+        name: `${me.first_name} ${me.last_name}`,
+        branch: me.branch_name,
+        org: me.organization_name,
+        shift: me.shift_status,
+        vehiclesAvailable: Array.isArray(available) ? available.length : 0,
+        hasActiveDispatch: !!activeDispatch,
+      });
+
+      setVehicles(Array.isArray(available) ? available : []);
+      setDispatch(activeDispatch ?? null);
+      setStats(summary ?? null);
+
+      if (me.shift_status === "on_shift") {
+        setOnline(true);
+        setSelectedVehicle(me.active_vehicle_id ?? "");
+      } else {
+        setOnline(false);
+      }
+    } catch (err) {
+      setLoadError(errorMessage(err, "Failed to load your responder data."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    dispatchRef.current = dispatch;
+  }, [dispatch]);
+
+  // Load the inspection checklist for the selected vehicle's type.
+  useEffect(() => {
+    setCheckedIds([]);
+    setChecklistError("");
+
+    if (!selectedVehicle) {
+      setChecklistItems([]);
+      setChecklistLoaded(false);
+      setChecklistLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setChecklistLoaded(false);
+    setChecklistLoading(true);
+
+    apiFetch<InspectionItem[]>(API.checklist(selectedVehicle))
+      .then((items) => {
+        if (cancelled) return;
+        setChecklistItems(Array.isArray(items) ? items : []);
+        setChecklistLoaded(true);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setChecklistItems([]);
+        setChecklistError(
+          errorMessage(err, "Couldn't load the inspection checklist.")
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setChecklistLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedVehicle, checklistReload]);
+
+  // Poll for new/updated dispatches while on shift.
+  useEffect(() => {
+    if (!online) return;
+
+    const timer = setInterval(async () => {
+      try {
+        const next = await apiFetch<Dispatch | null>(API.dispatch);
+        const previous = dispatchRef.current;
+
+        if (previous?.status === "pending" && next?.id !== previous.id) {
+          Alert.alert(
+            "Dispatch no longer available",
+            "This emergency expired or was taken by another responder."
+          );
+        }
+
+        setDispatch(next ?? null);
+      } catch {
+        /* transient network error — try again next tick */
+      }
+    }, DISPATCH_POLL_MS);
+
+    return () => clearInterval(timer);
+  }, [online]);
+
+  /* ============================================================
+     LOCATION
+     ============================================================ */
+
+  const reportLocation = useCallback(async (coords: Coordinates) => {
+    try {
+      await apiFetch<unknown>(API.location, {
+        method: "POST",
+        body: JSON.stringify({
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        }),
+      });
+    } catch {
+      // Non-fatal: the map already reflects the location locally and the
+      // next report will bring the backend up to date.
+    }
+  }, []);
 
   const getCurrentLocation = useCallback(
     async (showAlert = false) => {
@@ -237,8 +382,7 @@ export default function ResponderConsole() {
         setLocationLoading(true);
         setLocationError(null);
 
-        const servicesEnabled =
-          await Location.hasServicesEnabledAsync();
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
 
         if (!servicesEnabled) {
           throw new Error(
@@ -246,8 +390,7 @@ export default function ResponderConsole() {
           );
         }
 
-        const permission =
-          await Location.requestForegroundPermissionsAsync();
+        const permission = await Location.requestForegroundPermissionsAsync();
 
         if (permission.status !== "granted") {
           throw new Error(
@@ -255,10 +398,9 @@ export default function ResponderConsole() {
           );
         }
 
-        const position =
-          await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.High,
-          });
+        const position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
 
         const coordinates: Coordinates = {
           latitude: position.coords.latitude,
@@ -266,13 +408,8 @@ export default function ResponderConsole() {
         };
 
         setCurrentLocation(coordinates);
+        reportLocation(coordinates);
 
-        // Send latitude/longitude to the backend for dispatch.
-        reportLocationToBackend(coordinates, "responder");
-
-        /*
-         * Move the map to the responder's current position.
-         */
         if (mapReady && mapRef.current) {
           mapRef.current.animateToRegion(
             {
@@ -291,11 +428,12 @@ export default function ResponderConsole() {
           );
         }
       } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Unable to determine your current location.";
+        const message = errorMessage(
+          error,
+          "Unable to determine your current location."
+        );
 
+        log.warn("responder", "location unavailable", { message });
         setLocationError(message);
 
         if (showAlert) {
@@ -305,123 +443,130 @@ export default function ResponderConsole() {
         setLocationLoading(false);
       }
     },
-    [mapReady]
+    [mapReady, reportLocation]
   );
 
-  /* ============================================================
-     GET EMERGENCY LOCATION
-     ============================================================ */
-
-  const getEmergencyLocation = useCallback(async () => {
-    try {
-      const results =
-        await Location.geocodeAsync(
-          EMERGENCY_ADDRESS
-        );
-
-      if (!results.length) {
-        return;
-      }
-
-      const result = results[0];
-
-      if (
-        typeof result.latitude !== "number" ||
-        typeof result.longitude !== "number"
-      ) {
-        return;
-      }
-
-      setEmergencyLocation({
-        latitude: result.latitude,
-        longitude: result.longitude,
-      });
-    } catch {
-      /*
-       * Do not block the responder map if address
-       * geocoding fails.
-       *
-       * Once the backend provides coordinates directly,
-       * this fallback will no longer be necessary.
-       */
-    }
-  }, []);
-
-  /* ============================================================
-     INITIAL LOCATION — fired as soon as this screen mounts,
-     i.e. as soon as the responder logs in.
-     ============================================================ */
-
+  // First fix as soon as the screen opens.
   useEffect(() => {
     getCurrentLocation();
-    getEmergencyLocation();
-  }, [getCurrentLocation, getEmergencyLocation]);
-
-  /* ============================================================
-     FIT MAP TO RESPONDER + EMERGENCY
-     ============================================================ */
+  }, [getCurrentLocation]);
 
   useEffect(() => {
-    if (
-      !mapReady ||
-      !mapRef.current ||
-      !currentLocation
-    ) {
-      return;
-    }
+    currentLocationRef.current = currentLocation;
+  }, [currentLocation]);
 
-    if (emergencyLocation) {
-      mapRef.current.fitToCoordinates(
-        [currentLocation, emergencyLocation],
+  // Stream position to the backend while on shift (foreground only —
+  // background tracking needs expo-task-manager + background permission).
+  useEffect(() => {
+    if (!online) return;
+
+    let cancelled = false;
+    let subscription: Location.LocationSubscription | undefined;
+
+    (async () => {
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") return;
+
+      const sub = await Location.watchPositionAsync(
         {
-          edgePadding: {
-            top: 60,
-            right: 60,
-            bottom: 60,
-            left: 60,
-          },
-          animated: true,
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 10_000,
+          distanceInterval: 20,
+        },
+        (position) => {
+          const coords: Coordinates = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          };
+          setCurrentLocation(coords);
+          reportLocation(coords);
         }
       );
 
+      if (cancelled) {
+        sub.remove();
+      } else {
+        subscription = sub;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+  }, [online, reportLocation]);
+
+  // Geocode the dispatch address only if the backend sent no coordinates.
+  useEffect(() => {
+    setGeocodedEmergency(null);
+
+    if (!dispatch?.address || (dispatchLat != null && dispatchLng != null)) {
+      return;
+    }
+
+    let cancelled = false;
+
+    Location.geocodeAsync(dispatch.address)
+      .then((results) => {
+        const first = results[0];
+        if (!cancelled && first) {
+          setGeocodedEmergency({
+            latitude: first.latitude,
+            longitude: first.longitude,
+          });
+        }
+      })
+      .catch(() => {
+        /* don't block the map if geocoding fails */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch?.id, dispatch?.address, dispatchLat, dispatchLng]);
+
+  // Fit the map when we first get a fix or the emergency changes —
+  // not on every live position update, so the responder can still pan.
+  const hasFix = currentLocation !== null;
+
+  useEffect(() => {
+    const here = currentLocationRef.current;
+
+    if (!mapReady || !mapRef.current || !here) return;
+
+    if (emergencyLocation) {
+      mapRef.current.fitToCoordinates([here, emergencyLocation], {
+        edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
+        animated: true,
+      });
       return;
     }
 
     mapRef.current.animateToRegion(
-      {
-        ...currentLocation,
-        latitudeDelta: 0.008,
-        longitudeDelta: 0.008,
-      },
+      { ...here, latitudeDelta: 0.008, longitudeDelta: 0.008 },
       700
     );
-  }, [
-    mapReady,
-    currentLocation,
-    emergencyLocation,
-  ]);
+  }, [mapReady, hasFix, emergencyLocation]);
 
   /* ============================================================
      CHECKLIST
      ============================================================ */
 
-  const toggleChecklist = (item: string) => {
-    setChecked((current) => {
-      if (current.includes(item)) {
-        return current.filter(
-          (value) => value !== item
-        );
-      }
-
-      return [...current, item];
-    });
+  const toggleChecklist = (id: string) => {
+    setCheckedIds((current) =>
+      current.includes(id)
+        ? current.filter((value) => value !== id)
+        : [...current, id]
+    );
   };
 
   /* ============================================================
-     ONLINE / OFFLINE
+     ONLINE / OFFLINE  (starts / ends a shift on the backend)
      ============================================================ */
 
-  const handleAvailability = (value: boolean) => {
+  const handleAvailability = async (value: boolean) => {
+    if (shiftBusy) return;
+
     if (value) {
       if (!selectedVehicle) {
         Alert.alert(
@@ -439,26 +584,67 @@ export default function ResponderConsole() {
         return;
       }
 
-      setOnline(true);
-      setVehicleDropdownOpen(false);
+      setShiftBusy(true);
 
-      Alert.alert(
-        "You are online",
-        "Dispatch can now see your availability."
-      );
+      try {
+        await apiFetch<unknown>(API.shiftStart, {
+          method: "POST",
+          body: JSON.stringify({
+            vehicle_id: selectedVehicle,
+            checklist_item_ids: checkedIds,
+          }),
+        });
+
+        setOnline(true);
+        setVehicleDropdownOpen(false);
+
+        Alert.alert(
+          "You are online",
+          "No emergency yet. You'll be alerted here as soon as dispatch assigns you one."
+        );
+      } catch (err) {
+        Alert.alert(
+          "Couldn't go online",
+          errorMessage(err, "Please try again.")
+        );
+        // The vehicle may have just been taken by another driver.
+        refreshVehicles();
+      } finally {
+        setShiftBusy(false);
+      }
 
       return;
     }
 
-    setOnline(false);
-    setSelectedVehicle("");
-    setVehicleDropdownOpen(false);
-    setChecked([]);
+    if (accepted) {
+      Alert.alert(
+        "Active dispatch",
+        "Finish or hand over your current emergency before ending your shift."
+      );
+      return;
+    }
 
-    Alert.alert(
-      "Shift ended",
-      "The vehicle has been released back to the fleet."
-    );
+    setShiftBusy(true);
+
+    try {
+      await apiFetch<unknown>(API.shiftEnd, { method: "POST" });
+
+      setOnline(false);
+      setSelectedVehicle("");
+      setVehicleDropdownOpen(false);
+      setCheckedIds([]);
+      setDispatch(null);
+      refreshVehicles();
+
+      Alert.alert(
+        "Shift ended",
+        "The vehicle has been released back to the fleet."
+      );
+    } catch (err) {
+      Alert.alert("Couldn't end shift", errorMessage(err, "Please try again."));
+    } finally {
+      setShiftBusy(false);
+    }
   };
 
   /* ============================================================
@@ -466,60 +652,157 @@ export default function ResponderConsole() {
      ============================================================ */
 
   const handleSignOut = () => {
-    Alert.alert(
-      "Sign out",
-      "Are you sure you want to sign out?",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
+    Alert.alert("Sign out", "Are you sure you want to sign out?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Sign out",
+        style: "destructive",
+        onPress: () => {
+          router.replace("/");
         },
+      },
+    ]);
+  };
+
+  /* ============================================================
+     DISPATCH ACTIONS
+     ============================================================ */
+
+  const handleAccept = async () => {
+    if (!dispatch || dispatchBusy) return;
+
+    setDispatchBusy(true);
+
+    try {
+      const updated = await apiFetch<Dispatch>(
+        `${API.dispatches}/${dispatch.id}/accept`,
+        { method: "POST" }
+      );
+
+      setDispatch(updated);
+
+      Alert.alert(
+        "Dispatch accepted",
+        "You are now assigned to this emergency."
+      );
+    } catch (err) {
+      Alert.alert(
+        "Couldn't accept dispatch",
+        errorMessage(err, "It may have been reassigned. Please try again.")
+      );
+      // Pick up whatever the backend says the current state is.
+      apiFetch<Dispatch | null>(API.dispatch)
+        .then((next) => setDispatch(next ?? null))
+        .catch(() => {});
+    } finally {
+      setDispatchBusy(false);
+    }
+  };
+
+  const handleDecline = () => {
+    if (!dispatch) return;
+
+    Alert.alert(
+      "Decline dispatch",
+      "Are you sure you want to decline this emergency?",
+      [
+        { text: "Cancel", style: "cancel" },
         {
-          text: "Sign out",
+          text: "Decline",
           style: "destructive",
-          onPress: () => {
-            router.replace("/");
+          onPress: async () => {
+            setDispatchBusy(true);
+
+            try {
+              await apiFetch<unknown>(
+                `${API.dispatches}/${dispatch.id}/decline`,
+                { method: "POST" }
+              );
+              setDispatch(null);
+            } catch (err) {
+              Alert.alert(
+                "Couldn't decline dispatch",
+                errorMessage(err, "Please try again.")
+              );
+            } finally {
+              setDispatchBusy(false);
+            }
           },
         },
       ]
     );
   };
 
-  /* ============================================================
-     ACCEPT EMERGENCY
-     ============================================================ */
+  const handleAdvanceStep = async (index: number) => {
+    // Only the next outstanding step can be tapped.
+    if (!dispatch || dispatchBusy || index !== completedSteps) return;
 
-  const handleAccept = () => {
-    setAccepted(true);
+    const step = dispatch.steps[index];
+    if (!step) return;
 
-    Alert.alert(
-      "Dispatch accepted",
-      "You are now assigned to this emergency."
+    setDispatchBusy(true);
+
+    try {
+      const updated = await apiFetch<Dispatch | null>(
+        `${API.dispatches}/${dispatch.id}/progress`,
+        {
+          method: "POST",
+          body: JSON.stringify({ step_id: step.id }),
+        }
+      );
+
+      if (!updated || updated.status === "completed") {
+        setDispatch(null);
+        refreshStats();
+      } else {
+        setDispatch(updated);
+      }
+    } catch (err) {
+      Alert.alert(
+        "Couldn't update status",
+        errorMessage(err, "Please try again.")
+      );
+    } finally {
+      setDispatchBusy(false);
+    }
+  };
+
+  const handleNavigate = () => {
+    if (!emergencyLocation) {
+      Alert.alert(
+        "Location unavailable",
+        "The emergency location hasn't been resolved yet."
+      );
+      return;
+    }
+
+    const { latitude, longitude } = emergencyLocation;
+
+    Linking.openURL(
+      `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}&travelmode=driving`
+    ).catch(() =>
+      Alert.alert("Couldn't open maps", "No maps app is available.")
     );
   };
 
-  const handleDecline = () => {
-    Alert.alert(
-      "Decline dispatch",
-      "Are you sure you want to decline this emergency?",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Decline",
-          style: "destructive",
-        },
-      ]
-    );
-  };
-
   /* ============================================================
-     NOT AUTHENTICATED
+     LOADING / ERROR / NOT A RESPONDER
      ============================================================ */
 
-  if (!driver) {
+  if (loading && !profile) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.authContainer}>
+          <ActivityIndicator size="large" color="#DC2626" />
+          <Text style={styles.authDescription}>
+            Loading your responder console…
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!profile) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.authContainer}>
@@ -533,22 +816,34 @@ export default function ResponderConsole() {
             </View>
 
             <Text style={styles.authTitle}>
-              Driver sign-in required
+              {loadError ? "Couldn't load your console" : "Driver sign-in required"}
             </Text>
 
             <Text style={styles.authDescription}>
-              Use the credentials issued by your company
-              super admin to open the responder console.
+              {loadError ||
+                "Use the credentials issued by your company super admin to open the responder console."}
             </Text>
 
+            {loadError ? (
+              <Pressable style={styles.primaryButton} onPress={loadData}>
+                <Text style={styles.primaryButtonText}>Retry</Text>
+              </Pressable>
+            ) : null}
+
             <Pressable
-              style={styles.primaryButton}
+              style={[
+                styles.primaryButton,
+                loadError ? { backgroundColor: "#0F172A" } : null,
+              ]}
               onPress={() => router.replace("/")}
             >
-              <Text style={styles.primaryButtonText}>
-                Go to sign in
-              </Text>
+              <Text style={styles.primaryButtonText}>Go to sign in</Text>
             </Pressable>
+
+            {/* Lets you read the log even when the console fails to load. */}
+            <View style={{ marginTop: 16 }}>
+              <DebugLogButton />
+            </View>
           </View>
         </View>
       </SafeAreaView>
@@ -566,103 +861,70 @@ export default function ResponderConsole() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
-          {/* =====================================================
-              HEADER
-          ===================================================== */}
+          {/* HEADER */}
 
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <View style={styles.logoBadge}>
                 <MaterialCommunityIcons
-                  name="ambulance"
+                  name={isFireEngine(activeVehicle) ? "fire-truck" : "ambulance"}
                   size={21}
                   color="#FFFFFF"
                 />
               </View>
 
               <View style={styles.headerInfo}>
-                <Text
-                  style={styles.headerTitle}
-                  numberOfLines={1}
-                >
+                <Text style={styles.headerTitle} numberOfLines={1}>
                   {activeVehicle
-                    ? `Unit ${activeVehicle.plate}`
-                    : driver.name}
+                    ? `Unit ${activeVehicle.registration_number}`
+                    : driverName}
                 </Text>
 
-                <Text
-                  style={styles.headerSubtitle}
-                  numberOfLines={1}
-                >
-                  {driver.name} •{" "}
+                <Text style={styles.headerSubtitle} numberOfLines={1}>
+                  {driverName} •{" "}
                   {activeVehicle
                     ? activeVehicle.station
-                    : fleet.company}
+                    : profile.organization_name}
                 </Text>
               </View>
             </View>
 
-            <Pressable
-              style={styles.logoutButton}
-              onPress={handleSignOut}
-            >
-              <Ionicons
-                name="log-out-outline"
-                size={21}
-                color="#0F172A"
-              />
-            </Pressable>
+            <View style={styles.headerActions}>
+              <DebugLogButton />
+
+              <Pressable style={styles.logoutButton} onPress={handleSignOut}>
+                <Ionicons name="log-out-outline" size={21} color="#0F172A" />
+              </Pressable>
+            </View>
           </View>
 
-          {/* =====================================================
-              LIVE MAP — moved to the top of the page. Shows the
-              responder's current position as soon as the app has
-              a GPS fix, plus the emergency location once one is
-              assigned.
-          ===================================================== */}
+          {/* LIVE MAP */}
 
           <View style={styles.topMapCard}>
             <View style={styles.topMapWrapper}>
               {locationLoading && !currentLocation ? (
                 <View style={styles.mapLoading}>
-                  <ActivityIndicator
-                    size="large"
-                    color="#DC2626"
-                  />
-
+                  <ActivityIndicator size="large" color="#DC2626" />
                   <Text style={styles.mapLoadingText}>
                     Getting your location...
                   </Text>
                 </View>
-              ) : locationError && !currentLocation ? (
+              ) : !currentLocation ? (
                 <View style={styles.mapError}>
-                  <Ionicons
-                    name="location-outline"
-                    size={32}
-                    color="#DC2626"
-                  />
+                  <Ionicons name="location-outline" size={32} color="#DC2626" />
 
-                  <Text style={styles.mapErrorTitle}>
-                    Location unavailable
-                  </Text>
+                  <Text style={styles.mapErrorTitle}>Location unavailable</Text>
 
                   <Text style={styles.mapErrorText}>
-                    {locationError}
+                    {locationError ?? "Unable to determine your current location."}
                   </Text>
 
                   <Pressable
                     style={styles.locationRetryButton}
                     onPress={() => getCurrentLocation(true)}
                   >
-                    <Ionicons
-                      name="refresh"
-                      size={17}
-                      color="#FFFFFF"
-                    />
-
-                    <Text style={styles.locationRetryText}>
-                      Try again
-                    </Text>
+                    <Ionicons name="refresh" size={17} color="#FFFFFF" />
+                    <Text style={styles.locationRetryText}>Try again</Text>
                   </Pressable>
                 </View>
               ) : (
@@ -679,54 +941,49 @@ export default function ResponderConsole() {
                   loadingEnabled={true}
                   mapType="standard"
                   initialRegion={{
-                    latitude: currentLocation?.latitude ?? -1.2921,
-                    longitude: currentLocation?.longitude ?? 36.8219,
+                    latitude: currentLocation.latitude,
+                    longitude: currentLocation.longitude,
                     latitudeDelta: 0.01,
                     longitudeDelta: 0.01,
                   }}
                 >
-                  {/* RESPONDER LOCATION */}
-                  {currentLocation && (
-                    <Marker
-                      coordinate={currentLocation}
-                      title="Your location"
-                      description={
-                        activeVehicle
-                          ? `Unit ${activeVehicle.plate}`
-                          : driver.name
-                      }
-                      anchor={{ x: 0.5, y: 0.5 }}
-                    >
-                      <View style={styles.responderMarker}>
-                        <MaterialCommunityIcons
-                          name="ambulance"
-                          size={23}
-                          color="#FFFFFF"
-                        />
-                      </View>
-                    </Marker>
-                  )}
+                  <Marker
+                    coordinate={currentLocation}
+                    title="Your location"
+                    description={
+                      activeVehicle
+                        ? `Unit ${activeVehicle.registration_number}`
+                        : driverName
+                    }
+                    anchor={{ x: 0.5, y: 0.5 }}
+                  >
+                    <View style={styles.responderMarker}>
+                      <MaterialCommunityIcons
+                        name={
+                          isFireEngine(activeVehicle)
+                            ? "fire-truck"
+                            : "ambulance"
+                        }
+                        size={23}
+                        color="#FFFFFF"
+                      />
+                    </View>
+                  </Marker>
 
-                  {/* EMERGENCY LOCATION */}
                   {emergencyLocation && (
                     <Marker
                       coordinate={emergencyLocation}
                       title="Emergency location"
-                      description={EMERGENCY_ADDRESS}
+                      description={dispatch?.address ?? undefined}
                     >
                       <View style={styles.emergencyMarker}>
-                        <Ionicons
-                          name="location"
-                          size={34}
-                          color="#DC2626"
-                        />
+                        <Ionicons name="location" size={34} color="#DC2626" />
                       </View>
                     </Marker>
                   )}
                 </MapView>
               )}
 
-              {/* CURRENT LOCATION BUTTON */}
               {currentLocation && (
                 <Pressable
                   style={styles.myLocationButton}
@@ -740,57 +997,54 @@ export default function ResponderConsole() {
                 </Pressable>
               )}
 
-              {/* MAP LABEL */}
               {emergencyLocation && (
                 <View style={styles.mapOverlayLabel}>
                   <View style={styles.mapOverlayDot} />
-
-                  <Text style={styles.mapOverlayText}>
-                    Emergency location
-                  </Text>
+                  <Text style={styles.mapOverlayText}>Emergency location</Text>
                 </View>
               )}
             </View>
 
-            {accepted && (
+            {accepted && dispatch && (
               <View style={styles.mapStats}>
-                <MapStat value="5 min" label="ETA" />
-                <MapStat value="1.5 km" label="Distance" />
-                <MapStat value="Light" label="Traffic" />
+                <MapStat
+                  value={
+                    dispatch.eta_minutes != null
+                      ? `${dispatch.eta_minutes} min`
+                      : "—"
+                  }
+                  label="ETA"
+                />
+                <MapStat
+                  value={
+                    dispatch.distance_km != null
+                      ? `${dispatch.distance_km.toFixed(1)} km`
+                      : "—"
+                  }
+                  label="Distance"
+                />
               </View>
             )}
           </View>
 
-          {/* =====================================================
-              VEHICLE + AVAILABILITY
-          ===================================================== */}
+          {/* VEHICLE + AVAILABILITY */}
 
           <View style={styles.controlCard}>
-            <Text style={styles.sectionLabel}>
-              RESPONSE VEHICLE
-            </Text>
+            <Text style={styles.sectionLabel}>RESPONSE VEHICLE</Text>
 
             <View style={styles.vehicleDropdown}>
-              {/* Dropdown trigger */}
               <Pressable
                 disabled={online}
-                onPress={() =>
-                  setVehicleDropdownOpen((open) => !open)
-                }
+                onPress={() => setVehicleDropdownOpen((open) => !open)}
                 style={[
                   styles.dropdownTrigger,
-                  vehicleDropdownOpen &&
-                    styles.dropdownTriggerOpen,
+                  vehicleDropdownOpen && styles.dropdownTriggerOpen,
                   online && styles.vehicleOptionDisabled,
                 ]}
               >
                 <View style={styles.vehicleIcon}>
                   <MaterialCommunityIcons
-                    name={
-                      activeVehicle?.kind === "Fire Engine"
-                        ? "fire-truck"
-                        : "ambulance"
-                    }
+                    name={isFireEngine(activeVehicle) ? "fire-truck" : "ambulance"}
                     size={22}
                     color="#DC2626"
                   />
@@ -799,34 +1053,30 @@ export default function ResponderConsole() {
                 <View style={styles.vehicleDetails}>
                   <Text style={styles.vehiclePlate}>
                     {activeVehicle
-                      ? activeVehicle.plate
+                      ? activeVehicle.registration_number
                       : "Select vehicle"}
                   </Text>
 
                   <Text style={styles.vehicleKind}>
                     {activeVehicle
-                      ? `${activeVehicle.kind} • ${activeVehicle.station}`
+                      ? `${activeVehicle.vehicle_type_name} • ${activeVehicle.station}`
+                      : vehicles.length === 0
+                      ? "No vehicles available at your branch"
                       : "Tap to choose your unit"}
                   </Text>
                 </View>
 
                 <Ionicons
-                  name={
-                    vehicleDropdownOpen
-                      ? "chevron-up"
-                      : "chevron-down"
-                  }
+                  name={vehicleDropdownOpen ? "chevron-up" : "chevron-down"}
                   size={20}
                   color="#64748B"
                 />
               </Pressable>
 
-              {/* Dropdown options */}
               {vehicleDropdownOpen && !online && (
                 <View style={styles.dropdownList}>
-                  {fleet.vehicles.map((vehicle) => {
-                    const selected =
-                      selectedVehicle === vehicle.id;
+                  {vehicles.map((vehicle) => {
+                    const selected = selectedVehicle === vehicle.id;
 
                     return (
                       <Pressable
@@ -837,27 +1087,19 @@ export default function ResponderConsole() {
                         }}
                         style={[
                           styles.dropdownItem,
-                          selected &&
-                            styles.dropdownItemSelected,
+                          selected && styles.dropdownItemSelected,
                         ]}
                       >
                         <View
                           style={[
                             styles.vehicleIcon,
-                            selected &&
-                              styles.vehicleIconSelected,
+                            selected && styles.vehicleIconSelected,
                           ]}
                         >
                           <MaterialCommunityIcons
-                            name={
-                              vehicle.kind === "Fire Engine"
-                                ? "fire-truck"
-                                : "ambulance"
-                            }
+                            name={isFireEngine(vehicle) ? "fire-truck" : "ambulance"}
                             size={22}
-                            color={
-                              selected ? "#FFFFFF" : "#DC2626"
-                            }
+                            color={selected ? "#FFFFFF" : "#DC2626"}
                           />
                         </View>
 
@@ -865,21 +1107,19 @@ export default function ResponderConsole() {
                           <Text
                             style={[
                               styles.vehiclePlate,
-                              selected &&
-                                styles.vehicleTextSelected,
+                              selected && styles.vehicleTextSelected,
                             ]}
                           >
-                            {vehicle.plate}
+                            {vehicle.registration_number}
                           </Text>
 
                           <Text
                             style={[
                               styles.vehicleKind,
-                              selected &&
-                                styles.vehicleTextSelected,
+                              selected && styles.vehicleTextSelected,
                             ]}
                           >
-                            {vehicle.kind} • {vehicle.station}
+                            {vehicle.vehicle_type_name} • {vehicle.station}
                           </Text>
                         </View>
 
@@ -902,15 +1142,13 @@ export default function ResponderConsole() {
                 <View
                   style={[
                     styles.statusDot,
-                    online
-                      ? styles.statusOnline
-                      : styles.statusOffline,
+                    online ? styles.statusOnline : styles.statusOffline,
                   ]}
                 />
 
                 <View>
                   <Text style={styles.availabilityTitle}>
-                    {online ? "Online" : "Offline"}
+                    {online ? "On-Shift" : "Off-Shift"}
                   </Text>
 
                   <Text style={styles.availabilitySubtitle}>
@@ -921,23 +1159,20 @@ export default function ResponderConsole() {
                 </View>
               </View>
 
-              <Switch
-                value={online}
-                onValueChange={handleAvailability}
-                trackColor={{
-                  false: "#CBD5E1",
-                  true: "#86EFAC",
-                }}
-                thumbColor={
-                  online ? "#16A34A" : "#64748B"
-                }
-              />
+              {shiftBusy ? (
+                <ActivityIndicator color="#DC2626" />
+              ) : (
+                <Switch
+                  value={online}
+                  onValueChange={handleAvailability}
+                  trackColor={{ false: "#CBD5E1", true: "#86EFAC" }}
+                  thumbColor={online ? "#16A34A" : "#64748B"}
+                />
+              )}
             </View>
           </View>
 
-          {/* =====================================================
-              STATISTICS
-          ===================================================== */}
+          {/* STATISTICS */}
 
           <View style={styles.statsGrid}>
             <Stat
@@ -947,9 +1182,7 @@ export default function ResponderConsole() {
                 currentLocation
                   ? `${currentLocation.latitude.toFixed(
                       5
-                    )}, ${currentLocation.longitude.toFixed(
-                      5
-                    )}`
+                    )}, ${currentLocation.longitude.toFixed(5)}`
                   : locationLoading
                   ? "Locating..."
                   : "Location unavailable"
@@ -959,405 +1192,353 @@ export default function ResponderConsole() {
             <Stat
               icon="timer-outline"
               label="Avg response (30d)"
-              value="5m 41s"
+              value={formatDuration(stats?.avg_response_seconds ?? null)}
             />
 
             <Stat
               icon="checkmark-circle-outline"
               label="Completed (30d)"
-              value="112 incidents"
+              value={stats ? `${stats.completed_30d} incidents` : "—"}
             />
           </View>
 
-          {/* =====================================================
-              INCOMING REQUEST
-          ===================================================== */}
+          {/* INCOMING / ACTIVE REQUEST */}
 
-          <View style={styles.card}>
-            <View style={styles.emergencyHeader}>
-              <View style={styles.emergencyIcon}>
-                <MaterialCommunityIcons
-                  name="ambulance"
-                  size={23}
-                  color="#FFFFFF"
-                />
-              </View>
-
-              <View style={styles.emergencyHeaderText}>
-                <Text
-                  style={styles.emergencyTitle}
-                  numberOfLines={2}
-                >
-                  INCOMING • Medical Emergency • Severity High
-                </Text>
-
-                <Text style={styles.emergencySubtitle}>
-                  Caller: Kevin Mensah • 1.5 km • 5 min
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.cardContent}>
-              {/* Emergency details */}
-
-              <View style={styles.detailsGrid}>
-                <Cell
-                  label="Emergency type"
-                  value="Medical"
-                />
-
-                <Cell
-                  label="Severity"
-                  value="High"
-                />
-
-                <Cell
-                  label="Distance"
-                  value="1.5 km"
-                />
-
-                <Cell
-                  label="Travel time"
-                  value="5 min"
-                />
-              </View>
-
-              {/* Patient notes */}
-
-              <View style={styles.notesBox}>
-                <Text style={styles.notesLabel}>
-                  PATIENT NOTES
-                </Text>
-
-                <Text style={styles.notesText}>
-                  34y male, chest pain, conscious. Allergy:
-                  penicillin. Building entrance on Wood Avenue,
-                  Kilimani, apartment 8B.
-                </Text>
-              </View>
-
-              {!accepted ? (
-                <View style={styles.actionRow}>
-                  <Pressable
-                    style={styles.acceptButton}
-                    onPress={handleAccept}
-                  >
-                    <Ionicons
-                      name="checkmark-circle-outline"
-                      size={20}
-                      color="#FFFFFF"
-                    />
-
-                    <Text style={styles.acceptButtonText}>
-                      Accept
-                    </Text>
-                  </Pressable>
-
-                  <Pressable
-                    style={styles.declineButton}
-                    onPress={handleDecline}
-                  >
-                    <Ionicons
-                      name="close-circle-outline"
-                      size={20}
-                      color="#DC2626"
-                    />
-
-                    <Text style={styles.declineButtonText}>
-                      Decline
-                    </Text>
-                  </Pressable>
-                </View>
-              ) : (
-                <>
-                  <Pressable
-                    style={styles.navigateButton}
-                    onPress={() =>
-                      Alert.alert(
-                        "Navigation",
-                        "Navigation to the emergency scene will start here."
-                      )
+          {dispatch ? (
+            <View style={styles.card}>
+              <View style={styles.emergencyHeader}>
+                <View style={styles.emergencyIcon}>
+                  <MaterialCommunityIcons
+                    name={
+                      dispatch.emergency_type.toLowerCase() === "fire"
+                        ? "fire-truck"
+                        : "ambulance"
                     }
-                  >
-                    <Ionicons
-                      name="navigate"
-                      size={21}
-                      color="#FFFFFF"
-                    />
+                    size={23}
+                    color="#FFFFFF"
+                  />
+                </View>
 
-                    <Text style={styles.navigateText}>
-                      Navigate to scene
+                <View style={styles.emergencyHeaderText}>
+                  <Text style={styles.emergencyTitle} numberOfLines={2}>
+                    {accepted ? "ACTIVE" : "INCOMING"} •{" "}
+                    {titleCase(dispatch.emergency_type)} Emergency • Severity{" "}
+                    {titleCase(dispatch.severity)}
+                  </Text>
+
+                  <Text style={styles.emergencySubtitle}>
+                    {dispatch.caller_name
+                      ? `Caller: ${dispatch.caller_name}`
+                      : "Caller unknown"}
+                    {dispatch.distance_km != null
+                      ? ` • ${dispatch.distance_km.toFixed(1)} km`
+                      : ""}
+                    {dispatch.eta_minutes != null
+                      ? ` • ${dispatch.eta_minutes} min`
+                      : ""}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.cardContent}>
+                <View style={styles.detailsGrid}>
+                  <Cell
+                    label="Emergency type"
+                    value={titleCase(dispatch.emergency_type)}
+                  />
+                  <Cell label="Severity" value={titleCase(dispatch.severity)} />
+                  <Cell
+                    label="Distance"
+                    value={
+                      dispatch.distance_km != null
+                        ? `${dispatch.distance_km.toFixed(1)} km`
+                        : "—"
+                    }
+                  />
+                  <Cell
+                    label="Travel time"
+                    value={
+                      dispatch.eta_minutes != null
+                        ? `${dispatch.eta_minutes} min`
+                        : "—"
+                    }
+                  />
+                </View>
+
+                {(dispatch.notes || dispatch.address) && (
+                  <View style={styles.notesBox}>
+                    <Text style={styles.notesLabel}>PATIENT NOTES</Text>
+
+                    <Text style={styles.notesText}>
+                      {[dispatch.notes, dispatch.address]
+                        .filter(Boolean)
+                        .join("\n")}
                     </Text>
-                  </Pressable>
-
-                  {/* Response progress */}
-
-                  <View style={styles.responseProgress}>
-                    <Text style={styles.responseTitle}>
-                      Response status
-                    </Text>
-
-                    {responseActions.map(
-                      (action, index) => (
-                        <View
-                          key={action}
-                          style={styles.responseItem}
-                        >
-                          <View
-                            style={[
-                              styles.responseCircle,
-                              index === 0 &&
-                                styles.responseCircleActive,
-                            ]}
-                          >
-                            {index === 0 ? (
-                              <Ionicons
-                                name="checkmark"
-                                size={14}
-                                color="#FFFFFF"
-                              />
-                            ) : (
-                              <Text
-                                style={
-                                  styles.responseNumber
-                                }
-                              >
-                                {index + 1}
-                              </Text>
-                            )}
-                          </View>
-
-                          <Text
-                            style={[
-                              styles.responseText,
-                              index === 0 &&
-                                styles.responseTextActive,
-                            ]}
-                          >
-                            {action}
-                          </Text>
-                        </View>
-                      )
-                    )}
                   </View>
-                </>
-              )}
-            </View>
-          </View>
+                )}
 
-          {/* =====================================================
-              VEHICLE INSPECTION
-          ===================================================== */}
+                {!accepted ? (
+                  <View style={styles.actionRow}>
+                    <Pressable
+                      style={[
+                        styles.acceptButton,
+                        dispatchBusy && { opacity: 0.6 },
+                      ]}
+                      onPress={handleAccept}
+                      disabled={dispatchBusy}
+                    >
+                      {dispatchBusy ? (
+                        <ActivityIndicator color="#FFFFFF" />
+                      ) : (
+                        <>
+                          <Ionicons
+                            name="checkmark-circle-outline"
+                            size={20}
+                            color="#FFFFFF"
+                          />
+                          <Text style={styles.acceptButtonText}>Accept</Text>
+                        </>
+                      )}
+                    </Pressable>
+
+                    <Pressable
+                      style={[
+                        styles.declineButton,
+                        dispatchBusy && { opacity: 0.6 },
+                      ]}
+                      onPress={handleDecline}
+                      disabled={dispatchBusy}
+                    >
+                      <Ionicons
+                        name="close-circle-outline"
+                        size={20}
+                        color="#DC2626"
+                      />
+                      <Text style={styles.declineButtonText}>Decline</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <>
+                    <Pressable
+                      style={styles.navigateButton}
+                      onPress={handleNavigate}
+                    >
+                      <Ionicons name="navigate" size={21} color="#FFFFFF" />
+                      <Text style={styles.navigateText}>Navigate to scene</Text>
+                    </Pressable>
+
+                    <View style={styles.responseProgress}>
+                      <Text style={styles.responseTitle}>Response status</Text>
+
+                      {dispatch.steps.map((step, index) => {
+                        const done = step.done;
+                        const isNext = index === completedSteps;
+
+                        return (
+                          <Pressable
+                            key={step.id}
+                            style={styles.responseItem}
+                            onPress={() => handleAdvanceStep(index)}
+                            disabled={!isNext || dispatchBusy}
+                          >
+                            <View
+                              style={[
+                                styles.responseCircle,
+                                done && styles.responseCircleActive,
+                              ]}
+                            >
+                              {done ? (
+                                <Ionicons
+                                  name="checkmark"
+                                  size={14}
+                                  color="#FFFFFF"
+                                />
+                              ) : (
+                                <Text style={styles.responseNumber}>
+                                  {index + 1}
+                                </Text>
+                              )}
+                            </View>
+
+                            <Text
+                              style={[
+                                styles.responseText,
+                                (done || isNext) && styles.responseTextActive,
+                              ]}
+                            >
+                              {step.label}
+                              {isNext ? "  (tap when done)" : ""}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </>
+                )}
+              </View>
+            </View>
+          ) : (
+            <View style={styles.card}>
+              <View style={styles.cardContent}>
+                <View style={[styles.notesBox, { alignItems: "center", paddingVertical: 22 }]}>
+                  <Ionicons
+                    name={online ? "notifications-outline" : "moon-outline"}
+                    size={30}
+                    color="#64748B"
+                  />
+
+                  <Text style={[styles.notesLabel, { marginTop: 10 }]}>
+                    {online ? "NO EMERGENCY YET" : "YOU HAVE NOT STARTED YOUR SHIFT "}
+                  </Text>
+
+                  <Text style={[styles.notesText, { textAlign: "center" }]}>
+                    {online
+                      ? "There is no emergency assigned to you right now. You'll be alerted here as soon as dispatch sends one."
+                      : "Start shift to receive emergencies."}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+
+          {/* VEHICLE INSPECTION */}
 
           <View style={styles.card}>
             <View style={styles.checklistHeader}>
               <View style={styles.checklistHeaderText}>
-                <Text style={styles.cardTitle}>
-                  Vehicle inspection checklist
-                </Text>
+                <Text style={styles.cardTitle}>Vehicle inspection checklist</Text>
 
                 <Text style={styles.cardSubtitle}>
-                  Shift activation is blocked until every
-                  mandatory item is checked.
+                  Shift activation is blocked until every mandatory item is
+                  checked.
                 </Text>
               </View>
 
-              <View
-                style={[
-                  styles.progressBadge,
-                  ready
-                    ? styles.progressReady
-                    : styles.progressWarning,
-                ]}
-              >
-                <Text
+              {checklistLoaded && (
+                <View
                   style={[
-                    styles.progressText,
-                    ready
-                      ? styles.progressTextReady
-                      : styles.progressTextWarning,
+                    styles.progressBadge,
+                    ready ? styles.progressReady : styles.progressWarning,
                   ]}
                 >
-                  {checked.length}/{checklist.length}
-                </Text>
-              </View>
-            </View>
-
-            {/* Checklist tabs */}
-
-            <View style={styles.tabContainer}>
-              <Pressable
-                style={[
-                  styles.tab,
-                  checklistType === "ambulance" &&
-                    styles.tabActive,
-                ]}
-                onPress={() => {
-                  setChecklistType("ambulance");
-                  setChecked([]);
-                }}
-              >
-                <MaterialCommunityIcons
-                  name="ambulance"
-                  size={19}
-                  color={
-                    checklistType === "ambulance"
-                      ? "#FFFFFF"
-                      : "#475569"
-                  }
-                />
-
-                <Text
-                  style={[
-                    styles.tabText,
-                    checklistType === "ambulance" &&
-                      styles.tabTextActive,
-                  ]}
-                >
-                  Ambulance
-                </Text>
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.tab,
-                  checklistType === "fire" &&
-                    styles.tabActive,
-                ]}
-                onPress={() => {
-                  setChecklistType("fire");
-                  setChecked([]);
-                }}
-              >
-                <MaterialCommunityIcons
-                  name="fire-truck"
-                  size={19}
-                  color={
-                    checklistType === "fire"
-                      ? "#FFFFFF"
-                      : "#475569"
-                  }
-                />
-
-                <Text
-                  style={[
-                    styles.tabText,
-                    checklistType === "fire" &&
-                      styles.tabTextActive,
-                  ]}
-                >
-                  Fire Engine
-                </Text>
-              </Pressable>
-            </View>
-
-            {/* Checklist */}
-
-            <View style={styles.checklist}>
-              {checklist.map((item) => {
-                const isChecked =
-                  checked.includes(item);
-
-                return (
-                  <Pressable
-                    key={item}
+                  <Text
                     style={[
-                      styles.checkItem,
-                      isChecked &&
-                        styles.checkItemChecked,
+                      styles.progressText,
+                      ready
+                        ? styles.progressTextReady
+                        : styles.progressTextWarning,
                     ]}
-                    onPress={() =>
-                      toggleChecklist(item)
-                    }
                   >
-                    <View
-                      style={[
-                        styles.checkbox,
-                        isChecked &&
-                          styles.checkboxChecked,
-                      ]}
-                    >
-                      {isChecked && (
-                        <Ionicons
-                          name="checkmark"
-                          size={15}
-                          color="#FFFFFF"
-                        />
-                      )}
-                    </View>
-
-                    <Text
-                      style={[
-                        styles.checkText,
-                        isChecked &&
-                          styles.checkTextChecked,
-                      ]}
-                    >
-                      {item}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+                    {checkedCount}/{checklistItems.length}
+                  </Text>
+                </View>
+              )}
             </View>
 
-            {/* Inspection status */}
+            {!selectedVehicle ? (
+              <View style={[styles.notesBox, { marginHorizontal: 16, marginBottom: 16 }]}>
+                <Text style={styles.notesText}>
+                  Select your vehicle to load its inspection checklist.
+                </Text>
+              </View>
+            ) : checklistLoading ? (
+              <View style={{ padding: 24 }}>
+                <ActivityIndicator color="#DC2626" />
+              </View>
+            ) : checklistError ? (
+              <View style={[styles.notesBox, { marginHorizontal: 16, marginBottom: 16 }]}>
+                <Text style={styles.notesText}>{checklistError}</Text>
 
-            <View
-              style={[
-                styles.inspectionStatus,
-                ready
-                  ? styles.inspectionStatusReady
-                  : styles.inspectionStatusWarning,
-              ]}
-            >
-              <Ionicons
-                name={
-                  ready
-                    ? "checkmark-circle"
-                    : "warning-outline"
-                }
-                size={21}
-                color={
-                  ready ? "#16A34A" : "#D97706"
-                }
-              />
+                <Pressable
+                  style={styles.locationRetryButton}
+                  onPress={() => setChecklistReload((n) => n + 1)}
+                >
+                  <Ionicons name="refresh" size={17} color="#FFFFFF" />
+                  <Text style={styles.locationRetryText}>Try again</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <>
+                <View style={styles.checklist}>
+                  {checklistItems.map((item) => {
+                    const isChecked = online || checkedIds.includes(item.id);
 
-              <Text
-                style={[
-                  styles.inspectionStatusText,
-                  ready
-                    ? styles.inspectionReadyText
-                    : styles.inspectionWarningText,
-                ]}
-              >
-                {ready
-                  ? "Vehicle inspection complete. You can go online."
-                  : "Complete all inspection items before going online."}
-              </Text>
-            </View>
+                    return (
+                      <Pressable
+                        key={item.id}
+                        style={[
+                          styles.checkItem,
+                          isChecked && styles.checkItemChecked,
+                        ]}
+                        disabled={online}
+                        onPress={() => toggleChecklist(item.id)}
+                      >
+                        <View
+                          style={[
+                            styles.checkbox,
+                            isChecked && styles.checkboxChecked,
+                          ]}
+                        >
+                          {isChecked && (
+                            <Ionicons name="checkmark" size={15} color="#FFFFFF" />
+                          )}
+                        </View>
+
+                        <Text
+                          style={[
+                            styles.checkText,
+                            isChecked && styles.checkTextChecked,
+                          ]}
+                        >
+                          {item.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <View
+                  style={[
+                    styles.inspectionStatus,
+                    ready
+                      ? styles.inspectionStatusReady
+                      : styles.inspectionStatusWarning,
+                  ]}
+                >
+                  <Ionicons
+                    name={ready ? "checkmark-circle" : "warning-outline"}
+                    size={21}
+                    color={ready ? "#16A34A" : "#D97706"}
+                  />
+
+                  <Text
+                    style={[
+                      styles.inspectionStatusText,
+                      ready
+                        ? styles.inspectionReadyText
+                        : styles.inspectionWarningText,
+                    ]}
+                  >
+                    {ready
+                      ? "Vehicle inspection complete. You can go online."
+                      : "Complete all inspection items before going online."}
+                  </Text>
+                </View>
+              </>
+            )}
           </View>
 
-          {/* =====================================================
-              FOOTER
-          ===================================================== */}
+          {/* FOOTER */}
 
           <View style={styles.footer}>
             <View style={styles.footerLogo}>
-              <Ionicons
-                name="shield-checkmark"
-                size={18}
-                color="#FFFFFF"
-              />
+              <Ionicons name="shield-checkmark" size={18} color="#FFFFFF" />
             </View>
 
             <View>
-              <Text style={styles.footerTitle}>
-                SafeSync
-              </Text>
+              <Text style={styles.footerTitle}>SafeSync</Text>
 
-              <Text style={styles.footerText}>
-                Emergency response platform
-              </Text>
+              <Text style={styles.footerText}>Emergency response platform</Text>
             </View>
           </View>
         </ScrollView>
@@ -1367,7 +1548,7 @@ export default function ResponderConsole() {
 }
 
 /* ============================================================
-   STAT COMPONENT
+   SMALL COMPONENTS
    ============================================================ */
 
 function Stat({
@@ -1382,22 +1563,13 @@ function Stat({
   return (
     <View style={styles.statCard}>
       <View style={styles.statIcon}>
-        <Ionicons
-          name={icon}
-          size={22}
-          color="#DC2626"
-        />
+        <Ionicons name={icon} size={22} color="#DC2626" />
       </View>
 
       <View style={styles.statTextContainer}>
-        <Text style={styles.statLabel}>
-          {label}
-        </Text>
+        <Text style={styles.statLabel}>{label}</Text>
 
-        <Text
-          style={styles.statValue}
-          numberOfLines={2}
-        >
+        <Text style={styles.statValue} numberOfLines={2}>
           {value}
         </Text>
       </View>
@@ -1405,60 +1577,27 @@ function Stat({
   );
 }
 
-/* ============================================================
-   CELL COMPONENT
-   ============================================================ */
-
-function Cell({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function Cell({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.cell}>
-      <Text style={styles.cellLabel}>
-        {label}
-      </Text>
+      <Text style={styles.cellLabel}>{label}</Text>
 
-      <Text
-        style={styles.cellValue}
-        numberOfLines={1}
-      >
+      <Text style={styles.cellValue} numberOfLines={1}>
         {value}
       </Text>
     </View>
   );
 }
 
-/* ============================================================
-   MAP STAT
-   ============================================================ */
-
-function MapStat({
-  value,
-  label,
-}: {
-  value: string;
-  label: string;
-}) {
+function MapStat({ value, label }: { value: string; label: string }) {
   return (
     <View style={styles.mapStat}>
-      <Text style={styles.mapStatValue}>
-        {value}
-      </Text>
+      <Text style={styles.mapStatValue}>{value}</Text>
 
-      <Text style={styles.mapStatLabel}>
-        {label}
-      </Text>
+      <Text style={styles.mapStatLabel}>{label}</Text>
     </View>
   );
 }
-
-/* ============================================================
-   STYLES
-   ============================================================ */
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -1543,6 +1682,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginRight: 12,
+  },
+
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
 
   logoBadge: {

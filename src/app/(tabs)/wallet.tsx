@@ -887,15 +887,14 @@ export default function Wallet() {
 
           <View style={styles.header}>
             <View style={styles.headerTextContainer}>
-              <Text style={styles.eyebrow}>SAFESYNC FINANCE</Text>
 
               <Text style={styles.pageTitle}>{isOrganisation ? "Subscription" : "Wallet"}</Text>
 
               <Text style={styles.pageSubtitle}>
                 {isOrganisation
                   ? isClientOrg
-                    ? "Keep your organisation subscribed so all your branches stay connected to SafeSync."
-                    : "Keep your organisation subscribed so your responders stay active."
+                    ? "Keep your organisation subscribed so your branches stay connected to SafeSync."
+                    : "Stay subscribed to keep your responders active, connected and ready to respond."
                   : "Keep funds available so emergency dispatch is never delayed by payment."}
               </Text>
             </View>
