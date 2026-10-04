@@ -5,22 +5,36 @@ import React, {
   useState,
 } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
   ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import * as Location from "expo-location";
-import {
-  Ionicons,
-  FontAwesome5,
-} from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { Ionicons, FontAwesome5 } from "@expo/vector-icons";
 
+import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { useAuth } from "../../contexts/auth-context";
+
+/* ============================================================
+   CONFIG
+   ============================================================ */
+
+const API = {
+  nearbyUnits: "/api/v1/locations/nearby-units",
+};
+
+const SEARCH_RADIUS_METERS = 10_000;
+// Re-query units when the client has moved this far since the last query.
+const REFETCH_DISTANCE_METERS = 100;
+// Re-run reverse geocoding when the client has moved this far.
+const GEOCODE_DISTANCE_METERS = 150;
+// Responders move, so refresh the list even when the client is still.
+const UNITS_POLL_MS = 15_000;
 
 /* ============================================================
    TYPES
@@ -31,110 +45,203 @@ type Coordinates = {
   longitude: number;
 };
 
-async function reportLocationToBackend(
-  coords: Coordinates,
-  role: "client" | "responder" = "client"
-) {
-  try {
-    await fetch("https://api.safesync.co.ke/v1/locations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        role,
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        recorded_at: new Date().toISOString(),
-      }),
-    });
-  } catch {
-    // Non-fatal: the map already reflects the location locally.
-    // The location-persistence worker will pick up the next
-    // successful report.
-  }
-}
+type NearbyUnit = {
+  vehicle_id: string;
+  registration_number: string;
+  vehicle_type_code: string; // "AMBULANCE" | "FIRE_ENGINE"
+  vehicle_type_name: string;
+  station: string;
+  latitude: number;
+  longitude: number;
+  distance_km: number;
+  eta_minutes: number | null;
+  price_total: number | null;
+  currency: string;
+};
 
+type NearbyUnitsResponse = {
+  units: NearbyUnit[];
+};
 
+/* ============================================================
+   HELPERS
+   ============================================================ */
 
 function getGreeting(date: Date = new Date()): string {
   const hour = date.getHours();
-
-  if (hour < 12) {
-    return "Good morning";
-  }
-
-  if (hour < 18) {
-    return "Good afternoon";
-  }
-
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
   return "Good evening";
 }
 
+const errorMessage = (err: unknown, fallback: string) =>
+  err instanceof Error ? err.message : fallback;
+
+function distanceMeters(a: Coordinates, b: Coordinates): number {
+  const R = 6371000;
+  const toRad = (v: number) => (v * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLng = toRad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitude)) *
+      Math.cos(toRad(b.latitude)) *
+      Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function formatPlace(address: Location.LocationGeocodedAddress): string {
+  const parts = [
+    address.name ?? address.street,
+    address.district ?? address.subregion,
+    address.city ?? address.region,
+  ].filter((p): p is string => !!p && p.trim().length > 0);
+
+  return Array.from(new Set(parts)).join(", ");
+}
+
+const formatPrice = (value: number | null, currency: string) => {
+  if (value == null) return "—";
+  const amount = Math.round(value)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${currency === "KES" ? "KSh" : currency} ${amount}`;
+};
+
+const formatEta = (minutes: number | null) =>
+  minutes == null ? "—" : `${minutes} min`;
+
+const isAmbulance = (unit: NearbyUnit) =>
+  unit.vehicle_type_code === "AMBULANCE";
+
+/* ============================================================
+   SCREEN
+   ============================================================ */
+
 export default function Home() {
-  const router = useRouter();
   const mapRef = useRef<MapView | null>(null);
   const { profile } = useAuth();
 
   const firstName = profile?.first_name?.trim() || "there";
 
-  const nearbyUnits = [
-    {
-      id: "ambulance-001",
-      name: "Nearest Ambulance",
-      kind: "Ambulance",
-      station: "Nairobi Hospital Station, Upper Hill",
-      status: "Available",
-      eta: "5 min",
-      distance: "1.5 km",
-      price: "KSh 1,800",
-      crew: 3,
-      vehicle: "KDA 241X",
-      latitude: -1.2864,
-      longitude: 36.8172,
-    },
-    {
-      id: "fire-001",
-      name: "Nearest Fire Engine",
-      kind: "Fire Engine",
-      station: "Fire Station 4 — Westlands",
-      status: "Available",
-      eta: "10 min",
-      distance: "2.0 km",
-      price: "KSh 3,200",
-      crew: 6,
-      vehicle: "KDB 912F",
-      latitude: -1.2676,
-      longitude: 36.8108,
-    },
-  ];
-
-  // Fallback shown until a real GPS fix comes back.
-  const fallbackLocation: Coordinates = {
-    latitude: -1.2921,
-    longitude: 36.8219,
-  };
+  /* ---------------- location state ---------------- */
 
   const [currentLocation, setCurrentLocation] =
     useState<Coordinates | null>(null);
+  const [accuracy, setAccuracy] = useState<number | null>(null);
+  const [placeName, setPlaceName] = useState<string | null>(null);
   const [locationLoading, setLocationLoading] = useState(true);
-  const [locationError, setLocationError] = useState<string | null>(
-    null
-  );
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationRetry, setLocationRetry] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   const [mapReady, setMapReady] = useState(false);
 
+  /* ---------------- backend data ---------------- */
+
+  const [units, setUnits] = useState<NearbyUnit[]>([]);
+  const [unitsLoaded, setUnitsLoaded] = useState(false);
+  const [unitsError, setUnitsError] = useState<string | null>(null);
+
+  const currentRef = useRef<Coordinates | null>(null);
+  const lastFetchRef = useRef<Coordinates | null>(null);
+  const lastGeocodeRef = useRef<Coordinates | null>(null);
+  const hasCenteredRef = useRef(false);
+
   /* ============================================================
-     GET CURRENT LOCATION — runs automatically as soon as the
-     client opens/logs into the app, exactly like the responder
-     console does.
+     BACKEND: nearby units (ETA + price computed server-side)
      ============================================================ */
-  const getCurrentLocation = useCallback(
-    async (showMoveAnimation = false) => {
+
+  const loadUnits = useCallback(async (coords: Coordinates) => {
+    try {
+      const query =
+        `latitude=${coords.latitude}&longitude=${coords.longitude}` +
+        `&radius_meters=${SEARCH_RADIUS_METERS}`;
+
+      const data = await apiFetch<NearbyUnitsResponse>(
+        `${API.nearbyUnits}?${query}`
+      );
+
+      setUnits(Array.isArray(data?.units) ? data.units : []);
+      setUnitsError(null);
+    } catch (err) {
+      setUnitsError(errorMessage(err, "Couldn't load nearby responders."));
+    } finally {
+      setUnitsLoaded(true);
+    }
+  }, []);
+
+  /* ============================================================
+     FRONTEND ONLY: reverse geocoding
+     ============================================================ */
+
+  const resolvePlaceName = useCallback(async (coords: Coordinates) => {
+    try {
+      const results = await Location.reverseGeocodeAsync(coords);
+      const first = results[0];
+
+      if (first) {
+        const name = formatPlace(first);
+        if (name) {
+          setPlaceName(name);
+          lastGeocodeRef.current = coords;
+        }
+      }
+    } catch {
+      // Keep the previous name; it is retried on the next position change.
+    }
+  }, []);
+
+  /* ============================================================
+     A NEW POSITION ARRIVED (first fix, watcher, or manual refresh)
+     ============================================================ */
+
+  const applyPosition = useCallback(
+    (position: Location.LocationObject) => {
+      const coords: Coordinates = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      };
+
+      currentRef.current = coords;
+      setCurrentLocation(coords);
+      setAccuracy(position.coords.accuracy ?? null);
+      setLocationError(null);
+
+      const lastFetch = lastFetchRef.current;
+      if (
+        !lastFetch ||
+        distanceMeters(lastFetch, coords) >= REFETCH_DISTANCE_METERS
+      ) {
+        lastFetchRef.current = coords;
+        loadUnits(coords);
+      }
+
+      const lastGeocode = lastGeocodeRef.current;
+      if (
+        !lastGeocode ||
+        distanceMeters(lastGeocode, coords) >= GEOCODE_DISTANCE_METERS
+      ) {
+        resolvePlaceName(coords);
+      }
+    },
+    [loadUnits, resolvePlaceName]
+  );
+
+  /* ============================================================
+     LIVE LOCATION: first fix as soon as the screen opens, then
+     keep watching so the location changes as the client moves.
+     ============================================================ */
+
+  useEffect(() => {
+    let cancelled = false;
+    let subscription: Location.LocationSubscription | undefined;
+
+    (async () => {
       try {
         setLocationLoading(true);
         setLocationError(null);
 
-        const servicesEnabled =
-          await Location.hasServicesEnabledAsync();
-
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
         if (!servicesEnabled) {
           throw new Error(
             "Location services are disabled. Please enable GPS/location services on your device."
@@ -143,71 +250,138 @@ export default function Home() {
 
         const permission =
           await Location.requestForegroundPermissionsAsync();
-
         if (permission.status !== "granted") {
           throw new Error(
             "Location permission was denied. SafeSync needs your location to find responders near you."
           );
         }
 
-        const position = await Location.getCurrentPositionAsync({
+        const first = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.High,
         });
+        if (cancelled) return;
+        applyPosition(first);
 
-        const coordinates: Coordinates = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        };
+        const sub = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 15_000,
+            distanceInterval: 50,
+          },
+          applyPosition
+        );
 
-        setCurrentLocation(coordinates);
-
-        // Send latitude/longitude to the backend for dispatch.
-        reportLocationToBackend(coordinates, "client");
-
-        if (showMoveAnimation && mapReady && mapRef.current) {
-          mapRef.current.animateToRegion(
-            {
-              ...coordinates,
-              latitudeDelta: 0.04,
-              longitudeDelta: 0.04,
-            },
-            700
+        if (cancelled) {
+          sub.remove();
+        } else {
+          subscription = sub;
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLocationError(
+            errorMessage(err, "Unable to determine your current location.")
           );
         }
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Unable to determine your current location.";
-        setLocationError(message);
       } finally {
-        setLocationLoading(false);
+        if (!cancelled) setLocationLoading(false);
       }
-    },
-    [mapReady]
-  );
+    })();
 
-  useEffect(() => {
-    getCurrentLocation();
-    // Runs once, on mount — i.e. as soon as the client is on this screen.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+  }, [applyPosition, locationRetry]);
 
+  // Keep the unit list fresh while the client is standing still.
   useEffect(() => {
-    if (mapReady && currentLocation) {
+    const timer = setInterval(() => {
+      const here = currentRef.current;
+      if (here) loadUnits(here);
+    }, UNITS_POLL_MS);
+
+    return () => clearInterval(timer);
+  }, [loadUnits]);
+
+  // Centre the map on the first fix.
+  useEffect(() => {
+    if (!mapReady || !currentLocation || hasCenteredRef.current) return;
+    hasCenteredRef.current = true;
+
+    mapRef.current?.animateToRegion(
+      { ...currentLocation, latitudeDelta: 0.04, longitudeDelta: 0.04 },
+      700
+    );
+  }, [mapReady, currentLocation]);
+
+  /* ============================================================
+     MANUAL REFRESH (locate button)
+     ============================================================ */
+
+  const refreshLocation = useCallback(async () => {
+    if (refreshing) return;
+
+    try {
+      setRefreshing(true);
+
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+      // Force a fresh units query and place-name lookup.
+      lastFetchRef.current = null;
+      lastGeocodeRef.current = null;
+      applyPosition(position);
+
       mapRef.current?.animateToRegion(
         {
-          ...currentLocation,
-          latitudeDelta: 0.04,
-          longitudeDelta: 0.04,
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          latitudeDelta: 0.02,
+          longitudeDelta: 0.02,
         },
         700
       );
+    } catch (err) {
+      Alert.alert(
+        "Location unavailable",
+        errorMessage(err, "Unable to determine your current location.")
+      );
+    } finally {
+      setRefreshing(false);
     }
-  }, [mapReady, currentLocation]);
+  }, [applyPosition, refreshing]);
 
-  const mapCenter = currentLocation ?? fallbackLocation;
-  const nearestUnit = nearbyUnits[0];
+  /* ============================================================
+     DERIVED
+     ============================================================ */
+
+  const nearestUnit = units[0] ?? null;
+
+  const locationLine = currentLocation
+    ? [
+        placeName,
+        accuracy != null ? `GPS accuracy ${Math.round(accuracy)} m` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || "Location found"
+    : locationLoading
+    ? "Locating you…"
+    : "Location unavailable";
+
+  const footerSubtitle = locationError
+    ? locationError
+    : unitsError
+    ? unitsError
+    : !unitsLoaded
+    ? "Looking for responders…"
+    : units.length === 0
+    ? "No responders are on shift near you right now"
+    : "Live responder availability";
+
+  /* ============================================================
+     RENDER
+     ============================================================ */
 
   return (
     <View style={styles.container}>
@@ -221,83 +395,96 @@ export default function Home() {
             {getGreeting()}, {firstName}
           </Text>
 
-          <Text style={styles.userLocation}>
-            {currentLocation
-              ? "You are covered · GPS accuracy 6 m"
-              : locationLoading
-              ? "Locating you…"
-              : "You are covered at Kilimani, Nairobi · GPS accuracy 6 m"}
-          </Text>
+          <Text style={styles.userLocation}>{locationLine}</Text>
         </View>
 
         {/* MAP */}
         <View style={styles.mapCard}>
           <View style={styles.mapWrapper}>
-            <MapView
-              ref={mapRef}
-              provider={PROVIDER_GOOGLE}
-              style={styles.map}
-              onMapReady={() => setMapReady(true)}
-              initialRegion={{
-                latitude: mapCenter.latitude,
-                longitude: mapCenter.longitude,
-                latitudeDelta: 0.04,
-                longitudeDelta: 0.04,
-              }}
-              showsMyLocationButton
-              mapType="standard"
-            >
-              {/* User's live location */}
-              <Marker
-                coordinate={mapCenter}
-                title="Your location"
-                description={
-                  currentLocation
-                    ? "Live GPS location"
-                    : "Kilimani, Nairobi"
-                }
-              >
-                <View style={styles.userMarker}>
-                  <View style={styles.userMarkerInner} />
-                </View>
-              </Marker>
-
-              {/* Responder markers */}
-              {nearbyUnits.map((unit) => (
-                <Marker
-                  key={unit.id}
-                  coordinate={{
-                    latitude: unit.latitude,
-                    longitude: unit.longitude,
+            {currentLocation ? (
+              <>
+                <MapView
+                  ref={mapRef}
+                  provider={PROVIDER_GOOGLE}
+                  style={styles.map}
+                  onMapReady={() => setMapReady(true)}
+                  initialRegion={{
+                    latitude: currentLocation.latitude,
+                    longitude: currentLocation.longitude,
+                    latitudeDelta: 0.04,
+                    longitudeDelta: 0.04,
                   }}
-                  title={unit.name}
-                  description={`${unit.eta} · ${unit.distance}`}
+                  showsMyLocationButton={false}
+                  mapType="standard"
                 >
-                  <View style={styles.responderMarker}>
-                    {unit.kind === "Ambulance" ? (
-                      <FontAwesome5
-                        name="ambulance"
-                        size={16}
-                        color="#FFFFFF"
-                      />
-                    ) : (
-                      <Ionicons
-                        name="flame"
-                        size={18}
-                        color="#FFFFFF"
-                      />
-                    )}
-                  </View>
-                </Marker>
-              ))}
-            </MapView>
+                  <Marker
+                    coordinate={currentLocation}
+                    title="Your location"
+                    description={placeName ?? undefined}
+                  >
+                    <View style={styles.userMarker}>
+                      <View style={styles.userMarkerInner} />
+                    </View>
+                  </Marker>
 
-            {locationLoading && !currentLocation && (
-              <View style={styles.mapLoadingOverlay}>
-                <ActivityIndicator size="small" color="#DC2626" />
-                <Text style={styles.mapLoadingOverlayText}>
+                  {units.map((unit) => (
+                    <Marker
+                      key={unit.vehicle_id}
+                      coordinate={{
+                        latitude: unit.latitude,
+                        longitude: unit.longitude,
+                      }}
+                      title={`${unit.vehicle_type_name} · ${unit.registration_number}`}
+                      description={`${formatEta(unit.eta_minutes)} · ${unit.distance_km.toFixed(1)} km`}
+                    >
+                      <View style={styles.responderMarker}>
+                        {isAmbulance(unit) ? (
+                          <FontAwesome5
+                            name="ambulance"
+                            size={16}
+                            color="#FFFFFF"
+                          />
+                        ) : (
+                          <Ionicons name="flame" size={18} color="#FFFFFF" />
+                        )}
+                      </View>
+                    </Marker>
+                  ))}
+                </MapView>
+
+                <Pressable
+                  style={styles.locateButton}
+                  onPress={refreshLocation}
+                >
+                  {refreshing ? (
+                    <ActivityIndicator size="small" color="#0F172A" />
+                  ) : (
+                    <Ionicons name="locate" size={22} color="#0F172A" />
+                  )}
+                </Pressable>
+              </>
+            ) : locationLoading ? (
+              <View style={styles.mapState}>
+                <ActivityIndicator size="large" color="#DC2626" />
+                <Text style={styles.mapStateText}>
                   Getting your location…
                 </Text>
+              </View>
+            ) : (
+              <View style={styles.mapState}>
+                <Ionicons name="location-outline" size={32} color="#DC2626" />
+                <Text style={styles.mapStateTitle}>Location unavailable</Text>
+                <Text style={styles.mapStateText}>
+                  {locationError ?? "Unable to determine your current location."}
+                </Text>
+
+                <Pressable
+                  style={styles.retryButton}
+                  onPress={() => setLocationRetry((n) => n + 1)}
+                >
+                  <Ionicons name="refresh" size={17} color="#FFFFFF" />
+                  <Text style={styles.retryButtonText}>Try again</Text>
+                </Pressable>
               </View>
             )}
           </View>
@@ -306,32 +493,24 @@ export default function Home() {
           <View style={styles.mapFooter}>
             <View style={styles.mapFooterInfo}>
               <Text style={styles.mapFooterTitle}>
-                {nearbyUnits.length} units available within 2 km
+                {units.length === 1
+                  ? `1 unit available within ${SEARCH_RADIUS_METERS / 1000} km`
+                  : `${units.length} units available within ${SEARCH_RADIUS_METERS / 1000} km`}
               </Text>
 
-              <Text style={styles.mapFooterSubtitle}>
-                {locationError
-                  ? locationError
-                  : "Coverage: excellent"}
-              </Text>
-            </View>
-
-            <View style={styles.protectedBadge}>
-              <Text style={styles.protectedText}>Protected</Text>
+              <Text style={styles.mapFooterSubtitle}>{footerSubtitle}</Text>
             </View>
           </View>
         </View>
 
-        {/* ETA + PRICE — shown right below the map */}
+        {/* ETA + PRICE — from the nearest unit, computed by the backend */}
         <View style={styles.etaPriceCard}>
           <View style={styles.etaPriceItem}>
             <Ionicons name="time-outline" size={20} color="#DC2626" />
             <View style={styles.etaPriceTextBox}>
-              <Text style={styles.etaPriceLabel}>
-                Estimated arrival
-              </Text>
+              <Text style={styles.etaPriceLabel}>Estimated arrival</Text>
               <Text style={styles.etaPriceValue}>
-                {nearestUnit.eta}
+                {formatEta(nearestUnit?.eta_minutes ?? null)}
               </Text>
             </View>
           </View>
@@ -343,7 +522,10 @@ export default function Home() {
             <View style={styles.etaPriceTextBox}>
               <Text style={styles.etaPriceLabel}>Estimated cost</Text>
               <Text style={styles.etaPriceValue}>
-                {nearestUnit.price}
+                {formatPrice(
+                  nearestUnit?.price_total ?? null,
+                  nearestUnit?.currency ?? "KES"
+                )}
               </Text>
             </View>
           </View>
@@ -351,68 +533,65 @@ export default function Home() {
 
         {/* Nearby Responders */}
         <View style={styles.respondersSection}>
-          <Text style={styles.sectionTitle}>
-            Nearby Emergency Responders
-          </Text>
+          <Text style={styles.sectionTitle}>Nearby Emergency Responders</Text>
 
-          {nearbyUnits.map((unit) => (
-            <View key={unit.id} style={styles.responderCard}>
-              {/* Header */}
-              <View style={styles.cardHeader}>
-                <View style={styles.cardHeaderLeft}>
-                  <View style={styles.iconBadge}>
-                    {unit.kind === "Ambulance" ? (
-                      <FontAwesome5
-                        name="ambulance"
-                        size={22}
-                        color="#DC2626"
-                      />
-                    ) : (
-                      <Ionicons
-                        name="flame"
-                        size={24}
-                        color="#DC2626"
-                      />
-                    )}
-                  </View>
-
-                  <View style={styles.cardTitleBox}>
-                    <Text
-                      style={styles.responderTitle}
-                      numberOfLines={1}
-                    >
-                      {unit.name}
-                    </Text>
-
-                    <Text
-                      style={styles.responderLocation}
-                      numberOfLines={1}
-                    >
-                      {unit.station}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Status */}
-                <View style={styles.availableBadge}>
-                  <Text style={styles.availableBadgeText}>
-                    {unit.status}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Statistics */}
-              <View style={styles.metricsGrid}>
-                <Stat label="ETA" value={unit.eta} emphasis />
-
-                <Stat label="DISTANCE" value={unit.distance} />
-
-                <Stat label="CREW SIZE" value={`${unit.crew}`} />
-
-                <Stat label="VEHICLE" value={unit.vehicle} />
-              </View>
+          {!unitsLoaded && currentLocation ? (
+            <View style={styles.emptyCard}>
+              <ActivityIndicator color="#DC2626" />
             </View>
-          ))}
+          ) : units.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Ionicons name="moon-outline" size={28} color="#64748B" />
+              <Text style={styles.emptyText}>
+                {unitsError ??
+                  "No responders are on shift near your location right now."}
+              </Text>
+            </View>
+          ) : (
+            units.map((unit) => (
+              <View key={unit.vehicle_id} style={styles.responderCard}>
+                <View style={styles.cardHeader}>
+                  <View style={styles.cardHeaderLeft}>
+                    <View style={styles.iconBadge}>
+                      {isAmbulance(unit) ? (
+                        <FontAwesome5
+                          name="ambulance"
+                          size={22}
+                          color="#DC2626"
+                        />
+                      ) : (
+                        <Ionicons name="flame" size={24} color="#DC2626" />
+                      )}
+                    </View>
+
+                    <View style={styles.cardTitleBox}>
+                      <Text style={styles.responderTitle} numberOfLines={1}>
+                        {unit.vehicle_type_name}
+                      </Text>
+
+                      <Text style={styles.responderLocation} numberOfLines={1}>
+                        {unit.station}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.availableBadge}>
+                    <Text style={styles.availableBadgeText}>Available</Text>
+                  </View>
+                </View>
+
+                <View style={styles.metricsGrid}>
+                  <Stat label="ETA" value={formatEta(unit.eta_minutes)} emphasis />
+                  <Stat label="DISTANCE" value={`${unit.distance_km.toFixed(1)} km`} />
+                  <Stat
+                    label="ESTIMATED COST"
+                    value={formatPrice(unit.price_total, unit.currency)}
+                  />
+                  <Stat label="VEHICLE" value={unit.registration_number} />
+                </View>
+              </View>
+            ))
+          )}
         </View>
 
         {/* Bottom spacing for global emergency button */}
@@ -440,10 +619,8 @@ function Stat({
       <Text style={styles.metricLabel}>{label}</Text>
 
       <Text
-        style={[
-          styles.metricValue,
-          emphasis && styles.metricValueEmphasis,
-        ]}
+        style={[styles.metricValue, emphasis && styles.metricValueEmphasis]}
+        numberOfLines={1}
       >
         {value}
       </Text>
@@ -506,28 +683,62 @@ const styles = StyleSheet.create({
     height: "100%",
   },
 
-  mapLoadingOverlay: {
-    position: "absolute",
-    left: 12,
-    top: 12,
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 9,
-    flexDirection: "row",
+  mapState: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
     alignItems: "center",
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15,
-    shadowRadius: 3,
-    elevation: 3,
+    justifyContent: "center",
+    paddingHorizontal: 25,
   },
 
-  mapLoadingOverlayText: {
-    marginLeft: 7,
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#334155",
+  mapStateTitle: {
+    marginTop: 8,
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  mapStateText: {
+    marginTop: 8,
+    fontSize: 12,
+    lineHeight: 17,
+    color: "#64748B",
+    textAlign: "center",
+  },
+
+  retryButton: {
+    marginTop: 14,
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 11,
+    backgroundColor: "#DC2626",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+
+  retryButtonText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  locateButton: {
+    position: "absolute",
+    right: 12,
+    bottom: 12,
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 5,
   },
 
   /* USER MARKER */
@@ -589,20 +800,6 @@ const styles = StyleSheet.create({
     color: "#64748B",
   },
 
-  protectedBadge: {
-    backgroundColor: "#059669",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginLeft: 10,
-  },
-
-  protectedText: {
-    color: "#FFFFFF",
-    fontSize: 11,
-    fontWeight: "700",
-  },
-
   /* ETA + PRICE (below the map) */
 
   etaPriceCard: {
@@ -657,6 +854,23 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#0F172A",
     marginBottom: 14,
+  },
+
+  emptyCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 24,
+    alignItems: "center",
+  },
+
+  emptyText: {
+    marginTop: 10,
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#64748B",
+    textAlign: "center",
   },
 
   responderCard: {
@@ -755,23 +969,6 @@ const styles = StyleSheet.create({
 
   metricValueEmphasis: {
     color: "#DC2626",
-  },
-
-  /* REQUEST */
-
-  requestButton: {
-    marginTop: 14,
-    backgroundColor: "#DC2626",
-    height: 48,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  requestButtonText: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "800",
   },
 
   /* SPACE FOR GLOBAL BUTTON */
