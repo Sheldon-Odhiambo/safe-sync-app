@@ -1,3 +1,4 @@
+// src/app/(tabs)/admin/index.tsx
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,7 +20,20 @@ import {
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
 
-import { apiFetch } from "@/lib/api-client"
+import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
+import { DebugLogButton } from "@/components/debug-log-panel";
+import { log } from "@/lib/debug-log";
+
+/* =========================================================
+   API ROUTES (service provider admins only; the backend
+   returns 403 for client organisations)
+========================================================= */
+
+const API = {
+  vehicles: "/api/v1/admin/vehicles",
+  vehicleTypes: "/api/v1/admin/vehicle-types",
+  drivers: "/api/v1/admin/drivers",
+};
 
 type VehicleKind = "Ambulance" | "Fire Engine";
 
@@ -103,14 +117,20 @@ export default function AdminScreen() {
 
     try {
       const [vehiclesData, driversData, typesData] = await Promise.all([
-        apiFetch<Vehicle[]>("/api/v1/vehicles"),
-        apiFetch<Driver[]>("/api/v1/responders"),
-        apiFetch<VehicleType[]>("/api/v1/vehicles/types"),
+        apiFetch<Vehicle[]>(API.vehicles),
+        apiFetch<Driver[]>(API.drivers),
+        apiFetch<VehicleType[]>(API.vehicleTypes),
       ]);
 
-      setVehicles(vehiclesData);
-      setDrivers(driversData);
-      setVehicleTypes(typesData);
+      setVehicles(Array.isArray(vehiclesData) ? vehiclesData : []);
+      setDrivers(Array.isArray(driversData) ? driversData : []);
+      setVehicleTypes(Array.isArray(typesData) ? typesData : []);
+
+      log.info("admin", "fleet loaded", {
+        vehicles: Array.isArray(vehiclesData) ? vehiclesData.length : 0,
+        drivers: Array.isArray(driversData) ? driversData.length : 0,
+        vehicleTypes: Array.isArray(typesData) ? typesData.length : 0,
+      });
     } catch (err) {
       setLoadError(
         err instanceof Error ? err.message : "Failed to load fleet data."
@@ -175,7 +195,7 @@ export default function AdminScreen() {
     setAddingVehicle(true);
 
     try {
-      const vehicle = await apiFetch<Vehicle>("/api/v1/vehicles", {
+      const vehicle = await apiFetch<Vehicle>(API.vehicles, {
         method: "POST",
         body: JSON.stringify({
           vehicle_type_code: VEHICLE_TYPE_CODES[vehicleKind],
@@ -216,7 +236,7 @@ export default function AdminScreen() {
     setCreatingDriver(true);
 
     try {
-      const driver = await apiFetch<Driver>("/api/v1/responders/drivers", {
+      const driver = await apiFetch<Driver>(API.drivers, {
         method: "POST",
         body: JSON.stringify({
           first_name: firstName.trim(),
@@ -226,6 +246,17 @@ export default function AdminScreen() {
           licence_number: licence.trim() || null,
         }),
       });
+
+      log.info("admin", "driver created", {
+        responder_id: driver.id,
+        user_id: driver.user_id,
+        branch_id: driver.branch_id,
+        name: `${driver.first_name} ${driver.last_name}`,
+      });
+
+      if (!driver.first_name || !driver.last_name) {
+        log.warn("admin", "Server returned a driver with empty names", driver);
+      }
 
       setDrivers((current) => [driver, ...current]);
 
@@ -237,7 +268,7 @@ export default function AdminScreen() {
 
       Alert.alert(
         "Driver created",
-        `${driver.first_name} ${driver.last_name}'s account is ready. They can log in with ${driver.email} — SafeSync will email them a verification code.`
+        `${driver.first_name} ${driver.last_name} has been registered and emailed at ${driver.email}. They can sign in with that email using a one-time code.`
       );
     } catch (err) {
       Alert.alert(
@@ -264,7 +295,7 @@ export default function AdminScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              await apiFetch<void>(`/api/v1/vehicles/${vehicle.id}`, {
+              await apiFetch<unknown>(`${API.vehicles}/${vehicle.id}`, {
                 method: "DELETE",
               });
               setVehicles((current) =>
@@ -293,7 +324,7 @@ export default function AdminScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              await apiFetch<void>(`/api/v1/responders/${driver.id}`, {
+              await apiFetch<unknown>(`${API.drivers}/${driver.id}`, {
                 method: "DELETE",
               });
               setDrivers((current) =>
@@ -335,9 +366,13 @@ export default function AdminScreen() {
             </View>
           </View>
 
-          <Pressable style={styles.signOutButton} onPress={handleSignOut}>
-            <Ionicons name="log-out-outline" size={21} color="#0F172A" />
-          </Pressable>
+          <View style={styles.headerActions}>
+            <DebugLogButton />
+
+            <Pressable style={styles.signOutButton} onPress={handleSignOut}>
+              <Ionicons name="log-out-outline" size={21} color="#0F172A" />
+            </Pressable>
+          </View>
         </View>
 
         <ScrollView
@@ -729,13 +764,14 @@ export default function AdminScreen() {
                       <View style={styles.formIcon}>
                         <Ionicons name="person-add" size={20} color="#DC2626" />
                       </View>
-                      <View>
+                      <View style={{ flex: 1 }}>
                         <Text style={styles.sectionTitle}>
                           Create driver account
                         </Text>
                         <Text style={styles.sectionSubtitle}>
-                          The driver logs in with their email — SafeSync
-                          emails them a one-time code, no password needed.
+                          We email the driver to confirm their registration.
+                          They sign in with their email and a one-time code,
+                          no password needed.
                         </Text>
                       </View>
                     </View>
@@ -767,6 +803,7 @@ export default function AdminScreen() {
                       placeholderTextColor="#94A3B8"
                       keyboardType="email-address"
                       autoCapitalize="none"
+                      autoCorrect={false}
                     />
 
                     <Text style={styles.inputLabel}>Phone</Text>
@@ -916,6 +953,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   headerLeft: { flexDirection: "row", alignItems: "center", flex: 1 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   logoBadge: {
     width: 44,
     height: 44,

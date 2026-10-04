@@ -26,11 +26,13 @@ const INACTIVE_COLOR = "#94A3B8";
 // How long to wait for the profile before offering "Try again".
 const PROFILE_TIMEOUT_MS = 8000;
 
+const ADMIN_PREFIX = "/admin";
+
 const ROUTE_ACCESS: { prefix: string; kinds: UserKind[] }[] = [
   { prefix: "/home", kinds: ["super_admin", "admin", "public"] },
   { prefix: "/history", kinds: ["responder", "public"] },
   { prefix: "/wallet", kinds: ["super_admin", "public"] },
-  { prefix: "/admin", kinds: ["admin"] },
+  { prefix: ADMIN_PREFIX, kinds: ["admin"] },
   { prefix: "/super-admin", kinds: ["super_admin"] },
   { prefix: "/responder", kinds: ["responder"] },
 ];
@@ -43,6 +45,26 @@ function findRule(pathname: string) {
 
 function homeRouteFor(kind: UserKind): Href {
   return (kind === "responder" ? "/responder" : "/home") as Href;
+}
+
+/**
+ * The organisation type ('client' | 'service_provider') of the signed-in
+ * user's organisation, if the profile carries it.
+ *
+ * ADAPT: make sure lib/user-profile loads `organization_type` onto
+ * profile.organization (core.organizations.organization_type). Until it does,
+ * this returns undefined and the backend (which returns 403 for client
+ * organisations) is the only thing enforcing the rule.
+ */
+function getOrganizationType(profile: unknown): string | undefined {
+  const org = (
+    profile as
+      | { organization?: { organization_type?: string; type?: string } | null }
+      | null
+      | undefined
+  )?.organization;
+
+  return org?.organization_type ?? org?.type;
 }
 
 export default function TabsLayout() {
@@ -80,12 +102,20 @@ function TabsLayoutContent() {
   const isAdmin = kind === "admin";
   const isResponder = kind === "responder";
 
+  // Only SERVICE PROVIDER organisations have the admin (fleet) page.
+  // Client organisations never see it. Fail open only when the type is
+  // unknown; the backend still answers 403 for client organisations.
+  const isClientOrg = getOrganizationType(profile) === "client";
+  const canUseAdmin = isAdmin && !isClientOrg;
+
   const isEmergencyScreen = pathname?.includes("/emergency");
   const isTrackScreen = pathname?.includes("/track");
 
-  // Is the user standing on a route their role doesn't allow?
+  // Is the user standing on a route their role (or organisation) doesn't allow?
   const rule = pathname ? findRule(pathname) : undefined;
-  const routeBlocked = !!(kind && rule && !rule.kinds.includes(kind));
+  const blockedByRole = !!(kind && rule && !rule.kinds.includes(kind));
+  const blockedByOrg = !!(rule && rule.prefix === ADMIN_PREFIX && isAdmin && !canUseAdmin);
+  const routeBlocked = blockedByRole || blockedByOrg;
 
   // ---------------------------------------------------------
   // Route guard: send users away from screens their role
@@ -203,7 +233,7 @@ function TabsLayoutContent() {
     );
   }
 
-  // Wrong route for this role: the effect above is redirecting.
+  // Wrong route for this role/organisation: the effect above is redirecting.
   // Show a spinner instead of flashing the wrong screen.
   if (routeBlocked) return <LoadingScreen />;
 
@@ -333,12 +363,13 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* ADMIN: admin only. */}
+            {/* ADMIN: admins of SERVICE PROVIDER organisations only.
+                Client organisations don't get this tab at all. */}
             <Tabs.Screen
               name="admin/index"
               options={{
                 title: "Admin",
-                href: isAdmin ? undefined : null,
+                href: canUseAdmin ? undefined : null,
                 tabBarIcon: ({ color, size }) => (
                   <Ionicons
                     name="briefcase-outline"

@@ -53,13 +53,7 @@ async function reportLocationToBackend(
   }
 }
 
-/* ============================================================
-   GREETING
-   ------------------------------------------------------------
-   The name comes from the locally stored/cached profile exposed
-   by AuthProvider (core.user_profiles, cached in AsyncStorage —
-   see auth-context.tsx), not a hardcoded placeholder.
-   ============================================================ */
+
 
 function getGreeting(date: Date = new Date()): string {
   const hour = date.getHours();
