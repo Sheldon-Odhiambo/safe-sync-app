@@ -1,16 +1,11 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -21,38 +16,23 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "@/lib/supabase";
 
-/*
-|--------------------------------------------------------------------------
-| WHO PAYS FOR WHAT
-|--------------------------------------------------------------------------
-|
-|  Public user          -> has a wallet and tops it up (M-Pesa or bank transfer)
-|  Client organisation  -> NO wallet. The super admin pays for a subscription.
-|  Service provider     -> NO wallet. The super admin pays for a subscription.
-|
-| Subscription prices are PER BRANCH. The API returns each plan already
-| multiplied by the organisation's branch count (total + a summary line), so
-| the app only displays it and never does the maths itself.
-|
-| Both payment methods go: App -> FastAPI -> PayHero. PayHero calls FastAPI's
-| webhook, never the app, so the app polls FastAPI for the final status.
-| EXPO_PUBLIC_API_URL already includes /api/v1.
-*/
 
-const API_BASE = (
-  process.env.EXPO_PUBLIC_API_URL || "https://api.safesync.co.ke/api/v1"
-).replace(/\/+$/, "");
+const API_BASE =
+  process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, "") ||
+  "http://192.168.1.10:8000";
 
-const PAYMENTS_URL = `${API_BASE}/payments`;
+const PAYHERO_STK_ENDPOINT =
+  process.env.EXPO_PUBLIC_PAYHERO_STK_ENDPOINT ||
+  `${API_BASE}/api/v1/payments/deposit`;
 
-// An STK prompt is answered in seconds. A bank transfer can take minutes.
-const POLLING = {
-  mpesa: { intervalMs: 3000, maxAttempts: 20 }, // ~1 minute
-  bank: { intervalMs: 6000, maxAttempts: 50 }, // ~5 minutes
-} as const;
+const PAYHERO_STATUS_ENDPOINT =
+  process.env.EXPO_PUBLIC_PAYHERO_STATUS_ENDPOINT ||
+  `${API_BASE}/api/v1/payments/deposit`;
 
-// The tab bar and the global emergency button float over the screen.
-const BOTTOM_CLEARANCE = 170;
+const STATUS_POLL_INTERVAL_MS = 3000;
+const STATUS_POLL_MAX_ATTEMPTS = 20; // ~60s total before giving up
+
+const WS_BASE = API_BASE.replace(/^http/, "ws"); // http->ws, https->wss
 
 /*
 |--------------------------------------------------------------------------
@@ -60,127 +40,80 @@ const BOTTOM_CLEARANCE = 170;
 |--------------------------------------------------------------------------
 */
 
-type PaymentMethod = "mpesa" | "bank";
-type PaymentKind = "deposit" | "subscription";
-
 type Transaction = {
   id: string;
   label: string;
   date: string;
   amount: string;
   kind: "credit" | "debit";
-  reference?: string | null;
+  status?: string;
 };
 
-type PaymentProfile = {
-  account_kind: "public" | "organisation";
-  organization_id?: string | null;
-  organization_type?: "client" | "service_provider" | null;
-  is_super_admin: boolean;
-  first_deposit_required: boolean;
-  first_deposit_amount: number;
-  min_topup: number;
-  max_deposit: number;
-  mpesa_max_amount: number;
-  bank_transfer_enabled: boolean;
-};
-
-type WalletOut = { balance: number; reserved: number; currency: string };
-
-type WalletTransactionOut = {
-  id: string;
-  kind: "credit" | "debit";
-  label: string;
-  amount: number;
-  balance_after: number;
-  reference?: string | null;
-  created_at: string;
-};
-
-type Plan = {
-  code: string;
-  name: string;
-  description?: string | null;
-  unit_price: number; // per branch
-  duration_months: number;
-  branch_count: number;
-  total: number; // unit_price x branch_count
-  summary: string; // "Total KSh 48,000 for 4 branches for 1 year (KSh 12,000 per branch)"
-};
-
-type Subscription = {
-  plan_code: string;
-  plan_name: string;
-  status: "active" | "grace" | "expired";
-  started_at: string;
-  ends_at: string;
-  grace_ends_at: string;
-  branch_count?: number | null;
-};
-
-type BankInstructions = {
-  bank_name?: string | null;
-  paybill_number?: string | null;
-  account_number: string;
-  account_name?: string | null;
-  amount: number;
-  expires_at: string;
-  note?: string | null;
-};
-
+// Matches the FastAPI DepositCreated schema exactly.
 type DepositCreated = {
   reference: string;
-  status: string;
-  method: PaymentMethod;
-  expires_at?: string | null;
-  bank?: BankInstructions | null;
+  status: string; // always "PENDING" at creation time
 };
 
+// Matches the FastAPI DepositStatus schema exactly.
 type DepositStatus = {
   status: string; // "PENDING" | "SUCCESS" | "FAILED"
   receipt?: string | null;
   reason?: string | null;
 };
 
-type PendingBank = {
-  reference: string;
-  kind: PaymentKind;
-  bank: BankInstructions;
+// FastAPI's default error envelope for a raised HTTPException.
+type ApiErrorResponse = {
+  detail?: string;
 };
-
-// FastAPI: string for HTTPException, array for 422 validation errors.
-type ApiErrorResponse = { detail?: string | { msg: string }[] };
 
 /*
 |--------------------------------------------------------------------------
-| HELPERS
+| QUICK DEPOSIT AMOUNTS
 |--------------------------------------------------------------------------
 */
 
 const QUICK_AMOUNTS = [500, 1000, 2500, 5000, 10000];
 
-// Alert.alert with a message does nothing on web.
-function notify(title: string, message: string) {
-  if (Platform.OS === "web") {
-    window.alert(`${title}\n\n${message}`);
-    return;
-  }
-  Alert.alert(title, message);
-}
-
 function normalizeKenyanPhone(phone: string): string | null {
   let value = phone.trim().replace(/[\s()-]/g, "");
-  if (!value) return null;
 
-  if (value.startsWith("+254")) value = value.substring(1);
+  if (!value) {
+    return null;
+  }
 
-  if (value.startsWith("254")) return value.length === 12 ? value : null;
+  if (value.startsWith("+254")) {
+    value = value.substring(1);
+  }
+
+  if (value.startsWith("254")) {
+    if (value.length !== 12) {
+      return null;
+    }
+
+    return value;
+  }
 
   if (value.startsWith("07") || value.startsWith("01")) {
-    return value.length === 10 ? `254${value.substring(1)}` : null;
+    if (value.length !== 10) {
+      return null;
+    }
+
+    return `254${value.substring(1)}`;
   }
 
   return null;
+}
+
+
+function formatPhoneForDisplay(phone: string) {
+  const normalized = normalizeKenyanPhone(phone);
+
+  if (!normalized) {
+    return phone;
+  }
+
+  return `+${normalized}`;
 }
 
 function formatCurrency(amount: number) {
@@ -190,686 +123,528 @@ function formatCurrency(amount: number) {
   })}`;
 }
 
-function formatWholeCurrency(amount: number) {
-  return `KSh ${Math.round(amount).toLocaleString("en-KE")}`;
-}
-
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString("en-KE", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function formatDateTime(iso: string) {
-  return new Date(iso).toLocaleString("en-KE", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function durationLabel(months: number) {
-  if (months % 12 === 0) {
-    const years = months / 12;
-    return years === 1 ? "1 year" : `${years} years`;
-  }
-  return `${months} months`;
-}
-
-function extractErrorMessage(detail: ApiErrorResponse["detail"], fallback: string) {
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail) && detail.length > 0) {
-    return detail.map((item) => item.msg).join("\n");
-  }
-  return fallback;
-}
-
-async function getAccessToken(): Promise<string | null> {
-  const {
-    data: { session },
-    error,
-  } = await supabase.auth.getSession();
-
-  if (error) {
-    throw new Error(error.message || "Unable to retrieve your authentication session.");
-  }
-
-  return session?.access_token ?? null;
-}
-
-async function apiRequest<T>(
-  url: string,
-  token: string,
-  init: { method?: string; body?: unknown } = {}
-): Promise<T> {
-  const hasBody = init.body !== undefined;
-
-  const response = await fetch(url, {
-    method: init.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(hasBody ? { "Content-Type": "application/json" } : {}),
-    },
-    body: hasBody ? JSON.stringify(init.body) : undefined,
-  });
-
-  if (!response.ok) {
-    let message = "Request failed.";
-    try {
-      const body: ApiErrorResponse = await response.json();
-      message = extractErrorMessage(body.detail, message);
-    } catch {
-      // Non-JSON error body: keep the generic message.
-    }
-    throw new Error(message);
-  }
-
-  return response.json();
-}
-
-function DetailRow({ label, value }: { label: string; value?: string | null }) {
-  if (!value) return null;
-
-  return (
-    <View style={styles.bankRow}>
-      <Text style={styles.bankLabel}>{label}</Text>
-      <Text style={styles.bankValue} selectable>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
 export default function Wallet() {
-  /*
-   * ACCOUNT / DATA STATE
-   */
 
-  const [profile, setProfile] = useState<PaymentProfile | null>(null);
-  const [profileLoaded, setProfileLoaded] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSuperAdmin] = useState(true);
+  const [isResponderOrg] = useState(true);
 
-  // Public user
-  const [balance, setBalance] = useState(0);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-
-  // Organisation (client or service provider)
-  const [plans, setPlans] = useState<Plan[]>([]);
-  const [subscription, setSubscription] = useState<Subscription | null>(null);
-  const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null);
-
-  /*
-   * PAYMENT STATE
-   */
-
-  const [method, setMethod] = useState<PaymentMethod>("mpesa");
+  const [balance] = useState(0);
   const [phoneNumber, setPhoneNumber] = useState("");
   const [amount, setAmount] = useState("");
 
-  const [pendingBank, setPendingBank] = useState<PendingBank | null>(null);
-
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isConfirming, setIsConfirming] = useState(false); // waiting on an STK prompt
-  const [isChecking, setIsChecking] = useState(false); // manual bank status check
+  const [isConfirming, setIsConfirming] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const mounted = useRef(true);
-  const pollId = useRef(0); // lets a new payment cancel an older poll
+  const settledReferencesRef = useRef<Set<string>>(new Set());
+  const paymentSocketRef = useRef<WebSocket | null>(null);
 
+  // Always close any open payment socket when the screen unmounts.
   useEffect(() => {
-    mounted.current = true;
     return () => {
-      mounted.current = false;
-      pollId.current += 1;
+      paymentSocketRef.current?.close();
+      paymentSocketRef.current = null;
     };
   }, []);
 
-  /*
-   * DERIVED VALUES
-   */
+  const [selectedTopUpTier, setSelectedTopUpTier] = useState<
+    "semi" | "annual" | null
+  >("semi");
 
-  const isPublic = profile?.account_kind === "public";
-  const isOrganisation = profile?.account_kind === "organisation";
-  const isClientOrg = isOrganisation && profile?.organization_type === "client";
-  const canPaySubscription = isOrganisation && !!profile?.is_super_admin;
-  const firstDeposit = !!profile?.first_deposit_required;
+  const [lowBalanceAlerts, setLowBalanceAlerts] = useState(true);
 
-  const bankEnabled = !!profile?.bank_transfer_enabled;
-  const activeMethod: PaymentMethod = bankEnabled ? method : "mpesa";
+  const [transactions] = useState<Transaction[]>([]);
 
-  const normalizedPhone = useMemo(() => normalizeKenyanPhone(phoneNumber), [phoneNumber]);
+  const normalizedPhone = useMemo(() => {
+    return normalizeKenyanPhone(phoneNumber);
+  }, [phoneNumber]);
+
+  const displayPhone = useMemo(() => {
+    return formatPhoneForDisplay(phoneNumber);
+  }, [phoneNumber]);
 
   const parsedAmount = useMemo(() => {
     const cleaned = amount.replace(/,/g, "").trim();
-    if (!cleaned) return 0;
+
+    if (!cleaned) {
+      return 0;
+    }
+
     const numeric = Number(cleaned);
-    return Number.isFinite(numeric) ? numeric : 0;
+
+    if (!Number.isFinite(numeric)) {
+      return 0;
+    }
+
+    return numeric;
   }, [amount]);
 
-  const amountError = useMemo(() => {
-    if (!parsedAmount || !profile) return null;
-
-    if (firstDeposit && parsedAmount !== profile.first_deposit_amount) {
-      return `Your first deposit must be exactly KSh ${profile.first_deposit_amount}.`;
-    }
-    if (!firstDeposit && parsedAmount < profile.min_topup) {
-      return `Minimum deposit is KSh ${profile.min_topup}.`;
-    }
-    if (parsedAmount > profile.max_deposit) {
-      return `Maximum deposit is KSh ${profile.max_deposit.toLocaleString("en-KE")}.`;
-    }
-    if (activeMethod === "mpesa" && parsedAmount > profile.mpesa_max_amount) {
-      return `M-Pesa limits a single payment to KSh ${profile.mpesa_max_amount.toLocaleString("en-KE")}.`;
-    }
-    return null;
-  }, [parsedAmount, firstDeposit, profile, activeMethod]);
-
-  const selectedPlan = useMemo(
-    () => plans.find((plan) => plan.code === selectedPlanCode) || null,
-    [plans, selectedPlanCode]
-  );
-
-  // M-Pesa caps a single payment. A big multi-branch subscription may exceed it.
-  const subscriptionTooLargeForMpesa =
-    !!selectedPlan &&
-    !!profile &&
-    activeMethod === "mpesa" &&
-    selectedPlan.total > profile.mpesa_max_amount;
-
-  const busy = isProcessing || isConfirming;
-  const phoneReady = activeMethod === "bank" || !!normalizedPhone;
-
-  const canSubmitDeposit =
-    isPublic &&
-    phoneReady &&
+  const canSubmit =
+    !!normalizedPhone &&
     parsedAmount >= 1 &&
     Number.isInteger(parsedAmount) &&
-    !amountError &&
-    !busy;
-
-  const canSubmitSubscription =
-    canPaySubscription &&
-    phoneReady &&
-    !!selectedPlan &&
-    !subscriptionTooLargeForMpesa &&
-    !busy;
+    !isProcessing &&
+    !isConfirming;
 
   /*
-   * LOAD DATA
+   * ----------------------------------------------------------------------
+   * QUICK AMOUNT
+   * ----------------------------------------------------------------------
    */
 
-  const loadData = useCallback(async () => {
-    try {
-      const token = await getAccessToken();
-
-      if (!token) {
-        if (mounted.current) setLoadError("Please sign in again to view your payments.");
-        return;
-      }
-
-      const profileData = await apiRequest<PaymentProfile>(`${PAYMENTS_URL}/profile`, token);
-
-      if (profileData.account_kind === "public") {
-        const [wallet, txns] = await Promise.all([
-          apiRequest<WalletOut>(`${PAYMENTS_URL}/wallet`, token),
-          apiRequest<WalletTransactionOut[]>(
-            `${PAYMENTS_URL}/wallet/transactions?limit=10`,
-            token
-          ),
-        ]);
-
-        if (!mounted.current) return;
-
-        setBalance(wallet.balance);
-        setTransactions(
-          txns.map((item) => ({
-            id: item.id,
-            label: item.label,
-            kind: item.kind,
-            reference: item.reference,
-            date: formatDate(item.created_at),
-            amount: formatCurrency(item.amount),
-          }))
-        );
-      } else {
-        // Client and service provider organisations both subscribe to a plan.
-        const [planList, currentSubscription] = await Promise.all([
-          apiRequest<Plan[]>(`${PAYMENTS_URL}/plans`, token),
-          apiRequest<Subscription | null>(`${PAYMENTS_URL}/subscription`, token),
-        ]);
-
-        if (!mounted.current) return;
-
-        setPlans(planList);
-        setSubscription(currentSubscription);
-        setSelectedPlanCode((current) =>
-          current && planList.some((plan) => plan.code === current)
-            ? current
-            : planList[0]?.code || null
-        );
-      }
-
-      if (!mounted.current) return;
-
-      setProfile(profileData);
-      setProfileLoaded(true);
-      setLoadError(null);
-
-      // The first deposit has one fixed amount: prefill it.
-      if (profileData.first_deposit_required) {
-        setAmount((current) => current || String(profileData.first_deposit_amount));
-      }
-    } catch (error) {
-      console.error("Wallet load error:", error);
-
-      if (mounted.current) {
-        setLoadError(
-          error instanceof Error ? error.message : "Could not load your payment details."
-        );
-      }
+  const handleQuickAmount = (value: number) => {
+    if (isProcessing) {
+      return;
     }
-  }, []);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  const handleRefresh = async () => {
-    if (isRefreshing) return;
-    setIsRefreshing(true);
-    try {
-      await loadData();
-    } finally {
-      if (mounted.current) setIsRefreshing(false);
-    }
+    setAmount(String(value));
   };
 
   /*
-   * PAYMENT STATUS
+   * ----------------------------------------------------------------------
+   * POLL FASTAPI FOR THE FINAL PAYMENT STATUS
+   * ----------------------------------------------------------------------
+   *
+   * The mobile app never talks to PayHero directly and never receives
+   * PayHero's webhook — only FastAPI does. So once the STK push has
+   * been accepted, this asks FastAPI (repeatedly, until it has an
+   * answer) what PayHero's callback actually reported.
    */
 
-  const fetchStatus = async (reference: string): Promise<DepositStatus | null> => {
-    try {
-      const token = await getAccessToken(); // fresh each time: bank polls run for minutes
-      if (!token) return null;
-      return await apiRequest<DepositStatus>(
-        `${PAYMENTS_URL}/deposit/${encodeURIComponent(reference)}`,
-        token
-      );
-    } catch {
-      return null; // transient error or not visible yet: keep waiting
+  /*
+   * ----------------------------------------------------------------------
+   * SHARED OUTCOME HANDLER (called by either the socket or the poll)
+   * ----------------------------------------------------------------------
+   *
+   * Guarded by settledReferencesRef so only the first path to hear the
+   * outcome shows an alert — the second is a silent no-op.
+   */
+  const finalizePaymentOutcome = (
+    reference: string,
+    status: string,
+    receipt?: string | null,
+    reason?: string | null
+  ) => {
+    if (settledReferencesRef.current.has(reference)) {
+      return;
     }
-  };
 
-  // Returns true when the payment has reached a final state.
-  const applyStatus = (result: DepositStatus, kind: PaymentKind): boolean => {
-    const status = String(result.status || "").toUpperCase();
+    const upper = status.toUpperCase();
+    if (upper !== "SUCCESS" && upper !== "FAILED") {
+      return; // PENDING / unknown — not a final outcome yet.
+    }
 
-    if (status === "SUCCESS") {
-      const receiptText = result.receipt ? ` (receipt ${result.receipt})` : "";
-      setPendingBank(null);
-      notify(
+    settledReferencesRef.current.add(reference);
+    setIsConfirming(false);
+
+    paymentSocketRef.current?.close();
+    paymentSocketRef.current = null;
+
+    if (upper === "SUCCESS") {
+      Alert.alert(
         "Payment confirmed",
-        kind === "subscription"
-          ? `Your payment was confirmed${receiptText} and your subscription is now active.`
-          : `Your payment was confirmed${receiptText} and your wallet has been credited.`
+        receipt
+          ? `Your M-Pesa payment was confirmed (receipt ${receipt}) and your wallet has been credited.`
+          : "Your M-Pesa payment was confirmed and your wallet has been credited."
       );
-      loadData();
-      return true;
+      handleRefresh();
+    } else {
+      Alert.alert(
+        "Payment not completed",
+        reason || "The M-Pesa payment was not completed."
+      );
     }
-
-    if (status === "FAILED") {
-      setPendingBank(null);
-      notify("Payment not completed", result.reason || "The payment was not completed.");
-      return true;
-    }
-
-    return false; // PENDING
   };
+
+  /*
+   * ----------------------------------------------------------------------
+   * REAL-TIME: LISTEN FOR payment.updated OVER THE WEBSOCKET
+   * ----------------------------------------------------------------------
+   */
+  const openPaymentStatusSocket = (
+    reference: string,
+    accessToken: string
+  ) => {
+    try {
+      const socket = new WebSocket(
+        `${WS_BASE}/ws?token=${encodeURIComponent(accessToken)}`
+      );
+      paymentSocketRef.current = socket;
+
+      socket.onmessage = (event) => {
+        let msg: {
+          type?: string;
+          payload?: {
+            reference?: string;
+            status?: string;
+            receipt?: string | null;
+            reason?: string | null;
+          };
+        } = {};
+
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return; // Not JSON — ignore.
+        }
+
+        // The server pings periodically; reply or it drops us after 45s.
+        if (msg.type === "ping") {
+          socket.send(JSON.stringify({ type: "pong" }));
+          return;
+        }
+
+        if (
+          msg.type === "payment.updated" &&
+          msg.payload?.reference === reference
+        ) {
+          finalizePaymentOutcome(
+            reference,
+            msg.payload.status || "",
+            msg.payload.receipt,
+            msg.payload.reason
+          );
+        }
+      };
+
+      socket.onerror = () => {
+        // Swallow — the REST poll below is the fallback source of truth.
+      };
+    } catch {
+      // WebSocket not available in this runtime — poll still covers it.
+    }
+  };
+
+  /*
+   * ----------------------------------------------------------------------
+   * FALLBACK: POLL FASTAPI FOR THE FINAL PAYMENT STATUS
+   * ----------------------------------------------------------------------
+   *
+   * The mobile app never talks to PayHero directly and never receives
+   * PayHero's webhook — only FastAPI does. This keeps asking FastAPI
+   * what PayHero's callback actually reported, in case the socket
+   * above is slow, drops, or isn't available.
+   */
 
   const pollPaymentStatus = async (
     reference: string,
-    kind: PaymentKind,
-    via: PaymentMethod
+    accessToken: string
   ) => {
-    const myId = ++pollId.current;
-    const { intervalMs, maxAttempts } = POLLING[via];
-
-    if (via === "mpesa") setIsConfirming(true);
+    setIsConfirming(true);
 
     try {
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      for (
+        let attempt = 0;
+        attempt < STATUS_POLL_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
+        if (settledReferencesRef.current.has(reference)) {
+          return; // The socket already resolved this one.
+        }
 
-        if (!mounted.current || pollId.current !== myId) return;
+        await new Promise((resolve) => {
+          setTimeout(resolve, STATUS_POLL_INTERVAL_MS);
+        });
 
-        const result = await fetchStatus(reference);
-        if (result && applyStatus(result, kind)) return;
+        if (settledReferencesRef.current.has(reference)) {
+          return;
+        }
+
+        let statusData: DepositStatus = { status: "" };
+
+        try {
+          const statusResponse = await fetch(
+            `${PAYHERO_STATUS_ENDPOINT}/${reference}`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+            }
+          );
+
+          if (statusResponse.ok) {
+            statusData = await statusResponse.json();
+          }
+          // A 404 here just means the transaction row isn't visible
+          // yet (or the reference is momentarily wrong) — treat like
+          // PENDING and keep polling rather than failing outright.
+        } catch {
+          // Transient network error — just try again next attempt.
+          continue;
+        }
+
+        const status = String(statusData.status || "").toUpperCase();
+
+        if (status === "SUCCESS" || status === "FAILED") {
+          finalizePaymentOutcome(
+            reference,
+            status,
+            statusData.receipt,
+            statusData.reason
+          );
+          return;
+        }
+
+        // Anything else (PENDING, no data yet) — keep polling.
       }
 
-      if (mounted.current && pollId.current === myId) {
-        notify(
-          via === "bank" ? "Waiting for your bank" : "Still waiting for confirmation",
-          via === "bank"
-            ? "We haven't received the transfer yet. Keep the details on screen: it updates once your bank confirms, or tap “Check payment status”."
-            : "We haven't heard back yet. Pull down to refresh shortly. SafeSync updates as soon as the payment is confirmed."
+      if (!settledReferencesRef.current.has(reference)) {
+        Alert.alert(
+          "Still waiting for confirmation",
+          "We haven't heard back yet. Check your Transactions list shortly — SafeSync will update your balance as soon as the payment is confirmed."
         );
       }
     } finally {
-      if (mounted.current && pollId.current === myId && via === "mpesa") {
-        setIsConfirming(false);
-      }
+      setIsConfirming(false);
     }
   };
 
-  const handleCheckBankStatus = async () => {
-    if (!pendingBank || isChecking) return;
 
-    setIsChecking(true);
+  const handleRefresh = async () => {
+    if (isRefreshing) {
+      return;
+    }
+
+    setIsRefreshing(true);
+
     try {
-      const result = await fetchStatus(pendingBank.reference);
 
-      if (!result) {
-        notify("Couldn't check", "Please check your connection and try again.");
-      } else if (!applyStatus(result, pendingBank.kind)) {
-        notify(
-          "Not received yet",
-          "Your bank hasn't confirmed the transfer yet. This can take a few minutes."
-        );
-      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, 500);
+      });
+    } catch (error) {
+      console.error("Wallet refresh error:", error);
     } finally {
-      if (mounted.current) setIsChecking(false);
+      setIsRefreshing(false);
     }
   };
 
-  /*
-   * SUBMIT A PAYMENT (shared by deposits and subscriptions)
-   *
-   * Returns true when the request was accepted. For M-Pesa that only means
-   * PayHero accepted the STK push. For a bank transfer it means we now have
-   * details for the customer to pay to. Neither means money has arrived.
-   */
+  const handlePayHeroStkPush = async () => {
+    if (isProcessing) {
+      return;
+    }
 
-  const submitPayment = async (
-    path: string,
-    body: Record<string, unknown>,
-    kind: PaymentKind
-  ): Promise<boolean> => {
-    if (isProcessing) return false;
+    const cleanPhone = normalizeKenyanPhone(phoneNumber);
+
+    if (!cleanPhone) {
+      Alert.alert(
+        "Invalid phone number",
+        "Enter a valid Kenyan M-Pesa number, for example 0712345678 or +254712345678."
+      );
+
+      return;
+    }
+
+    /*
+     * Validate amount.
+     */
+    const numericAmount = Number(
+      amount.replace(/,/g, "").trim()
+    );
+
+    if (!Number.isFinite(numericAmount) || numericAmount < 1) {
+      Alert.alert(
+        "Invalid amount",
+        "Enter an amount of at least KSh 1."
+      );
+
+      return;
+    }
+
+    /*
+     * Only whole KSh amounts.
+     */
+    if (!Number.isInteger(numericAmount)) {
+      Alert.alert(
+        "Invalid amount",
+        "The deposit amount must be a whole number of Kenyan shillings."
+      );
+
+      return;
+    }
 
     setIsProcessing(true);
 
     try {
-      const token = await getAccessToken();
+      /*
+       * --------------------------------------------------------------
+       * GET SUPABASE SESSION
+       * --------------------------------------------------------------
+       *
+       * Supabase Auth is the authentication authority.
+       */
 
-      if (!token) {
-        notify("Session expired", "Please sign in again before making a payment.");
-        return false;
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) {
+        throw new Error(
+          sessionError.message ||
+            "Unable to retrieve your authentication session."
+        );
       }
 
-      const data = await apiRequest<DepositCreated>(`${PAYMENTS_URL}${path}`, token, {
+      if (!session?.access_token) {
+        Alert.alert(
+          "Session expired",
+          "Please sign in again before making a wallet deposit."
+        );
+
+        return;
+      }
+
+      /*
+       * --------------------------------------------------------------
+       * INITIATE THE DEPOSIT (POST /api/v1/payments/deposit)
+       * --------------------------------------------------------------
+       *
+       * The backend generates and owns the payment reference — it is
+       * not something the app invents, so the request body is just
+       * what DepositRequest expects.
+       */
+
+      const response = await fetch(PAYHERO_STK_ENDPOINT, {
         method: "POST",
-        body: {
-          ...body,
-          method: activeMethod,
-          ...(activeMethod === "mpesa" ? { phone_number: normalizedPhone } : {}),
+
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
         },
+
+        body: JSON.stringify({
+          amount: numericAmount,
+
+          /*
+           * PayHero should receive the Kenyan international format.
+           */
+          phone_number: cleanPhone,
+        }),
       });
 
-      if (data.method === "bank" && data.bank) {
-        setPendingBank({ reference: data.reference, kind, bank: data.bank });
-        void pollPaymentStatus(data.reference, kind, "bank");
-      } else {
-        setPendingBank(null);
-        notify(
-          "M-Pesa request sent",
-          `An M-Pesa prompt has been sent to +${normalizedPhone}.\n\nEnter your M-Pesa PIN to complete the payment.\n\nReference: ${data.reference}`
-        );
-        void pollPaymentStatus(data.reference, kind, "mpesa");
+      /*
+       * --------------------------------------------------------------
+       * HANDLE HTTP ERROR
+       * --------------------------------------------------------------
+       *
+       * The router raises HTTPException for every business-rule
+       * failure (invalid amount, duplicate in-flight deposit, no
+       * permission, PayHero unreachable), which FastAPI serializes as
+       * {"detail": "..."} — there's no custom error envelope to parse.
+       */
+
+      if (!response.ok) {
+        let errorMessage = "The payment request could not be initiated.";
+
+        try {
+          const errorData: ApiErrorResponse = await response.json();
+          errorMessage = errorData.detail || errorMessage;
+        } catch {
+          // Non-JSON error body — fall back to the generic message.
+        }
+
+        throw new Error(errorMessage);
       }
 
-      return true;
+      /*
+       * --------------------------------------------------------------
+       * PARSE RESPONSE — always {reference, status: "PENDING"}
+       * --------------------------------------------------------------
+       *
+       * A 200 here only means PayHero accepted the STK push request.
+       * It does NOT mean that money has been received yet — that only
+       * arrives later via PayHero's callback to FastAPI.
+       */
+
+      const data: DepositCreated = await response.json();
+      const reference = data.reference;
+
+      Alert.alert(
+        "M-Pesa request sent",
+        `An M-Pesa prompt has been sent to ${formatPhoneForDisplay(
+          cleanPhone
+        )}.\n\nEnter your M-Pesa PIN to complete the payment.\n\nReference: ${reference}`,
+        [
+          {
+            text: "OK",
+            onPress: () => {
+              setAmount("");
+            },
+          },
+        ]
+      );
+
+      /*
+       * The STK push only means PayHero accepted the request — it
+       * does not mean the money has arrived. The actual confirmation
+       * comes later, as a webhook callback that PayHero sends to
+       * FastAPI (never to this app). So we ask FastAPI what happened,
+       * repeatedly, until it knows.
+       */
+      openPaymentStatusSocket(reference, session.access_token);
+      pollPaymentStatus(reference, session.access_token);
     } catch (error) {
-      console.error("SafeSync payment error:", error);
+      console.error(
+        "SafeSync PayHero STK Push error:",
+        error
+      );
 
-      notify(
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not connect to the payment service.";
+
+      Alert.alert(
         "Payment failed",
-        error instanceof Error ? error.message : "Could not connect to the payment service."
+        message
       );
-
-      return false;
     } finally {
-      if (mounted.current) setIsProcessing(false);
+      setIsProcessing(false);
     }
   };
 
-  const requirePhoneIfMpesa = (): boolean => {
-    if (activeMethod === "mpesa" && !normalizedPhone) {
-      notify(
-        "Invalid phone number",
-        "Enter a valid Kenyan M-Pesa number, for example 0712345678 or +254712345678."
-      );
-      return false;
-    }
-    return true;
-  };
-
-  const handleDeposit = async () => {
-    if (!requirePhoneIfMpesa()) return;
-
-    if (amountError || parsedAmount < 1 || !Number.isInteger(parsedAmount)) {
-      notify("Invalid amount", amountError || "Enter a whole amount of at least KSh 1.");
-      return;
-    }
-
-    const started = await submitPayment("/deposit", { amount: parsedAmount }, "deposit");
-
-    if (started && !firstDeposit) setAmount("");
-  };
-
-  const handleSubscribe = async () => {
-    if (!selectedPlan) {
-      notify("Choose a plan", "Select a subscription plan to continue.");
-      return;
-    }
-
-    if (subscriptionTooLargeForMpesa && profile) {
-      notify(
-        "Amount too large for M-Pesa",
-        `M-Pesa limits a single payment to KSh ${profile.mpesa_max_amount.toLocaleString(
-          "en-KE"
-        )}. Please pay by bank transfer.`
-      );
-      return;
-    }
-
-    if (!requirePhoneIfMpesa()) return;
-
-    await submitPayment("/subscribe", { plan_code: selectedPlan.code }, "subscription");
-  };
+  /*
+   * ----------------------------------------------------------------------
+   * RECEIPTS
+   * ----------------------------------------------------------------------
+   */
 
   const handleDownloadReceipts = () => {
-    notify(
+    Alert.alert(
       "Receipts",
-      "Receipt history will be available once receipts are connected to the SafeSync finance API."
+      "Receipt history will be available once wallet transactions are connected to the SafeSync finance API."
     );
   };
 
+  /*
+   * ----------------------------------------------------------------------
+   * VIEW ALL TRANSACTIONS
+   * ----------------------------------------------------------------------
+   */
+
   const handleViewAllTransactions = () => {
-    notify(
+    Alert.alert(
       "Transaction history",
       "Full transaction history will be connected to the SafeSync finance API."
     );
   };
 
   /*
-   * SHARED UI PIECES
-   */
-
-  const methodSelector = bankEnabled ? (
-    <View style={styles.inputGroup}>
-      <Text style={styles.inputLabel}>Payment method</Text>
-
-      <View style={styles.methodRow}>
-        {(
-          [
-            { key: "mpesa", label: "M-Pesa", icon: "phone-portrait-outline" },
-            { key: "bank", label: "Bank transfer", icon: "business-outline" },
-          ] as const
-        ).map((option) => {
-          const active = activeMethod === option.key;
-
-          return (
-            <TouchableOpacity
-              key={option.key}
-              activeOpacity={0.8}
-              disabled={busy}
-              style={[styles.methodOption, active && styles.methodOptionActive]}
-              onPress={() => setMethod(option.key)}
-            >
-              <Ionicons
-                name={option.icon}
-                size={17}
-                color={active ? "#DC2626" : "#64748B"}
-              />
-              <Text
-                style={[styles.methodOptionText, active && styles.methodOptionTextActive]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
-  ) : null;
-
-  const phoneField =
-    activeMethod === "mpesa" ? (
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>M-Pesa phone number</Text>
-
-        <View style={styles.inputWrapper}>
-          <View style={styles.inputPrefix}>
-            <Ionicons name="phone-portrait-outline" size={18} color="#64748B" />
-          </View>
-
-          <TextInput
-            style={styles.input}
-            value={phoneNumber}
-            onChangeText={setPhoneNumber}
-            placeholder="0712 345 678"
-            placeholderTextColor="#94A3B8"
-            keyboardType="phone-pad"
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!busy}
-          />
-        </View>
-
-        {phoneNumber.length > 0 && !normalizedPhone && (
-          <Text style={styles.inputError}>Enter a valid Kenyan M-Pesa number.</Text>
-        )}
-      </View>
-    ) : null;
-
-  const securityNote = (
-    <View style={styles.securityNote}>
-      <Ionicons name="shield-checkmark-outline" size={15} color="#64748B" />
-
-      <Text style={styles.securityText}>
-        {activeMethod === "mpesa"
-          ? "Your M-Pesa PIN is entered only on the official M-Pesa prompt. SafeSync does not collect your PIN."
-          : "You pay from your own banking app. SafeSync never asks for your banking login or PIN."}
-      </Text>
-    </View>
-  );
-
-  const renderPayButton = (label: string, onPress: () => void, enabled: boolean) => (
-    <TouchableOpacity
-      activeOpacity={0.85}
-      disabled={!enabled}
-      onPress={onPress}
-      style={[styles.payButton, !enabled && styles.payButtonDisabled]}
-    >
-      {busy ? (
-        <>
-          <ActivityIndicator size="small" color="#FFFFFF" />
-
-          <Text style={styles.payButtonText}>
-            {isProcessing
-              ? activeMethod === "bank"
-                ? "Getting transfer details..."
-                : "Sending STK Push..."
-              : "Waiting for confirmation..."}
-          </Text>
-        </>
-      ) : (
-        <>
-          <Ionicons
-            name={activeMethod === "bank" ? "business-outline" : "phone-portrait-outline"}
-            size={19}
-            color="#FFFFFF"
-          />
-
-          <Text style={styles.payButtonText}>{label}</Text>
-        </>
-      )}
-    </TouchableOpacity>
-  );
-
-  const payLabel = activeMethod === "bank" ? "Get bank transfer details" : "Pay with M-Pesa";
-
-  const bankCard = pendingBank ? (
-    <View style={styles.bankCard}>
-      <Text style={styles.bankTitle}>Pay by bank transfer</Text>
-
-      <DetailRow label="Bank" value={pendingBank.bank.bank_name} />
-      <DetailRow label="Paybill / business number" value={pendingBank.bank.paybill_number} />
-      <DetailRow label="Account number" value={pendingBank.bank.account_number} />
-      <DetailRow label="Account name" value={pendingBank.bank.account_name} />
-      <DetailRow label="Amount" value={formatWholeCurrency(pendingBank.bank.amount)} />
-      <DetailRow
-        label="Valid until"
-        value={formatDateTime(pendingBank.bank.expires_at)}
-      />
-
-      {!!pendingBank.bank.note && (
-        <Text style={styles.bankNote}>{pendingBank.bank.note}</Text>
-      )}
-
-      <View style={styles.waitingRow}>
-        <ActivityIndicator size="small" color="#DC2626" />
-        <Text style={styles.waitingText}>Waiting for your bank to confirm the transfer…</Text>
-      </View>
-
-      <TouchableOpacity
-        activeOpacity={0.85}
-        disabled={isChecking}
-        style={[styles.checkButton, isChecking && styles.payButtonDisabled]}
-        onPress={handleCheckBankStatus}
-      >
-        {isChecking ? (
-          <ActivityIndicator size="small" color="#DC2626" />
-        ) : (
-          <Text style={styles.checkButtonText}>Check payment status</Text>
-        )}
-      </TouchableOpacity>
-    </View>
-  ) : null;
-
-  /*
+   * ----------------------------------------------------------------------
    * RENDER
+   * ----------------------------------------------------------------------
    */
 
   return (
-    <View style={styles.root}>
+    <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
         style={styles.keyboardContainer}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={
+          Platform.OS === "ios"
+            ? "padding"
+            : undefined
+        }
       >
         <ScrollView
           showsVerticalScrollIndicator={false}
@@ -883,490 +658,770 @@ export default function Wallet() {
             />
           }
         >
-          {/* HEADER */}
+          {/* ============================================================
+              HEADER
+          ============================================================ */}
 
           <View style={styles.header}>
             <View style={styles.headerTextContainer}>
+              <Text style={styles.eyebrow}>
+                SAFESYNC FINANCE
+              </Text>
 
-              <Text style={styles.pageTitle}>{isOrganisation ? "Subscription" : "Wallet"}</Text>
+              <Text style={styles.pageTitle}>
+                Wallet
+              </Text>
 
               <Text style={styles.pageSubtitle}>
-                {isOrganisation
-                  ? isClientOrg
-                    ? "Keep your organisation subscribed so your branches stay connected to SafeSync."
-                    : "Stay subscribed to keep your responders active, connected and ready to respond."
-                  : "Keep funds available so emergency dispatch is never delayed by payment."}
+                Keep funds available so emergency dispatch is never
+                delayed by payment.
               </Text>
             </View>
 
             <View style={styles.headerIcon}>
               <Ionicons
-                name={isOrganisation ? "ribbon-outline" : "wallet-outline"}
+                name="wallet-outline"
                 size={23}
                 color="#DC2626"
               />
             </View>
           </View>
 
-          {/* LOADING / ERROR (before we know which account this is) */}
+          {/* ============================================================
+              BALANCE CARD
+          ============================================================ */}
 
-          {!profileLoaded && (
-            <View style={styles.panel}>
-              <View style={styles.emptyTransactions}>
-                {loadError ? (
-                  <>
-                    <View style={styles.emptyIcon}>
-                      <Ionicons name="cloud-offline-outline" size={26} color="#94A3B8" />
-                    </View>
+          <View style={styles.balanceCard}>
+            <View style={styles.balanceTopRow}>
+              <View>
+                <Text style={styles.balanceLabel}>
+                  AVAILABLE BALANCE
+                </Text>
 
-                    <Text style={styles.emptyTitle}>Could not load payment details</Text>
+                <Text style={styles.balanceAmount}>
+                  {formatCurrency(balance)}
+                </Text>
+              </View>
 
-                    <Text style={styles.emptyText}>{loadError} Pull down to try again.</Text>
-                  </>
-                ) : (
-                  <ActivityIndicator size="small" color="#DC2626" />
-                )}
+              <View style={styles.balanceIcon}>
+                <Ionicons
+                  name="wallet"
+                  size={22}
+                  color="#FFFFFF"
+                />
               </View>
             </View>
-          )}
 
-          {/* ==========================================================
-              PUBLIC USER: WALLET
-          ========================================================== */}
+            <View style={styles.balanceDivider} />
 
-          {profileLoaded && isPublic && (
-            <>
-              <View style={styles.balanceCard}>
-                <View style={styles.balanceTopRow}>
-                  <View>
-                    <Text style={styles.balanceLabel}>AVAILABLE BALANCE</Text>
-                    <Text style={styles.balanceAmount}>{formatCurrency(balance)}</Text>
+            <View style={styles.balanceBottomRow}>
+              <View style={styles.balanceStatus}>
+                <View style={styles.statusDot} />
+
+                <Text style={styles.balanceStatusText}>
+                  Wallet ready
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                style={styles.receiptButton}
+                onPress={handleDownloadReceipts}
+              >
+                <Ionicons
+                  name="receipt-outline"
+                  size={16}
+                  color="#FFFFFF"
+                />
+
+                <Text style={styles.receiptButtonText}>
+                  Receipts
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* ============================================================
+              ADD MONEY
+          ============================================================ */}
+
+          <View style={styles.panel}>
+            <View style={styles.sectionIntro}>
+              <View style={styles.sectionIconBlue}>
+                <Ionicons
+                  name="phone-portrait-outline"
+                  size={19}
+                  color="#DC2626"
+                />
+              </View>
+
+              <View style={styles.sectionIntroText}>
+                <Text style={styles.panelTitle}>
+                  Add money
+                </Text>
+
+                <Text style={styles.panelSubtitle}>
+                  Deposit securely through M-Pesa using a PayHero STK
+                  push.
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.formContainer}>
+              {/* PHONE NUMBER */}
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>
+                  M-Pesa phone number
+                </Text>
+
+                <View style={styles.inputWrapper}>
+                  <View style={styles.inputPrefix}>
+                    <Ionicons
+                      name="phone-portrait-outline"
+                      size={18}
+                      color="#64748B"
+                    />
                   </View>
 
-                  <View style={styles.balanceIcon}>
-                    <Ionicons name="wallet" size={22} color="#FFFFFF" />
-                  </View>
+                  <TextInput
+                    style={styles.input}
+                    value={phoneNumber}
+                    onChangeText={setPhoneNumber}
+                    placeholder="0712 345 678"
+                    placeholderTextColor="#94A3B8"
+                    keyboardType="phone-pad"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!isProcessing}
+                  />
                 </View>
 
-                <View style={styles.balanceDivider} />
+                {phoneNumber.length > 0 &&
+                  !normalizedPhone && (
+                    <Text style={styles.inputError}>
+                      Enter a valid Kenyan M-Pesa number.
+                    </Text>
+                  )}
+              </View>
 
-                <View style={styles.balanceBottomRow}>
-                  <View style={styles.balanceStatus}>
-                    <View style={styles.statusDot} />
-                    <Text style={styles.balanceStatusText}>Wallet ready</Text>
+              {/* AMOUNT */}
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>
+                  Deposit amount
+                </Text>
+
+                <View style={styles.inputWrapper}>
+                  <View style={styles.currencyPrefix}>
+                    <Text style={styles.currencyPrefixText}>
+                      KSh
+                    </Text>
                   </View>
 
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    style={styles.receiptButton}
-                    onPress={handleDownloadReceipts}
-                  >
-                    <Ionicons name="receipt-outline" size={16} color="#FFFFFF" />
-                    <Text style={styles.receiptButtonText}>Receipts</Text>
-                  </TouchableOpacity>
+                  <TextInput
+                    style={styles.input}
+                    value={amount}
+                    onChangeText={(value) => {
+                      setAmount(
+                        value.replace(/[^0-9]/g, "")
+                      );
+                    }}
+                    placeholder="Enter amount"
+                    placeholderTextColor="#94A3B8"
+                    keyboardType="number-pad"
+                    editable={!isProcessing}
+                  />
                 </View>
               </View>
 
-              {/* ADD MONEY */}
+              {/* QUICK AMOUNTS */}
 
-              <View style={styles.panel}>
-                <View style={styles.sectionIntro}>
-                  <View style={styles.sectionIconBlue}>
-                    <Ionicons name="add-circle-outline" size={20} color="#DC2626" />
-                  </View>
+              <View>
+                <Text style={styles.quickAmountLabel}>
+                  QUICK AMOUNTS
+                </Text>
 
-                  <View style={styles.sectionIntroText}>
-                    <Text style={styles.panelTitle}>Add money</Text>
+                <View style={styles.quickAmountGrid}>
+                  {QUICK_AMOUNTS.map((value) => {
+                    const selected =
+                      parsedAmount === value;
 
-                    <Text style={styles.panelSubtitle}>
-                      {firstDeposit && profile
-                        ? `Your first deposit is KSh ${profile.first_deposit_amount}.`
-                        : "Top up your wallet by M-Pesa or bank transfer."}
-                    </Text>
-                  </View>
+                    return (
+                      <TouchableOpacity
+                        key={value}
+                        activeOpacity={0.8}
+                        disabled={isProcessing}
+                        style={[
+                          styles.quickAmount,
+                          selected &&
+                            styles.quickAmountSelected,
+                        ]}
+                        onPress={() =>
+                          handleQuickAmount(value)
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.quickAmountText,
+                            selected &&
+                              styles.quickAmountTextSelected,
+                          ]}
+                        >
+                          {value.toLocaleString(
+                            "en-KE"
+                          )}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* PAYMENT SUMMARY */}
+
+              <View style={styles.paymentSummary}>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>
+                    Deposit
+                  </Text>
+
+                  <Text style={styles.summaryValue}>
+                    {formatCurrency(parsedAmount)}
+                  </Text>
                 </View>
 
-                <View style={styles.formContainer}>
-                  {methodSelector}
-                  {phoneField}
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>
+                    Payment method
+                  </Text>
 
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Deposit amount</Text>
-
-                    <View style={styles.inputWrapper}>
-                      <View style={styles.currencyPrefix}>
-                        <Text style={styles.currencyPrefixText}>KSh</Text>
-                      </View>
-
-                      <TextInput
-                        style={styles.input}
-                        value={amount}
-                        onChangeText={(value) => setAmount(value.replace(/[^0-9]/g, ""))}
-                        placeholder="Enter amount"
-                        placeholderTextColor="#94A3B8"
-                        keyboardType="number-pad"
-                        editable={!busy && !(firstDeposit && !!amount)}
+                  <View style={styles.summaryMethod}>
+                    <View style={styles.miniMpesaIcon}>
+                      <Ionicons
+                        name="phone-portrait"
+                        size={13}
+                        color="#FFFFFF"
                       />
                     </View>
 
-                    {!!amountError && <Text style={styles.inputError}>{amountError}</Text>}
-                  </View>
-
-                  {!firstDeposit && (
-                    <View>
-                      <Text style={styles.quickAmountLabel}>QUICK AMOUNTS</Text>
-
-                      <View style={styles.quickAmountGrid}>
-                        {QUICK_AMOUNTS.map((value) => {
-                          const selected = parsedAmount === value;
-
-                          return (
-                            <TouchableOpacity
-                              key={value}
-                              activeOpacity={0.8}
-                              disabled={busy}
-                              style={[styles.quickAmount, selected && styles.quickAmountSelected]}
-                              onPress={() => setAmount(String(value))}
-                            >
-                              <Text
-                                style={[
-                                  styles.quickAmountText,
-                                  selected && styles.quickAmountTextSelected,
-                                ]}
-                              >
-                                {value.toLocaleString("en-KE")}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  )}
-
-                  <View style={styles.paymentSummary}>
-                    <View style={styles.summaryRow}>
-                      <Text style={styles.summaryLabel}>Deposit</Text>
-                      <Text style={styles.summaryValue}>{formatCurrency(parsedAmount)}</Text>
-                    </View>
-
-                    <View style={styles.summaryRow}>
-                      <Text style={styles.summaryLabel}>Payment method</Text>
-                      <Text style={styles.summaryMethodText}>
-                        {activeMethod === "bank" ? "Bank transfer" : "M-Pesa"}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {renderPayButton(payLabel, handleDeposit, canSubmitDeposit)}
-
-                  {bankCard}
-                  {securityNote}
-                </View>
-              </View>
-
-              {/* TRANSACTION HISTORY */}
-
-              <View style={styles.panel}>
-                <View style={styles.sectionHeader}>
-                  <View>
-                    <Text style={styles.panelTitle}>Recent transactions</Text>
-                    <Text style={styles.panelSubtitle}>Your latest wallet activity.</Text>
-                  </View>
-
-                  <TouchableOpacity activeOpacity={0.7} onPress={handleViewAllTransactions}>
-                    <Text style={styles.viewAllText}>View all</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {transactions.length === 0 ? (
-                  <View style={styles.emptyTransactions}>
-                    <View style={styles.emptyIcon}>
-                      <Ionicons name="receipt-outline" size={26} color="#94A3B8" />
-                    </View>
-
-                    <Text style={styles.emptyTitle}>No transactions yet</Text>
-
-                    <Text style={styles.emptyText}>
-                      Your wallet deposits and emergency charges will appear here.
+                    <Text style={styles.summaryMethodText}>
+                      M-Pesa
                     </Text>
                   </View>
-                ) : (
-                  <View style={styles.transactionList}>
-                    {transactions.map((transaction) => (
-                      <View key={transaction.id} style={styles.transactionRow}>
-                        <View
-                          style={[
-                            styles.transactionIcon,
-                            transaction.kind === "credit" ? styles.creditIcon : styles.debitIcon,
-                          ]}
-                        >
-                          <Ionicons
-                            name={transaction.kind === "credit" ? "arrow-down" : "arrow-up"}
-                            size={17}
-                            color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
-                          />
-                        </View>
-
-                        <View style={styles.transactionDetails}>
-                          <Text style={styles.transactionLabel} numberOfLines={1}>
-                            {transaction.label}
-                          </Text>
-
-                          <Text style={styles.transactionDate} numberOfLines={1}>
-                            {transaction.date}
-                            {transaction.reference ? ` · ${transaction.reference}` : ""}
-                          </Text>
-                        </View>
-
-                        <View style={styles.transactionAmountContainer}>
-                          <Text
-                            style={[
-                              styles.transactionAmount,
-                              transaction.kind === "credit" && styles.creditAmount,
-                            ]}
-                          >
-                            {transaction.kind === "credit" ? "+" : "-"}
-                            {transaction.amount}
-                          </Text>
-                        </View>
-                      </View>
-                    ))}
-                  </View>
-                )}
-              </View>
-
-              <View style={styles.infoCard}>
-                <View style={styles.infoIcon}>
-                  <Ionicons name="information-circle-outline" size={20} color="#DC2626" />
-                </View>
-
-                <View style={styles.infoContent}>
-                  <Text style={styles.infoTitle}>How wallet deposits work</Text>
-
-                  <Text style={styles.infoText}>
-                    Pay with M-Pesa or by bank transfer. Your wallet is credited only after the
-                    payment has been confirmed, never before.
-                  </Text>
                 </View>
               </View>
-            </>
-          )}
 
-          {/* ==========================================================
-              ORGANISATION (CLIENT OR SERVICE PROVIDER): SUBSCRIPTION
-              No wallet, no deposit form. Priced per branch.
-          ========================================================== */}
+              {/* PAY BUTTON */}
 
-          {profileLoaded && isOrganisation && (
-            <>
-              <View style={styles.balanceCard}>
-                <View style={styles.balanceTopRow}>
-                  <View style={{ flexShrink: 1 }}>
-                    <Text style={styles.balanceLabel}>CURRENT PLAN</Text>
-
-                    <Text style={styles.balanceAmount}>
-                      {subscription ? subscription.plan_name : "No plan"}
-                    </Text>
-                  </View>
-
-                  <View style={styles.balanceIcon}>
-                    <Ionicons name="ribbon" size={22} color="#FFFFFF" />
-                  </View>
-                </View>
-
-                <View style={styles.balanceDivider} />
-
-                <View style={styles.balanceBottomRow}>
-                  <View style={styles.balanceStatus}>
-                    <View
-                      style={[
-                        styles.statusDot,
-                        subscription?.status !== "active" && { backgroundColor: "#FDE68A" },
-                      ]}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                disabled={!canSubmit}
+                onPress={handlePayHeroStkPush}
+                style={[
+                  styles.payButton,
+                  !canSubmit &&
+                    styles.payButtonDisabled,
+                ]}
+              >
+                {isProcessing || isConfirming ? (
+                  <>
+                    <ActivityIndicator
+                      size="small"
+                      color="#FFFFFF"
                     />
 
-                    <Text style={styles.balanceStatusText}>
-                      {!subscription
-                        ? "Not subscribed"
-                        : subscription.status === "active"
-                        ? `Active until ${formatDate(subscription.ends_at)}${
-                            subscription.branch_count
-                              ? ` · ${subscription.branch_count} ${
-                                  subscription.branch_count === 1 ? "branch" : "branches"
-                                }`
-                              : ""
-                          }`
-                        : subscription.status === "grace"
-                        ? `Grace period until ${formatDate(subscription.grace_ends_at)}`
-                        : `Expired on ${formatDate(subscription.grace_ends_at)}`}
+                    <Text style={styles.payButtonText}>
+                      {isProcessing
+                        ? "Sending STK Push..."
+                        : "Waiting for confirmation..."}
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Ionicons
+                      name="phone-portrait-outline"
+                      size={19}
+                      color="#FFFFFF"
+                    />
+
+                    <Text style={styles.payButtonText}>
+                      Pay with M-Pesa
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {/* SECURITY MESSAGE */}
+
+              <View style={styles.securityNote}>
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={15}
+                  color="#64748B"
+                />
+
+                <Text style={styles.securityText}>
+                  Your M-Pesa PIN is entered only on the official
+                  M-Pesa prompt. SafeSync does not collect your PIN.
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* ============================================================
+              AUTOMATIC TOP-UP
+          ============================================================ */}
+
+          {isSuperAdmin &&
+            isResponderOrg && (
+              <View style={styles.panel}>
+                <View style={styles.sectionIntro}>
+                  <View style={styles.sectionIconPurple}>
+                    <Ionicons
+                      name="repeat-outline"
+                      size={19}
+                      color="#7C3AED"
+                    />
+                  </View>
+
+                  <View style={styles.sectionIntroText}>
+                    <Text style={styles.panelTitle}>
+                      Automatic top-up
+                    </Text>
+
+                    <Text style={styles.panelSubtitle}>
+                      Configure your organization's automatic funding
+                      plan.
                     </Text>
                   </View>
+                </View>
+
+                <View style={styles.tierContainer}>
+                  {/* SEMI PLAN */}
 
                   <TouchableOpacity
                     activeOpacity={0.8}
-                    style={styles.receiptButton}
-                    onPress={handleDownloadReceipts}
+                    style={[
+                      styles.tierCard,
+                      selectedTopUpTier ===
+                        "semi" &&
+                        styles.tierCardActive,
+                    ]}
+                    onPress={() =>
+                      setSelectedTopUpTier(
+                        "semi"
+                      )
+                    }
                   >
-                    <Ionicons name="receipt-outline" size={16} color="#FFFFFF" />
-                    <Text style={styles.receiptButtonText}>Receipts</Text>
+                    <View
+                      style={[
+                        styles.radio,
+                        selectedTopUpTier ===
+                          "semi" &&
+                          styles.radioActive,
+                      ]}
+                    >
+                      {selectedTopUpTier ===
+                        "semi" && (
+                        <View
+                          style={
+                            styles.radioInner
+                          }
+                        />
+                      )}
+                    </View>
+
+                    <Text
+                      style={[
+                        styles.tierTitle,
+                        selectedTopUpTier ===
+                          "semi" &&
+                          styles.tierTitleActive,
+                      ]}
+                    >
+                      Semi Plan
+                    </Text>
+
+                    <Text
+                      style={[
+                        styles.tierAmount,
+                        selectedTopUpTier ===
+                          "semi" &&
+                          styles.tierAmountActive,
+                      ]}
+                    >
+                      KSh 6,000
+                    </Text>
+
+                    <Text
+                      style={styles.tierDescription}
+                    >
+                      Automated funding
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* ANNUAL PLAN */}
+
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    style={[
+                      styles.tierCard,
+                      selectedTopUpTier ===
+                        "annual" &&
+                        styles.tierCardActive,
+                    ]}
+                    onPress={() =>
+                      setSelectedTopUpTier(
+                        "annual"
+                      )
+                    }
+                  >
+                    <View
+                      style={[
+                        styles.radio,
+                        selectedTopUpTier ===
+                          "annual" &&
+                          styles.radioActive,
+                      ]}
+                    >
+                      {selectedTopUpTier ===
+                        "annual" && (
+                        <View
+                          style={
+                            styles.radioInner
+                          }
+                        />
+                      )}
+                    </View>
+
+                    <Text
+                      style={[
+                        styles.tierTitle,
+                        selectedTopUpTier ===
+                          "annual" &&
+                          styles.tierTitleActive,
+                      ]}
+                    >
+                      Annual Plan
+                    </Text>
+
+                    <Text
+                      style={[
+                        styles.tierAmount,
+                        selectedTopUpTier ===
+                          "annual" &&
+                          styles.tierAmountActive,
+                      ]}
+                    >
+                      KSh 12,000
+                    </Text>
+
+                    <Text
+                      style={styles.tierDescription}
+                    >
+                      Automated funding
+                    </Text>
                   </TouchableOpacity>
                 </View>
-              </View>
 
-              {/* NOT THE SUPER ADMIN */}
+                {/* LOW BALANCE ALERTS */}
 
-              {!canPaySubscription && (
-                <View style={styles.panel}>
-                  <Text style={styles.panelTitle}>Super admin only</Text>
-
-                  <Text style={styles.panelSubtitle}>
-                    Only your organisation's super admin can pay for or change the subscription.
-                  </Text>
-                </View>
-              )}
-
-              {/* SUPER ADMIN: PICK A PLAN AND PAY */}
-
-              {canPaySubscription && (
-                <View style={styles.panel}>
-                  <View style={styles.sectionIntro}>
-                    <View style={styles.sectionIconPurple}>
-                      <Ionicons name="ribbon-outline" size={19} color="#7C3AED" />
-                    </View>
-
-                    <View style={styles.sectionIntroText}>
-                      <Text style={styles.panelTitle}>
-                        {subscription ? "Renew or change plan" : "Choose a plan"}
-                      </Text>
-
-                      <Text style={styles.panelSubtitle}>
-                        Prices are per branch. The total below is for all your branches.
-                      </Text>
-                    </View>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  style={styles.alertSetting}
+                  onPress={() =>
+                    setLowBalanceAlerts(
+                      (current) => !current
+                    )
+                  }
+                >
+                  <View style={styles.alertIcon}>
+                    <Ionicons
+                      name="notifications-outline"
+                      size={17}
+                      color="#64748B"
+                    />
                   </View>
 
-                  <View style={styles.tierContainer}>
-                    {plans.map((plan) => {
-                      const active = selectedPlanCode === plan.code;
-
-                      return (
-                        <TouchableOpacity
-                          key={plan.code}
-                          activeOpacity={0.8}
-                          disabled={busy}
-                          style={[styles.tierCard, active && styles.tierCardActive]}
-                          onPress={() => setSelectedPlanCode(plan.code)}
-                        >
-                          <View style={[styles.radio, active && styles.radioActive]}>
-                            {active && <View style={styles.radioInner} />}
-                          </View>
-
-                          <Text style={[styles.tierTitle, active && styles.tierTitleActive]}>
-                            {plan.name}
-                          </Text>
-
-                          <Text style={[styles.tierAmount, active && styles.tierAmountActive]}>
-                            {formatWholeCurrency(plan.unit_price)}
-                          </Text>
-
-                          <Text style={styles.tierDescription}>
-                            per branch · {durationLabel(plan.duration_months)}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-
-                  {plans.length === 0 && (
-                    <Text style={[styles.panelSubtitle, { marginTop: 14 }]}>
-                      No plans are available right now. Pull down to refresh.
+                  <View
+                    style={styles.alertTextContainer}
+                  >
+                    <Text style={styles.alertTitle}>
+                      Low balance alerts
                     </Text>
-                  )}
 
-                  {/* TOTAL FOR ALL BRANCHES */}
-
-                  {selectedPlan && (
-                    <View style={styles.totalNote}>
-                      <Ionicons name="calculator-outline" size={16} color="#6D28D9" />
-                      <Text style={styles.totalNoteText}>{selectedPlan.summary}</Text>
-                    </View>
-                  )}
-
-                  <View style={styles.formContainer}>
-                    {methodSelector}
-                    {phoneField}
-
-                    <View style={styles.paymentSummary}>
-                      <View style={styles.summaryRow}>
-                        <Text style={styles.summaryLabel}>Plan</Text>
-                        <Text style={styles.summaryValue}>
-                          {selectedPlan
-                            ? `${selectedPlan.name} (${durationLabel(selectedPlan.duration_months)})`
-                            : "—"}
-                        </Text>
-                      </View>
-
-                      <View style={styles.summaryRow}>
-                        <Text style={styles.summaryLabel}>Branches</Text>
-                        <Text style={styles.summaryValue}>
-                          {selectedPlan
-                            ? `${selectedPlan.branch_count} × ${formatWholeCurrency(
-                                selectedPlan.unit_price
-                              )}`
-                            : "—"}
-                        </Text>
-                      </View>
-
-                      <View style={styles.summaryRow}>
-                        <Text style={styles.summaryLabel}>Amount to pay</Text>
-                        <Text style={styles.summaryValue}>
-                          {selectedPlan ? formatWholeCurrency(selectedPlan.total) : "—"}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {subscriptionTooLargeForMpesa && profile && (
-                      <View style={styles.warningBox}>
-                        <Text style={styles.warningText}>
-                          M-Pesa limits a single payment to KSh{" "}
-                          {profile.mpesa_max_amount.toLocaleString("en-KE")}.{" "}
-                          {bankEnabled
-                            ? "Choose bank transfer to pay this amount."
-                            : "Please contact SafeSync support to arrange payment."}
-                        </Text>
-                      </View>
-                    )}
-
-                    {renderPayButton(payLabel, handleSubscribe, canSubmitSubscription)}
-
-                    {bankCard}
-                    {securityNote}
+                    <Text
+                      style={styles.alertSubtitle}
+                    >
+                      Notify administrators when wallet
+                      funds are low.
+                    </Text>
                   </View>
-                </View>
-              )}
 
-              <View style={styles.infoCard}>
-                <View style={styles.infoIcon}>
-                  <Ionicons name="information-circle-outline" size={20} color="#DC2626" />
-                </View>
-
-                <View style={styles.infoContent}>
-                  <Text style={styles.infoTitle}>How subscription payments work</Text>
-
-                  <Text style={styles.infoText}>
-                    Your super admin picks a plan and pays with M-Pesa or bank transfer. The price
-                    is per branch, so the total depends on how many branches you have. Your
-                    subscription is activated only after the payment is confirmed.
-                  </Text>
-                </View>
+                  <View
+                    style={[
+                      styles.toggle,
+                      lowBalanceAlerts &&
+                        styles.toggleActive,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.toggleThumb,
+                        lowBalanceAlerts &&
+                          styles.toggleThumbActive,
+                      ]}
+                    />
+                  </View>
+                </TouchableOpacity>
               </View>
-            </>
-          )}
+            )}
 
-          <View style={{ height: BOTTOM_CLEARANCE }} />
+          {/* ============================================================
+              TRANSACTION HISTORY
+          ============================================================ */}
+
+          <View style={styles.panel}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.panelTitle}>
+                  Recent transactions
+                </Text>
+
+                <Text style={styles.panelSubtitle}>
+                  Your latest wallet activity.
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={
+                  handleViewAllTransactions
+                }
+              >
+                <Text style={styles.viewAllText}>
+                  View all
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {transactions.length === 0 ? (
+              <View
+                style={styles.emptyTransactions}
+              >
+                <View style={styles.emptyIcon}>
+                  <Ionicons
+                    name="receipt-outline"
+                    size={26}
+                    color="#94A3B8"
+                  />
+                </View>
+
+                <Text style={styles.emptyTitle}>
+                  No transactions yet
+                </Text>
+
+                <Text style={styles.emptyText}>
+                  Your wallet deposits and emergency charges
+                  will appear here.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.transactionList}>
+                {transactions.map(
+                  (transaction) => (
+                    <View
+                      key={transaction.id}
+                      style={
+                        styles.transactionRow
+                      }
+                    >
+                      <View
+                        style={[
+                          styles.transactionIcon,
+                          transaction.kind ===
+                            "credit"
+                            ? styles.creditIcon
+                            : styles.debitIcon,
+                        ]}
+                      >
+                        <Ionicons
+                          name={
+                            transaction.kind ===
+                            "credit"
+                              ? "arrow-down"
+                              : "arrow-up"
+                          }
+                          size={17}
+                          color={
+                            transaction.kind ===
+                            "credit"
+                              ? "#059669"
+                              : "#DC2626"
+                          }
+                        />
+                      </View>
+
+                      <View
+                        style={
+                          styles.transactionDetails
+                        }
+                      >
+                        <Text
+                          style={
+                            styles.transactionLabel
+                          }
+                          numberOfLines={1}
+                        >
+                          {transaction.label}
+                        </Text>
+
+                        <Text
+                          style={
+                            styles.transactionDate
+                          }
+                          numberOfLines={1}
+                        >
+                          {transaction.date} ·{" "}
+                          {transaction.id}
+                        </Text>
+                      </View>
+
+                      <View
+                        style={
+                          styles.transactionAmountContainer
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.transactionAmount,
+                            transaction.kind ===
+                              "credit" &&
+                              styles.creditAmount,
+                          ]}
+                        >
+                          {transaction.kind ===
+                          "credit"
+                            ? "+"
+                            : "-"}
+                          {transaction.amount}
+                        </Text>
+
+                        {transaction.status && (
+                          <Text
+                            style={
+                              styles.transactionStatus
+                            }
+                          >
+                            {transaction.status}
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+                  )
+                )}
+              </View>
+            )}
+          </View>
+
+          {/* ============================================================
+              PAYMENT METHOD
+          ============================================================ */}
+
+          <View style={styles.panel}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.panelTitle}>
+                  Payment method
+                </Text>
+
+                <Text style={styles.panelSubtitle}>
+                  M-Pesa is currently your wallet deposit channel.
+                </Text>
+              </View>
+
+              <View style={styles.secureBadge}>
+                <Ionicons
+                  name="shield-checkmark"
+                  size={13}
+                  color="#059669"
+                />
+
+                <Text
+                  style={styles.secureBadgeText}
+                >
+                  Secure
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.paymentMethod}>
+              <View style={styles.paymentIcon}>
+                <Ionicons
+                  name="phone-portrait-outline"
+                  size={20}
+                  color="#16A34A"
+                />
+              </View>
+
+              <View style={styles.methodDetails}>
+                <Text style={styles.methodLabel}>
+                  M-PESA
+                </Text>
+
+                <Text style={styles.methodDetail}>
+                  {displayPhone ||
+                    "No number selected"}
+                </Text>
+              </View>
+
+              <View style={styles.defaultBadge}>
+                <Text
+                  style={styles.defaultBadgeText}
+                >
+                  DEFAULT
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* ============================================================
+              PAYMENT INFORMATION
+          ============================================================ */}
+
+          <View style={styles.infoCard}>
+            <View style={styles.infoIcon}>
+              <Ionicons
+                name="information-circle-outline"
+                size={20}
+                color="#DC2626"
+              />
+            </View>
+
+            <View style={styles.infoContent}>
+              <Text style={styles.infoTitle}>
+                How wallet deposits work
+              </Text>
+
+              <Text style={styles.infoText}>
+                Enter your M-Pesa number and amount. SafeSync sends an
+                STK push through PayHero. After you enter your M-Pesa
+                PIN, PayHero confirms the payment to the SafeSync
+                backend. Your wallet is credited only after the
+                payment has been successfully confirmed.
+              </Text>
+            </View>
+          </View>
+
+          {/* ============================================================
+              BOTTOM SPACE
+          ============================================================ */}
+
+          <View style={{ height: 120 }} />
         </ScrollView>
       </KeyboardAvoidingView>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -1377,168 +1432,809 @@ export default function Wallet() {
 */
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#F8FAFC" },
-  keyboardContainer: { flex: 1 },
-  scrollContent: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 30 },
-
-  header: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 18 },
-  headerTextContainer: { flex: 1, paddingRight: 16 },
-  eyebrow: { fontSize: 10, fontWeight: "900", letterSpacing: 1.6, color: "#DC2626", marginBottom: 5 },
-  pageTitle: { fontSize: 30, lineHeight: 36, fontWeight: "900", color: "#0F172A" },
-  pageSubtitle: { fontSize: 13, lineHeight: 19, color: "#64748B", marginTop: 5 },
-  headerIcon: {
-    width: 46, height: 46, borderRadius: 15, backgroundColor: "#FEF2F2",
-    alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#FECACA",
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
   },
+
+  keyboardContainer: {
+    flex: 1,
+  },
+
+  scrollContent: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 30,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | HEADER
+  |--------------------------------------------------------------------------
+  */
+
+  header: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 18,
+  },
+
+  headerTextContainer: {
+    flex: 1,
+    paddingRight: 16,
+  },
+
+  eyebrow: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.6,
+    color: "#DC2626",
+    marginBottom: 5,
+  },
+
+  pageTitle: {
+    fontSize: 30,
+    lineHeight: 36,
+    fontWeight: "900",
+    color: "#0F172A",
+  },
+
+  pageSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#64748B",
+    marginTop: 5,
+  },
+
+  headerIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | BALANCE CARD
+  |--------------------------------------------------------------------------
+  */
 
   balanceCard: {
-    backgroundColor: "#DC2626", borderRadius: 24, padding: 20, marginBottom: 16,
-    shadowColor: "#B91C1C", shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.22, shadowRadius: 14, elevation: 7,
+    backgroundColor: "#DC2626",
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: "#B91C1C",
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    elevation: 7,
   },
-  balanceTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  balanceLabel: { color: "#FECACA", fontSize: 10, fontWeight: "900", letterSpacing: 1.5 },
-  balanceAmount: { color: "#FFFFFF", fontSize: 34, lineHeight: 42, fontWeight: "900", marginTop: 7 },
+
+  balanceTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  balanceLabel: {
+    color: "#FECACA",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.5,
+  },
+
+  balanceAmount: {
+    color: "#FFFFFF",
+    fontSize: 34,
+    lineHeight: 42,
+    fontWeight: "900",
+    marginTop: 7,
+  },
+
   balanceIcon: {
-    width: 46, height: 46, borderRadius: 15, backgroundColor: "rgba(255,255,255,0.14)",
-    alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.18)",
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    backgroundColor:
+      "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.18)",
   },
-  balanceDivider: { height: 1, backgroundColor: "rgba(255,255,255,0.18)", marginVertical: 17 },
-  balanceBottomRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  balanceStatus: { flexDirection: "row", alignItems: "center", flex: 1, paddingRight: 10 },
-  statusDot: { width: 7, height: 7, borderRadius: 7, backgroundColor: "#86EFAC", marginRight: 7 },
-  balanceStatusText: { color: "#FECACA", fontSize: 11, fontWeight: "700", flexShrink: 1 },
+
+  balanceDivider: {
+    height: 1,
+    backgroundColor:
+      "rgba(255,255,255,0.18)",
+    marginVertical: 17,
+  },
+
+  balanceBottomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  balanceStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 7,
+    backgroundColor: "#86EFAC",
+    marginRight: 7,
+  },
+
+  balanceStatusText: {
+    color: "#FECACA",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
   receiptButton: {
-    minHeight: 34, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.3)", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor:
+      "rgba(255,255,255,0.3)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
   },
-  receiptButtonText: { color: "#FFFFFF", fontSize: 11, fontWeight: "800" },
 
-  panel: { backgroundColor: "#FFFFFF", borderRadius: 21, padding: 17, marginBottom: 15, borderWidth: 1, borderColor: "#E2E8F0" },
-  sectionIntro: { flexDirection: "row", alignItems: "center" },
+  receiptButtonText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | PANELS
+  |--------------------------------------------------------------------------
+  */
+
+  panel: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 21,
+    padding: 17,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+
+  sectionIntro: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
   sectionIconBlue: {
-    width: 42, height: 42, borderRadius: 13, backgroundColor: "#FEF2F2",
-    alignItems: "center", justifyContent: "center", marginRight: 11,
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
   },
+
   sectionIconPurple: {
-    width: 42, height: 42, borderRadius: 13, backgroundColor: "#F5F3FF",
-    alignItems: "center", justifyContent: "center", marginRight: 11,
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: "#F5F3FF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
   },
-  sectionIntroText: { flex: 1 },
-  panelTitle: { fontSize: 16, fontWeight: "800", color: "#0F172A" },
-  panelSubtitle: { fontSize: 12, lineHeight: 18, color: "#64748B", marginTop: 3 },
-  formContainer: { marginTop: 17, gap: 14 },
 
-  inputGroup: { gap: 7 },
-  inputLabel: { fontSize: 11, fontWeight: "800", color: "#334155" },
+  sectionIntroText: {
+    flex: 1,
+  },
+
+  panelTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  panelSubtitle: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#64748B",
+    marginTop: 3,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | FORM
+  |--------------------------------------------------------------------------
+  */
+
+  formContainer: {
+    marginTop: 17,
+    gap: 14,
+  },
+
+  inputGroup: {
+    gap: 7,
+  },
+
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#334155",
+  },
+
   inputWrapper: {
-    height: 50, borderWidth: 1, borderColor: "#CBD5E1", borderRadius: 13,
-    backgroundColor: "#F8FAFC", flexDirection: "row", alignItems: "center",
+    height: 50,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 13,
+    backgroundColor: "#F8FAFC",
+    flexDirection: "row",
+    alignItems: "center",
   },
-  inputPrefix: { width: 46, alignItems: "center", justifyContent: "center" },
-  currencyPrefix: { width: 52, alignItems: "center", justifyContent: "center" },
-  currencyPrefixText: { fontSize: 12, fontWeight: "900", color: "#64748B" },
-  input: { flex: 1, height: "100%", paddingHorizontal: 4, paddingRight: 13, fontSize: 14, color: "#0F172A", fontWeight: "600" },
-  inputError: { color: "#DC2626", fontSize: 10, fontWeight: "600" },
 
-  methodRow: { flexDirection: "row", gap: 9 },
-  methodOption: {
-    flex: 1, height: 46, borderRadius: 13, borderWidth: 1, borderColor: "#E2E8F0",
-    backgroundColor: "#F8FAFC", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7,
+  inputPrefix: {
+    width: 46,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  methodOptionActive: { borderColor: "#DC2626", backgroundColor: "#FEF2F2" },
-  methodOptionText: { fontSize: 12, fontWeight: "800", color: "#64748B" },
-  methodOptionTextActive: { color: "#DC2626" },
 
-  quickAmountLabel: { fontSize: 9, fontWeight: "900", letterSpacing: 1.2, color: "#94A3B8", marginBottom: 8 },
-  quickAmountGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  currencyPrefix: {
+    width: 52,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  currencyPrefixText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#64748B",
+  },
+
+  input: {
+    flex: 1,
+    height: "100%",
+    paddingHorizontal: 4,
+    paddingRight: 13,
+    fontSize: 14,
+    color: "#0F172A",
+    fontWeight: "600",
+  },
+
+  inputError: {
+    color: "#DC2626",
+    fontSize: 10,
+    fontWeight: "600",
+  },
+
+  quickAmountLabel: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+    color: "#94A3B8",
+    marginBottom: 8,
+  },
+
+  quickAmountGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
   quickAmount: {
-    minWidth: 62, paddingHorizontal: 11, height: 34, borderRadius: 9, backgroundColor: "#F8FAFC",
-    borderWidth: 1, borderColor: "#E2E8F0", alignItems: "center", justifyContent: "center",
+    minWidth: 62,
+    paddingHorizontal: 11,
+    height: 34,
+    borderRadius: 9,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  quickAmountSelected: { backgroundColor: "#FEF2F2", borderColor: "#DC2626" },
-  quickAmountText: { fontSize: 11, fontWeight: "800", color: "#475569" },
-  quickAmountTextSelected: { color: "#DC2626" },
 
-  paymentSummary: { borderRadius: 14, backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E2E8F0", padding: 13, gap: 11 },
-  summaryRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
-  summaryLabel: { fontSize: 11, color: "#64748B", fontWeight: "600" },
-  summaryValue: { fontSize: 13, color: "#0F172A", fontWeight: "900", flexShrink: 1, textAlign: "right" },
-  summaryMethodText: { fontSize: 11, color: "#0F172A", fontWeight: "800" },
+  quickAmountSelected: {
+    backgroundColor: "#FEF2F2",
+    borderColor: "#DC2626",
+  },
+
+  quickAmountText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#475569",
+  },
+
+  quickAmountTextSelected: {
+    color: "#DC2626",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | PAYMENT SUMMARY
+  |--------------------------------------------------------------------------
+  */
+
+  paymentSummary: {
+    borderRadius: 14,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 13,
+    gap: 11,
+  },
+
+  summaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  summaryLabel: {
+    fontSize: 11,
+    color: "#64748B",
+    fontWeight: "600",
+  },
+
+  summaryValue: {
+    fontSize: 13,
+    color: "#0F172A",
+    fontWeight: "900",
+  },
+
+  summaryMethod: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  miniMpesaIcon: {
+    width: 23,
+    height: 23,
+    borderRadius: 7,
+    backgroundColor: "#16A34A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  summaryMethodText: {
+    fontSize: 11,
+    color: "#0F172A",
+    fontWeight: "800",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | PAY BUTTON
+  |--------------------------------------------------------------------------
+  */
 
   payButton: {
-    minHeight: 52, borderRadius: 14, backgroundColor: "#DC2626", flexDirection: "row",
-    alignItems: "center", justifyContent: "center", gap: 8, marginTop: 2,
-    shadowColor: "#DC2626", shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.18, shadowRadius: 9, elevation: 4,
+    minHeight: 52,
+    borderRadius: 14,
+    backgroundColor: "#DC2626",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 2,
+    shadowColor: "#DC2626",
+    shadowOffset: {
+      width: 0,
+      height: 5,
+    },
+    shadowOpacity: 0.18,
+    shadowRadius: 9,
+    elevation: 4,
   },
-  payButtonDisabled: { backgroundColor: "#94A3B8", shadowOpacity: 0, elevation: 0 },
-  payButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "900" },
 
-  securityNote: { flexDirection: "row", alignItems: "flex-start", gap: 7, paddingHorizontal: 2 },
-  securityText: { flex: 1, color: "#64748B", fontSize: 10, lineHeight: 15 },
-
-  bankCard: { borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#F8FAFC", padding: 14, gap: 10 },
-  bankTitle: { fontSize: 13, fontWeight: "900", color: "#0F172A" },
-  bankRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
-  bankLabel: { fontSize: 11, color: "#64748B", fontWeight: "600", flexShrink: 1 },
-  bankValue: { fontSize: 13, color: "#0F172A", fontWeight: "900", flexShrink: 1, textAlign: "right" },
-  bankNote: { fontSize: 10, lineHeight: 15, color: "#64748B" },
-  waitingRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  waitingText: { flex: 1, fontSize: 11, color: "#475569", fontWeight: "600" },
-  checkButton: {
-    height: 44, borderRadius: 12, borderWidth: 1.5, borderColor: "#DC2626",
-    alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF",
+  payButtonDisabled: {
+    backgroundColor: "#94A3B8",
+    shadowOpacity: 0,
+    elevation: 0,
   },
-  checkButtonText: { color: "#DC2626", fontSize: 13, fontWeight: "800" },
 
-  tierContainer: { flexDirection: "row", gap: 9, marginTop: 15 },
-  tierCard: { flex: 1, minHeight: 126, padding: 13, borderRadius: 15, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#F8FAFC" },
-  tierCardActive: { borderColor: "#7C3AED", backgroundColor: "#F5F3FF" },
+  payButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  securityNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 7,
+    paddingHorizontal: 2,
+  },
+
+  securityText: {
+    flex: 1,
+    color: "#64748B",
+    fontSize: 10,
+    lineHeight: 15,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | AUTOMATIC TOP-UP
+  |--------------------------------------------------------------------------
+  */
+
+  tierContainer: {
+    flexDirection: "row",
+    gap: 9,
+    marginTop: 15,
+  },
+
+  tierCard: {
+    flex: 1,
+    minHeight: 126,
+    padding: 13,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+  },
+
+  tierCardActive: {
+    borderColor: "#7C3AED",
+    backgroundColor: "#F5F3FF",
+  },
+
   radio: {
-    width: 18, height: 18, borderRadius: 18, borderWidth: 1.5, borderColor: "#CBD5E1",
-    alignItems: "center", justifyContent: "center", marginBottom: 12,
+    width: 18,
+    height: 18,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    borderColor: "#CBD5E1",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
   },
-  radioActive: { borderColor: "#7C3AED" },
-  radioInner: { width: 9, height: 9, borderRadius: 9, backgroundColor: "#7C3AED" },
-  tierTitle: { fontSize: 12, fontWeight: "800", color: "#64748B" },
-  tierTitleActive: { color: "#6D28D9" },
-  tierAmount: { fontSize: 16, fontWeight: "900", color: "#0F172A", marginTop: 4 },
-  tierAmountActive: { color: "#7C3AED" },
-  tierDescription: { fontSize: 9, color: "#94A3B8", marginTop: 3 },
 
-  totalNote: {
-    flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12, padding: 11,
-    borderRadius: 12, backgroundColor: "#F5F3FF", borderWidth: 1, borderColor: "#DDD6FE",
+  radioActive: {
+    borderColor: "#7C3AED",
   },
-  totalNoteText: { flex: 1, fontSize: 11, lineHeight: 16, fontWeight: "700", color: "#5B21B6" },
-  warningBox: { padding: 11, borderRadius: 12, backgroundColor: "#FFFBEB", borderWidth: 1, borderColor: "#FDE68A" },
-  warningText: { fontSize: 11, lineHeight: 16, color: "#92400E", fontWeight: "600" },
 
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
-  viewAllText: { color: "#DC2626", fontSize: 11, fontWeight: "800", marginTop: 2 },
+  radioInner: {
+    width: 9,
+    height: 9,
+    borderRadius: 9,
+    backgroundColor: "#7C3AED",
+  },
 
-  emptyTransactions: { alignItems: "center", justifyContent: "center", paddingVertical: 27, paddingHorizontal: 20 },
-  emptyIcon: { width: 54, height: 54, borderRadius: 17, backgroundColor: "#F8FAFC", alignItems: "center", justifyContent: "center", marginBottom: 10 },
-  emptyTitle: { fontSize: 12, fontWeight: "800", color: "#475569" },
-  emptyText: { fontSize: 10, lineHeight: 16, color: "#94A3B8", textAlign: "center", marginTop: 4 },
+  tierTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#64748B",
+  },
 
-  transactionList: { marginTop: 12 },
-  transactionRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
-  transactionIcon: { width: 39, height: 39, borderRadius: 12, alignItems: "center", justifyContent: "center", marginRight: 11 },
-  creditIcon: { backgroundColor: "#ECFDF5" },
-  debitIcon: { backgroundColor: "#FEF2F2" },
-  transactionDetails: { flex: 1, minWidth: 0 },
-  transactionLabel: { fontSize: 12, fontWeight: "800", color: "#0F172A" },
-  transactionDate: { fontSize: 9, color: "#94A3B8", marginTop: 3 },
-  transactionAmountContainer: { alignItems: "flex-end", marginLeft: 8 },
-  transactionAmount: { fontSize: 12, fontWeight: "900", color: "#DC2626" },
-  creditAmount: { color: "#059669" },
+  tierTitleActive: {
+    color: "#6D28D9",
+  },
+
+  tierAmount: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#0F172A",
+    marginTop: 4,
+  },
+
+  tierAmountActive: {
+    color: "#7C3AED",
+  },
+
+  tierDescription: {
+    fontSize: 9,
+    color: "#94A3B8",
+    marginTop: 3,
+  },
+
+  alertSetting: {
+    minHeight: 62,
+    marginTop: 12,
+    paddingHorizontal: 11,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  alertIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: "#F8FAFC",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+
+  alertTextContainer: {
+    flex: 1,
+  },
+
+  alertTitle: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  alertSubtitle: {
+    fontSize: 9,
+    color: "#94A3B8",
+    marginTop: 3,
+  },
+
+  toggle: {
+    width: 40,
+    height: 23,
+    borderRadius: 20,
+    backgroundColor: "#CBD5E1",
+    padding: 3,
+    justifyContent: "center",
+  },
+
+  toggleActive: {
+    backgroundColor: "#DC2626",
+  },
+
+  toggleThumb: {
+    width: 17,
+    height: 17,
+    borderRadius: 17,
+    backgroundColor: "#FFFFFF",
+  },
+
+  toggleThumbActive: {
+    alignSelf: "flex-end",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | TRANSACTIONS
+  |--------------------------------------------------------------------------
+  */
+
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+  },
+
+  viewAllText: {
+    color: "#DC2626",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+
+  emptyTransactions: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 27,
+    paddingHorizontal: 20,
+  },
+
+  emptyIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 17,
+    backgroundColor: "#F8FAFC",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+
+  emptyTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#475569",
+  },
+
+  emptyText: {
+    fontSize: 10,
+    lineHeight: 16,
+    color: "#94A3B8",
+    textAlign: "center",
+    marginTop: 4,
+  },
+
+  transactionList: {
+    marginTop: 12,
+  },
+
+  transactionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+  },
+
+  transactionIcon: {
+    width: 39,
+    height: 39,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+
+  creditIcon: {
+    backgroundColor: "#ECFDF5",
+  },
+
+  debitIcon: {
+    backgroundColor: "#FEF2F2",
+  },
+
+  transactionDetails: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  transactionLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  transactionDate: {
+    fontSize: 9,
+    color: "#94A3B8",
+    marginTop: 3,
+  },
+
+  transactionAmountContainer: {
+    alignItems: "flex-end",
+    marginLeft: 8,
+  },
+
+  transactionAmount: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#DC2626",
+  },
+
+  creditAmount: {
+    color: "#059669",
+  },
+
+  transactionStatus: {
+    fontSize: 8,
+    color: "#94A3B8",
+    marginTop: 2,
+    textTransform: "uppercase",
+    fontWeight: "700",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | PAYMENT METHOD
+  |--------------------------------------------------------------------------
+  */
+
+  secureBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#ECFDF5",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+
+  secureBadgeText: {
+    fontSize: 9,
+    color: "#047857",
+    fontWeight: "800",
+  },
+
+  paymentMethod: {
+    minHeight: 68,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 15,
+    paddingHorizontal: 12,
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  paymentIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#ECFDF5",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+
+  methodDetails: {
+    flex: 1,
+  },
+
+  methodLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  methodDetail: {
+    fontSize: 10,
+    color: "#64748B",
+    marginTop: 3,
+  },
+
+  defaultBadge: {
+    backgroundColor: "#F1F5F9",
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+
+  defaultBadgeText: {
+    fontSize: 8,
+    fontWeight: "900",
+    color: "#475569",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | INFORMATION CARD
+  |--------------------------------------------------------------------------
+  */
 
   infoCard: {
-    flexDirection: "row", backgroundColor: "#FEF2F2", borderWidth: 1, borderColor: "#FECACA",
-    borderRadius: 16, padding: 13, marginBottom: 15,
+    flexDirection: "row",
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 16,
+    padding: 13,
+    marginBottom: 15,
   },
-  infoIcon: { marginRight: 10, marginTop: 1 },
-  infoContent: { flex: 1 },
-  infoTitle: { fontSize: 11, fontWeight: "900", color: "#7F1D1D" },
-  infoText: { fontSize: 10, lineHeight: 16, color: "#475569", marginTop: 4 },
+
+  infoIcon: {
+    marginRight: 10,
+    marginTop: 1,
+  },
+
+  infoContent: {
+    flex: 1,
+  },
+
+  infoTitle: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#7F1D1D",
+  },
+
+  infoText: {
+    fontSize: 10,
+    lineHeight: 16,
+    color: "#475569",
+    marginTop: 4,
+  },
 });
