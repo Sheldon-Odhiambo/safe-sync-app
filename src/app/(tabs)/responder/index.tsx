@@ -59,9 +59,6 @@ const API = {
 
 const DISPATCH_POLL_MS = 10_000;
 
-// While on shift the position is re-sent this often, even if the phone hasn't
-// moved. The backend hides units whose last report is older than ~60 s, so a
-// parked ambulance would otherwise vanish from the client's map.
 const LOCATION_HEARTBEAT_MS = 10_000;
 
 const LOCATION_PURPOSE = "share your position with dispatch and show it on the map";

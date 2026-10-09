@@ -1,6 +1,7 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Location from "expo-location";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -14,120 +15,222 @@ import {
 } from "react-native";
 
 import { useEmergencyBar } from "../../components/emergency-bar-context";
+import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
+import {
+  ensureLocationAccess,
+  promptLocationSettings,
+} from "@/lib/location-access";
 
-const emergencyTypes = [
+type Coordinates = { latitude: number; longitude: number };
+
+type EmergencyOption = {
+  id: string;
+  label: string;
+  hint: string;
+  icon: "medical" | "fire" | "car";
+  // What the backend dispatches (emergency.emergency_types.code).
+  dispatchType: "ambulance" | "fire";
+};
+
+type CreatedEmergency = { id: string };
+
+const emergencyTypes: EmergencyOption[] = [
   {
     id: "medical",
     label: "Medical Emergency",
     hint: "Illness, injury or medical assistance",
     icon: "medical",
+    dispatchType: "ambulance",
   },
   {
     id: "fire",
     label: "Fire Emergency",
     hint: "Fire, smoke or burning building",
     icon: "fire",
+    dispatchType: "fire",
   },
   {
     id: "accident",
     label: "Road Accident",
     hint: "Vehicle crash or road incident",
     icon: "car",
-  },
-  {
-    id: "rescue",
-    label: "Rescue",
-    hint: "Person trapped or requiring rescue",
-    icon: "lifebuoy",
-  },
-  {
-    id: "other",
-    label: "Other Emergency",
-    hint: "Something else requiring urgent help",
-    icon: "alert-circle",
+    dispatchType: "ambulance",
   },
 ];
+
+function formatPlace(address: Location.LocationGeocodedAddress): string {
+  const parts = [
+    address.name ?? address.street,
+    address.district ?? address.subregion,
+    address.city ?? address.region,
+  ].filter((p): p is string => !!p && p.trim().length > 0);
+
+  return Array.from(new Set(parts)).join(", ");
+}
 
 export default function EmergencyRequest() {
   const router = useRouter();
   const { setConfig } = useEmergencyBar();
 
   const [selected, setSelected] = useState<string | null>(null);
-  const [locating, setLocating] = useState(false);
-  const [located, setLocated] = useState(false);
   const [notes, setNotes] = useState("");
 
-  const selectedType = emergencyTypes.find(
-    (item) => item.id === selected
-  );
+  const [coords, setCoords] = useState<Coordinates | null>(null);
+  const [accuracy, setAccuracy] = useState<number | null>(null);
+  const [address, setAddress] = useState<string | null>(null);
+  const [locating, setLocating] = useState(true);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const isOtherEmergency = selected === "other";
-  const notesMissing =
-    isOtherEmergency && notes.trim().length === 0;
+  const selectedType = emergencyTypes.find((item) => item.id === selected);
+  const located = coords !== null;
 
   // ---------------------------------------------------------
-  // Simulate GPS capture
+  // Real GPS capture
   // ---------------------------------------------------------
+
+  const captureLocation = useCallback(async () => {
+    setLocating(true);
+    setLocationError(null);
+
+    try {
+      const access = await ensureLocationAccess({
+        purpose: "send responders to your exact position",
+      });
+
+      if (!access.granted) {
+        setLocationError(access.message);
+        promptLocationSettings(access);
+        return;
+      }
+
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+      const here = {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      };
+
+      setCoords(here);
+      setAccuracy(position.coords.accuracy ?? null);
+
+      try {
+        const [place] = await Location.reverseGeocodeAsync(here);
+        setAddress(place ? formatPlace(place) || null : null);
+      } catch {
+        setAddress(null); // coordinates are shown instead
+      }
+    } catch (err) {
+      setLocationError(
+        err instanceof Error ? err.message : "Unable to determine your location."
+      );
+    } finally {
+      setLocating(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (!selected) {
-      setLocating(false);
-      setLocated(false);
-      return;
-    }
-
-    setLocating(true);
-    setLocated(false);
-
-    const timer = setTimeout(() => {
-      setLocating(false);
-      setLocated(true);
-    }, 1200);
-
-    return () => clearTimeout(timer);
-  }, [selected]);
+    captureLocation();
+  }, [captureLocation]);
 
   // ---------------------------------------------------------
   // Dispatch emergency
   // ---------------------------------------------------------
 
-  const handleDispatch = () => {
-    if (!located || !selectedType) {
-      return;
-    }
+  const openActiveEmergency = async (): Promise<boolean> => {
+    const active = await apiFetch<CreatedEmergency | null>(
+      "/api/v1/emergencies/active"
+    ).catch(() => null);
 
-    // "Other Emergency" has no predefined description, so the crew
-    // needs the notes field filled in before we can dispatch. The
-    // button itself stays pressable either way — we only block
-    // here and prompt the user to add details.
-    if (isOtherEmergency && notes.trim().length === 0) {
+    if (!active?.id) return false;
+
+    Alert.alert(
+      "Emergency already in progress",
+      "You already have an active emergency. Open it to follow the response.",
+      [
+        { text: "Close", style: "cancel" },
+        {
+          text: "Track it",
+          onPress: () =>
+            router.replace({
+              pathname: "/(tabs)/track",
+              params: { incidentId: active.id },
+            }),
+        },
+      ]
+    );
+    return true;
+  };
+
+  const sendEmergency = async () => {
+    if (!selectedType || !coords || submitting) return;
+
+    setSubmitting(true);
+
+    try {
+      // The client may have moved since the screen opened: take a fresh fix.
+      let here = coords;
+      let here_accuracy = accuracy;
+      try {
+        const fresh = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+        here = {
+          latitude: fresh.coords.latitude,
+          longitude: fresh.coords.longitude,
+        };
+        here_accuracy = fresh.coords.accuracy ?? here_accuracy;
+      } catch {
+        // fall back to the fix we already have
+      }
+
+      const extra = notes.trim();
+      const created = await apiFetch<CreatedEmergency>("/api/v1/emergencies", {
+        method: "POST",
+        body: JSON.stringify({
+          emergency_type: selectedType.dispatchType,
+          location: {
+            latitude: here.latitude,
+            longitude: here.longitude,
+            address,
+            accuracy: here_accuracy,
+          },
+          description: extra
+            ? `${selectedType.label} — ${extra}`
+            : selectedType.label,
+        }),
+      });
+
+      router.push({
+        pathname: "/(tabs)/track",
+        params: { incidentId: created.id },
+      });
+    } catch (err) {
+      if (await openActiveEmergency()) return;
+
       Alert.alert(
-        "A few more details needed",
-        "Since you selected 'Other Emergency', please describe what's happening in the notes field so the crew knows what to expect."
+        "Couldn't send emergency",
+        err instanceof Error ? err.message : "Please try again."
       );
-      return;
+    } finally {
+      setSubmitting(false);
     }
+  };
+
+  const handleDispatch = () => {
+    if (!located || !selectedType || submitting) return;
 
     Alert.alert(
       "Confirm Emergency",
       `You are about to request ${selectedType.label}. Your location will be shared with the emergency response team.`,
       [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
+        { text: "Cancel", style: "cancel" },
         {
           text: "Confirm & Dispatch",
           style: "destructive",
-          onPress: () => {
-            router.push({
-              pathname: "/(tabs)/track",
-              params: {
-                type: selectedType.label,
-                notes: notes,
-              },
-            });
-          },
+          onPress: sendEmergency,
         },
       ]
     );
@@ -137,149 +240,82 @@ export default function EmergencyRequest() {
     setConfig({
       label: locating
         ? "LOCATING YOU..."
+        : submitting
+        ? "SENDING..."
         : selectedType
         ? "CONFIRM EMERGENCY"
         : "SELECT AN EMERGENCY",
-      disabled: !located,
-      loading: locating,
+      disabled: !located || !selectedType || submitting,
+      loading: locating || submitting,
       onPress: handleDispatch,
     });
 
     return () => setConfig(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locating, located, selectedType, notes]);
+  }, [locating, located, selectedType, notes, coords, address, submitting]);
 
   // ---------------------------------------------------------
-  // Emergency icons
+  // Icons
   // ---------------------------------------------------------
 
-  const getIcon = (icon: string) => {
-    switch (icon) {
+  const getIcon = (item: EmergencyOption) => {
+    const color = selected === item.id ? "#FFFFFF" : "#DC2626";
+
+    switch (item.icon) {
       case "medical":
-        return (
-          <Ionicons
-            name="medical"
-            size={25}
-            color={
-              selected === "medical"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
-          />
-        );
-
+        return <Ionicons name="medical" size={25} color={color} />;
       case "fire":
-        return (
-          <MaterialCommunityIcons
-            name="fire"
-            size={27}
-            color={
-              selected === "fire"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
-          />
-        );
-
-      case "car":
-        return (
-          <Ionicons
-            name="car"
-            size={25}
-            color={
-              selected === "accident"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
-          />
-        );
-
-      case "lifebuoy":
-        return (
-          <Ionicons
-            name="help-buoy"
-            size={26}
-            color={
-              selected === "rescue"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
-          />
-        );
-
-      case "shield-alert":
-        return (
-          <MaterialCommunityIcons
-            name="shield-alert-outline"
-            size={27}
-            color={
-              selected === "security"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
-          />
-        );
-
+        return <MaterialCommunityIcons name="fire" size={27} color={color} />;
       default:
-        return (
-          <Ionicons
-            name="alert-circle-outline"
-            size={27}
-            color={
-              selected === "other"
-                ? "#FFFFFF"
-                : "#DC2626"
-            }
-          />
-        );
+        return <Ionicons name="car" size={25} color={color} />;
     }
   };
+
+  const locationTitle = locating
+    ? "Capturing your GPS location..."
+    : locationError
+    ? locationError
+    : address ??
+      (coords
+        ? `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`
+        : "Location unavailable");
+
+  const locationSubtitle = locating
+    ? "Please hold"
+    : locationError
+    ? "Tap retry to try again"
+    : accuracy != null
+    ? `Accuracy ${Math.round(accuracy)} m · captured just now`
+    : "Captured just now";
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-
         {/* HEADER */}
-
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backButton}
             activeOpacity={0.7}
             onPress={() => router.back()}
           >
-            <Ionicons
-              name="arrow-back"
-              size={22}
-              color="#0F172A"
-            />
+            <Ionicons name="arrow-back" size={22} color="#0F172A" />
           </TouchableOpacity>
 
           <View style={styles.headerTextContainer}>
-            <Text
-              style={styles.headerTitle}
-              numberOfLines={1}
-            >
+            <Text style={styles.headerTitle} numberOfLines={1}>
               What is the emergency?
             </Text>
-
-            <Text
-              style={styles.headerSubtitle}
-              numberOfLines={1}
-            >
+            <Text style={styles.headerSubtitle} numberOfLines={1}>
               Pick the closest match — you can add details next.
             </Text>
           </View>
         </View>
 
         {/* CONTENT */}
-
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
-
-          {/* EMERGENCY TYPES */}
-
           <View style={styles.emergencyList}>
             {emergencyTypes.map((item) => {
               const active = selected === item.id;
@@ -290,58 +326,36 @@ export default function EmergencyRequest() {
                   activeOpacity={0.85}
                   style={[
                     styles.emergencyOption,
-                    active &&
-                      styles.emergencyOptionActive,
+                    active && styles.emergencyOptionActive,
                   ]}
-                  onPress={() =>
-                    setSelected(item.id)
-                  }
+                  onPress={() => setSelected(item.id)}
                 >
-
-                  {/* ICON */}
-
                   <View
                     style={[
                       styles.emergencyIcon,
-                      active &&
-                        styles.emergencyIconActive,
+                      active && styles.emergencyIconActive,
                     ]}
                   >
-                    {getIcon(item.icon)}
+                    {getIcon(item)}
                   </View>
 
-                  {/* TEXT */}
-
-                  <View
-                    style={styles.emergencyTextContainer}
-                  >
+                  <View style={styles.emergencyTextContainer}>
                     <Text
                       style={[
                         styles.emergencyTitle,
-                        active &&
-                          styles.emergencyTitleActive,
+                        active && styles.emergencyTitleActive,
                       ]}
                     >
                       {item.label}
                     </Text>
-
-                    <Text
-                      style={styles.emergencyHint}
-                      numberOfLines={2}
-                    >
+                    <Text style={styles.emergencyHint} numberOfLines={2}>
                       {item.hint}
                     </Text>
                   </View>
 
-                  {/* CHECK */}
-
                   {active && (
                     <View style={styles.checkCircle}>
-                      <Ionicons
-                        name="checkmark"
-                        size={17}
-                        color="#DC2626"
-                      />
+                      <Ionicons name="checkmark" size={17} color="#DC2626" />
                     </View>
                   )}
                 </TouchableOpacity>
@@ -349,108 +363,66 @@ export default function EmergencyRequest() {
             })}
           </View>
 
-          {/* LOCATION + NOTES */}
-
           {selected && (
             <View style={styles.detailsCard}>
-
               {/* LOCATION */}
-
               <View style={styles.locationRow}>
                 <View style={styles.locationIcon}>
                   {locating ? (
-                    <ActivityIndicator
-                      size="small"
-                      color="#DC2626"
-                    />
+                    <ActivityIndicator size="small" color="#DC2626" />
                   ) : (
-                    <Ionicons
-                      name="location"
-                      size={21}
-                      color="#DC2626"
-                    />
+                    <Ionicons name="location" size={21} color="#DC2626" />
                   )}
                 </View>
 
-                <View
-                  style={styles.locationTextContainer}
-                >
-                  <Text
-                    style={styles.locationTitle}
-                    numberOfLines={1}
-                  >
-                    {locating
-                      ? "Capturing your GPS location..."
-                      : "Wood Avenue, Kilimani, Nairobi"}
+                <View style={styles.locationTextContainer}>
+                  <Text style={styles.locationTitle} numberOfLines={1}>
+                    {locationTitle}
                   </Text>
-
-                  <Text
-                    style={styles.locationSubtitle}
-                  >
-                    {locating
-                      ? "Please hold"
-                      : "Accuracy 6 m · captured just now"}
-                  </Text>
+                  <Text style={styles.locationSubtitle}>{locationSubtitle}</Text>
                 </View>
 
-                {located && (
+                {located && !locationError && !locating && (
                   <View style={styles.locatedBadge}>
-                    <Text style={styles.locatedText}>
-                      Located
-                    </Text>
+                    <Text style={styles.locatedText}>Located</Text>
                   </View>
+                )}
+
+                {!!locationError && !locating && (
+                  <TouchableOpacity
+                    style={styles.locatedBadge}
+                    onPress={captureLocation}
+                  >
+                    <Text style={styles.locatedText}>Retry</Text>
+                  </TouchableOpacity>
                 )}
               </View>
 
               {/* NOTES */}
-
               <TextInput
                 value={notes}
                 onChangeText={setNotes}
-                placeholder={
-                  isOtherEmergency
-                    ? "Please describe the emergency (required)"
-                    : "Optional notes for the crew (symptoms, number of people, access instructions)"
-                }
-                placeholderTextColor={
-                  notesMissing ? "#DC2626" : "#94A3B8"
-                }
+                placeholder="Optional notes for the crew (symptoms, number of people, access instructions)"
+                placeholderTextColor="#94A3B8"
                 multiline
                 maxLength={500}
                 textAlignVertical="top"
-                style={[
-                  styles.notesInput,
-                  notesMissing && styles.notesInputRequired,
-                ]}
+                style={styles.notesInput}
               />
 
               <View style={styles.characterCount}>
-                {isOtherEmergency && (
-                  <Text style={styles.requiredHint}>
-                    {notesMissing
-                      ? "Notes are required for 'Other Emergency'"
-                      : "Looks good"}
-                  </Text>
-                )}
-
-                <Text style={styles.characterCountText}>
-                  {notes.length}/500
-                </Text>
+                <Text style={styles.characterCountText}>{notes.length}/500</Text>
               </View>
 
               {/* WARNING */}
-
               <View style={styles.warningBox}>
                 <MaterialCommunityIcons
                   name="shield-alert-outline"
                   size={20}
                   color="#D97706"
                 />
-
                 <Text style={styles.warningText}>
-                  Confirming dispatches a real unit and
-                  notifies your emergency contacts with
-                  your live location.
+                  Confirming dispatches a real unit to your exact location.
                 </Text>
               </View>
             </View>
@@ -462,10 +434,6 @@ export default function EmergencyRequest() {
     </SafeAreaView>
   );
 }
-
-// =========================================================
-// STYLES
-// =========================================================
 
 const styles = StyleSheet.create({
   safeArea: {
