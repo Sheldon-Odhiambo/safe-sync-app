@@ -43,7 +43,6 @@ import {
   type LocationDeniedReason,
 } from "@/lib/location-access";
 
-
 const API = {
   me: "/api/v1/drivers/me",
   vehicles: "/api/v1/drivers/vehicles",
@@ -55,17 +54,20 @@ const API = {
   dispatch: "/api/v1/drivers/dispatch",
   dispatches: "/api/v1/drivers/dispatches",
   stats: "/api/v1/drivers/stats",
+  route: "/api/v1/drivers/dispatch/route",
 };
 
-const DISPATCH_POLL_MS = 10_000;
+const DISPATCH_POLL_MS = 4_000;
 
 const LOCATION_HEARTBEAT_MS = 10_000;
 
 const LOCATION_PURPOSE = "share your position with dispatch and show it on the map";
 
-/* ============================================================
-   TYPES
-   ============================================================ */
+type RouteInfo = {
+  distance_meters: number;
+  duration_seconds: number;
+  polyline: Coordinates[];
+};
 
 type Profile = {
   id: string;
@@ -118,6 +120,7 @@ type Dispatch = {
   notes: string | null;
   completed_steps: number;
   steps: DispatchStep[];
+  expires_at: string | null;
 };
 
 type Stats = {
@@ -191,19 +194,16 @@ export default function ResponderConsole() {
   const [locationReason, setLocationReason] =
     useState<LocationDeniedReason | null>(null);
   const [mapReady, setMapReady] = useState(false);
-
+  const [route, setRoute] = useState<RouteInfo | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const mapRef = useRef<MapView | null>(null);
   const currentLocationRef = useRef<Coordinates | null>(null);
   const dispatchRef = useRef<Dispatch | null>(null);
 
-  // Read from inside callbacks without making them re-create (which used to
-  // re-run the first-fix effect every time the map finished loading).
   const mapReadyRef = useRef(false);
   const reportBusyRef = useRef(false);
   const settingsPromptedRef = useRef(false);
 
-  // When location access had failed and is later fixed, bumping this restarts
-  // the live position watcher (which only starts when the shift goes online).
   const hadLocationFailureRef = useRef(false);
   const [watchNonce, setWatchNonce] = useState(0);
 
@@ -355,11 +355,11 @@ export default function ResponderConsole() {
     };
   }, [selectedVehicle, checklistReload]);
 
-  // Poll for new/updated dispatches while on shift.
-  useEffect(() => {
-    if (!online) return;
+  // (5) REPLACE the "Poll for new/updated dispatches while on shift" effect
+useEffect(() => {
+  if (!online) return;
 
-    const timer = setInterval(async () => {
+  const timer = setInterval(async () => {
       try {
         const next = await apiFetch<Dispatch | null>(API.dispatch);
         const previous = dispatchRef.current;
@@ -367,7 +367,12 @@ export default function ResponderConsole() {
         if (previous?.status === "pending" && next?.id !== previous.id) {
           Alert.alert(
             "Dispatch no longer available",
-            "This emergency expired or was taken by another responder."
+            "This emergency expired, was cancelled or was taken by another responder."
+          );
+        } else if (previous && previous.status !== "pending" && next === null) {
+          Alert.alert(
+            "Emergency cancelled",
+            "The client cancelled this emergency. You are available again."
           );
         }
 
@@ -615,14 +620,70 @@ export default function ResponderConsole() {
     };
   }, [dispatch?.id, dispatch?.address, dispatchLat, dispatchLng]);
 
-  // Fit the map when we first get a fix or the emergency changes —
-  // not on every live position update, so the responder can still pan.
   const hasFix = currentLocation !== null;
+
+  useEffect(() => {
+    if (!dispatch?.expires_at || accepted) {
+      setSecondsLeft(null);
+      return;
+    }
+
+    const expiresAt = new Date(dispatch.expires_at).getTime();
+    const tick = () =>
+      setSecondsLeft(Math.max(0, Math.round((expiresAt - Date.now()) / 1000)));
+
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [dispatch?.expires_at, accepted]);
+
+  // Directions from this unit to the requester.
+  useEffect(() => {
+    if (!online || !dispatch?.id) {
+      setRoute(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const next = await apiFetch<RouteInfo | null>(API.route);
+        if (!cancelled) setRoute(next && next.polyline?.length ? next : null);
+      } catch {
+        /* keep the previous line */
+      }
+    };
+
+    load();
+    const timer = setInterval(load, 15_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [online, dispatch?.id, hasFix]);
+
+  const hasRoute = route !== null;
+  const etaMinutes = route
+    ? Math.max(1, Math.round(route.duration_seconds / 60))
+    : dispatch?.eta_minutes ?? null;
+  const distanceKm = route
+    ? route.distance_meters / 1000
+    : dispatch?.distance_km ?? null;
 
   useEffect(() => {
     const here = currentLocationRef.current;
 
     if (!mapReady || !mapRef.current || !here) return;
+
+    if (route && route.polyline.length > 1) {
+      mapRef.current.fitToCoordinates(route.polyline, {
+        edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
+        animated: true,
+      });
+      return;
+    }
 
     if (emergencyLocation) {
       mapRef.current.fitToCoordinates([here, emergencyLocation], {
@@ -636,7 +697,7 @@ export default function ResponderConsole() {
       { ...here, latitudeDelta: 0.008, longitudeDelta: 0.008 },
       700
     );
-  }, [mapReady, hasFix, emergencyLocation]);
+  }, [mapReady, hasFix, emergencyLocation, hasRoute]);
 
   /* ============================================================
      CHECKLIST
@@ -1107,6 +1168,13 @@ export default function ResponderConsole() {
                     longitudeDelta: 0.01,
                   }}
                 >
+                  {route && (
+                    <Polyline
+                      coordinates={route.polyline}
+                      strokeColor="#2563EB"
+                      strokeWidth={5}
+                    />
+                  )}
                   <Marker
                     coordinate={currentLocation}
                     title="Your location"
@@ -1165,22 +1233,14 @@ export default function ResponderConsole() {
               )}
             </View>
 
-            {accepted && dispatch && (
+            {dispatch && (
               <View style={styles.mapStats}>
                 <MapStat
-                  value={
-                    dispatch.eta_minutes != null
-                      ? `${dispatch.eta_minutes} min`
-                      : "—"
-                  }
+                  value={etaMinutes != null ? `${etaMinutes} min` : "—"}
                   label="ETA"
                 />
                 <MapStat
-                  value={
-                    dispatch.distance_km != null
-                      ? `${dispatch.distance_km.toFixed(1)} km`
-                      : "—"
-                  }
+                  value={distanceKm != null ? `${distanceKm.toFixed(1)} km` : "—"}
                   label="Distance"
                 />
               </View>
@@ -1560,9 +1620,6 @@ export default function ResponderConsole() {
               </View>
             </View>
           )}
-
-          {/* VEHICLE INSPECTION */}
-
           <View style={styles.card}>
             <View style={styles.checklistHeader}>
               <View style={styles.checklistHeaderText}>

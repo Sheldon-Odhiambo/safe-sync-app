@@ -1,43 +1,84 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import * as Location from "expo-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Linking,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Share,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 
 // ============================================================
 // TYPES
 // ============================================================
 
-type TimelineItem = {
-  label: string;
-  detail: string;
+type Coordinates = { latitude: number; longitude: number };
+
+type PricingTier = {
+  from_km: number;
+  to_km: number;
+  km: number;
+  rate_per_km: number;
+  amount: number;
 };
 
-type Coordinates = {
+type Pricing = {
+  distance_km: number;
+  subtotal: number;
+  vat_rate: number;
+  vat_amount: number;
+  total: number;
+  currency: string;
+  breakdown: PricingTier[];
+};
+
+type Tracking = {
+  incident_id: string;
+  public_id: string;
+  status: string;
+  emergency_type: string;
+  emergency_type_name: string;
+  description: string | null;
+  address: string | null;
   latitude: number;
   longitude: number;
+  responder: {
+    name: string;
+    role: string | null;
+    phone: string | null;
+    vehicle_registration: string | null;
+    vehicle_type: string | null;
+    station: string | null;
+  } | null;
+  vehicle_location: {
+    latitude: number;
+    longitude: number;
+    recorded_at: string | null;
+  } | null;
+  eta_minutes: number | null;
+  distance_km: number | null;
+  eta_is_estimate: boolean;
+  pricing: Pricing | null;
+  can_cancel: boolean;
+};
+
+type RouteInfo = {
+  distance_meters: number;
+  duration_seconds: number;
+  polyline: Coordinates[];
 };
 
 // ============================================================
-// COLORS
+// CONSTANTS
 // ============================================================
 
 const COLORS = {
@@ -53,389 +94,373 @@ const COLORS = {
   success: "#16A34A",
   successLight: "#DCFCE7",
   dangerLight: "#FEF2F2",
+  route: "#2563EB",
 };
 
-// ============================================================
-// TRACKING TIMELINE
-// ============================================================
+const TRACK_POLL_MS = 4_000;
+const ROUTE_POLL_MS = 15_000;
+const ARRIVED_STATUSES = ["arrived", "on_scene", "completed"];
+const TERMINAL_STATUSES = ["completed", "cancelled", "escalated"];
 
-const trackingTimeline: TimelineItem[] = [
+const TIMELINE = [
   {
     label: "Emergency reported",
-    detail: "Your emergency request has been received.",
+    detail: "Your request was received and your exact location was shared.",
   },
   {
-    label: "Responder dispatched",
-    detail: "A responder has been assigned to your emergency.",
+    label: "Responder assigned",
+    detail: "A responder accepted your emergency and is on the way.",
   },
   {
-    label: "Responder en route",
-    detail: "The responder is travelling to your location.",
-  },
-  {
-    label: "Approaching location",
-    detail: "The responder is getting closer to you.",
+    label: "Responder approaching",
+    detail: "The responder is almost at your location.",
   },
   {
     label: "Responder arrived",
-    detail: "The responder has arrived at your location.",
+    detail: "The responder has reached your location.",
   },
 ];
 
-// The incident address — same one the responder console geocodes.
-const EMERGENCY_ADDRESS = "Wood Avenue, Kilimani, Nairobi, Kenya";
+// ============================================================
+// HELPERS
+// ============================================================
 
-// Dummy starting point for the responding unit (Nairobi Hospital
-// Station, Upper Hill — same unit shown in the metrics below).
-// Replace with the responder's live location from the backend once
-// that feed is wired up here.
-const RESPONDER_START: Coordinates = {
-  latitude: -1.2864,
-  longitude: 36.8172,
-};
+const errorMessage = (err: unknown, fallback: string) =>
+  err instanceof Error ? err.message : fallback;
 
-/* ============================================================
-   BACKEND HELPER
-   ------------------------------------------------------------
-   Every time we get a fresh GPS fix for this client we push
-   {latitude, longitude} to the backend. Wire this to the
-   realtime location channel served by the location-persistence
-   worker once this screen's WebSocket connection is available —
-   this REST call is a placeholder so the UI already has
-   somewhere to send coordinates.
-   ============================================================ */
+const formatMoney = (value: number, currency: string) =>
+  `${currency === "KES" ? "KSh" : currency} ${value.toLocaleString("en-KE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 
-async function reportLocationToBackend(coords: Coordinates) {
-  try {
-    await fetch("https://api.safesync.co.ke/v1/locations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        role: "client",
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        recorded_at: new Date().toISOString(),
-      }),
-    });
-  } catch {
-    // Non-fatal: the map already reflects the location locally.
-  }
-}
-
-function interpolateCoordinates(
-  start: Coordinates,
-  end: Coordinates,
-  fraction: number
-): Coordinates {
-  const clamped = Math.max(0, Math.min(1, fraction));
-
-  return {
-    latitude:
-      start.latitude + (end.latitude - start.latitude) * clamped,
-    longitude:
-      start.longitude + (end.longitude - start.longitude) * clamped,
-  };
-}
+const initials = (name: string) =>
+  name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
 
 // ============================================================
-// MAIN SCREEN
+// SCREEN
 // ============================================================
 
 export default function TrackScreen() {
   const router = useRouter();
   const mapRef = useRef<MapView | null>(null);
+  const userMovedMapRef = useRef(false);
 
-  // ----------------------------------------------------------
-  // GET EMERGENCY TYPE
-  // ----------------------------------------------------------
+  const params = useLocalSearchParams<{ incidentId?: string | string[] }>();
+  const incidentId =
+    typeof params.incidentId === "string"
+      ? params.incidentId
+      : params.incidentId?.[0] ?? null;
 
-  const params = useLocalSearchParams<{
-    type?: string | string[];
-  }>();
-
-  const emergencyType =
-    typeof params.type === "string" && params.type.trim().length > 0
-      ? params.type
-      : "Emergency";
-
-  // ----------------------------------------------------------
-  // STATE
-  // ----------------------------------------------------------
-
-  const [stage, setStage] = useState(0);
-  const [eta, setEta] = useState(5);
-
-  // ----------------------------------------------------------
-  // ARRIVAL STATUS
-  // ----------------------------------------------------------
-
-  const isArrived =
-    eta === 0 || stage === trackingTimeline.length - 1;
-
-  // ----------------------------------------------------------
-  // LOCATION STATE
-  // ----------------------------------------------------------
-
-  const [currentLocation, setCurrentLocation] =
-    useState<Coordinates | null>(null);
-  const [emergencyLocation, setEmergencyLocation] =
-    useState<Coordinates | null>(null);
-  const [locationLoading, setLocationLoading] = useState(true);
-  const [locationError, setLocationError] = useState<string | null>(
-    null
-  );
+  const [tracking, setTracking] = useState<Tracking | null>(null);
+  const [route, setRoute] = useState<RouteInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
-  const getCurrentLocation = useCallback(
-    async (showAlert = false) => {
-      try {
-        setLocationLoading(true);
-        setLocationError(null);
+  // ----------------------------------------------------------
+  // DERIVED
+  // ----------------------------------------------------------
 
-        const servicesEnabled =
-          await Location.hasServicesEnabledAsync();
+  const status = tracking?.status ?? "created";
+  const arrived = ARRIVED_STATUSES.includes(status);
+  const terminal = TERMINAL_STATUSES.includes(status);
+  const hasResponder = !!tracking?.responder;
+  const approaching =
+    hasResponder && !arrived && (tracking?.eta_minutes ?? 99) <= 2;
 
-        if (!servicesEnabled) {
-          throw new Error(
-            "Location services are disabled. Please enable GPS/location services on your device."
-          );
-        }
+  const stage = arrived ? 3 : approaching ? 2 : hasResponder ? 1 : 0;
 
-        const permission =
-          await Location.requestForegroundPermissionsAsync();
+  const incLat = tracking?.latitude ?? null;
+  const incLng = tracking?.longitude ?? null;
+  const vehLat = tracking?.vehicle_location?.latitude ?? null;
+  const vehLng = tracking?.vehicle_location?.longitude ?? null;
+  const isFire = tracking?.emergency_type === "fire";
+  const vehicleIcon = isFire ? "fire-truck" : "ambulance";
 
-        if (permission.status !== "granted") {
-          throw new Error(
-            "Location permission was denied. SafeSync needs your location to track the responder coming to you."
-          );
-        }
+  // ----------------------------------------------------------
+  // POLL TRACKING
+  // ----------------------------------------------------------
 
-        const position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
-
-        const coordinates: Coordinates = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        };
-
-        setCurrentLocation(coordinates);
-        reportLocationToBackend(coordinates);
-
-        if (showAlert) {
-          Alert.alert(
-            "Location updated",
-            "Your current location has been updated on the map."
-          );
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Unable to determine your current location.";
-
-        setLocationError(message);
-
-        if (showAlert) {
-          Alert.alert("Location unavailable", message);
-        }
-      } finally {
-        setLocationLoading(false);
-      }
-    },
-    []
-  );
-
-  const getEmergencyLocation = useCallback(async () => {
-    try {
-      const results = await Location.geocodeAsync(EMERGENCY_ADDRESS);
-
-      if (!results.length) {
-        return;
-      }
-
-      const result = results[0];
-
-      if (
-        typeof result.latitude !== "number" ||
-        typeof result.longitude !== "number"
-      ) {
-        return;
-      }
-
-      setEmergencyLocation({
-        latitude: result.latitude,
-        longitude: result.longitude,
-      });
-    } catch {
-      // Non-fatal — the client's own GPS fix still centers the map.
-    }
-  }, []);
-
-  // Fetch location automatically as soon as this screen opens.
   useEffect(() => {
-    getCurrentLocation();
-    getEmergencyLocation();
-  }, [getCurrentLocation, getEmergencyLocation]);
-
-  // Fit the map to show both the client and the incoming responder.
-  useEffect(() => {
-    if (!mapReady || !mapRef.current || !currentLocation) {
+    if (!incidentId) {
+      setLoading(false);
       return;
     }
 
-    const destination = emergencyLocation ?? currentLocation;
+    let cancelled = false;
+    let inFlight = false;
 
-    mapRef.current.fitToCoordinates(
-      [RESPONDER_START, destination],
-      {
-        edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
-        animated: true,
+    const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const data = await apiFetch<Tracking>(
+          `/api/v1/emergencies/${incidentId}/tracking`
+        );
+        if (cancelled) return;
+        setTracking(data);
+        setLoadError(null);
+      } catch (err) {
+        if (!cancelled) {
+          setLoadError(errorMessage(err, "Couldn't load your emergency."));
+        }
+      } finally {
+        inFlight = false;
+        if (!cancelled) setLoading(false);
       }
-    );
-  }, [mapReady, currentLocation, emergencyLocation]);
+    };
 
-  // Where the responder marker sits right now, interpolated between
-  // its starting point and the client, based on how far along the
-  // timeline we are. Swap this for the responder's real live
-  // coordinates from the backend once that feed exists.
-  const responderPosition = useMemo(() => {
-    const destination = emergencyLocation ?? currentLocation;
+    load();
 
-    if (!destination) {
-      return null;
+    if (terminal) {
+      return () => {
+        cancelled = true;
+      };
     }
 
-    const totalSteps = trackingTimeline.length - 1;
-    const fraction = totalSteps > 0 ? stage / totalSteps : 0;
-
-    return interpolateCoordinates(
-      RESPONDER_START,
-      destination,
-      fraction
-    );
-  }, [emergencyLocation, currentLocation, stage]);
+    const timer = setInterval(load, TRACK_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [incidentId, terminal, reloadKey]);
 
   // ----------------------------------------------------------
-  // SIMULATE RESPONDER PROGRESS
+  // POLL ROUTE (vehicle -> you) while the responder is coming
   // ----------------------------------------------------------
 
   useEffect(() => {
-    const totalSteps = trackingTimeline.length - 1;
+    if (!incidentId || !hasResponder || arrived || terminal) {
+      setRoute(null);
+      return;
+    }
 
-    const interval = setInterval(() => {
-      setStage((currentStage) => {
-        if (currentStage >= totalSteps) {
-          return currentStage;
+    let cancelled = false;
+    let inFlight = false;
+
+    const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const data = await apiFetch<RouteInfo | null>(
+          `/api/v1/emergencies/${incidentId}/route`
+        );
+        if (!cancelled) {
+          setRoute(data && data.polyline?.length ? data : null);
         }
+      } catch {
+        // keep the previous line; the next poll retries
+      } finally {
+        inFlight = false;
+      }
+    };
 
-        return currentStage + 1;
-      });
-
-      setEta((currentEta) => {
-        return Math.max(currentEta - 1, 0);
-      });
-    }, 6000);
+    load();
+    const timer = setInterval(load, ROUTE_POLL_MS);
 
     return () => {
-      clearInterval(interval);
+      cancelled = true;
+      clearInterval(timer);
     };
-  }, []);
+  }, [incidentId, hasResponder, arrived, terminal]);
 
-  // ==========================================================
-  // CALL RESPONDER
-  // ==========================================================
+  // ----------------------------------------------------------
+  // MAP: follow the vehicle as it approaches
+  // ----------------------------------------------------------
 
-  const handleCall = async () => {
-    try {
-      await Linking.openURL("tel:+254700000000");
-    } catch {
-      Alert.alert(
-        "Unable to call",
-        "Your device could not open the phone application."
+  const fitMap = useCallback(() => {
+    if (!mapReady || !mapRef.current || incLat == null || incLng == null) {
+      return;
+    }
+
+    const incident = { latitude: incLat, longitude: incLng };
+
+    if (vehLat != null && vehLng != null && !arrived) {
+      mapRef.current.fitToCoordinates(
+        [{ latitude: vehLat, longitude: vehLng }, incident],
+        {
+          edgePadding: { top: 70, right: 70, bottom: 70, left: 70 },
+          animated: true,
+        }
       );
+      return;
+    }
+
+    mapRef.current.animateToRegion(
+      { ...incident, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+      600
+    );
+  }, [mapReady, incLat, incLng, vehLat, vehLng, arrived]);
+
+  useEffect(() => {
+    if (!userMovedMapRef.current) fitMap();
+  }, [fitMap]);
+
+  // ----------------------------------------------------------
+  // ACTIONS
+  // ----------------------------------------------------------
+
+  const callResponder = async () => {
+    const phone = tracking?.responder?.phone;
+    if (!phone) return;
+    try {
+      await Linking.openURL(`tel:${phone}`);
+    } catch {
+      Alert.alert("Unable to call", "Your device could not open the phone app.");
     }
   };
 
-  // ==========================================================
-  // MESSAGE RESPONDER
-  // ==========================================================
-
-  const handleMessage = async () => {
+  const messageResponder = async () => {
+    const phone = tracking?.responder?.phone;
+    if (!phone) return;
     try {
-      await Linking.openURL("sms:+254700000000");
+      await Linking.openURL(`sms:${phone}`);
     } catch {
-      Alert.alert(
-        "Unable to message",
-        "Your device could not open the messaging application."
-      );
+      Alert.alert("Unable to message", "Your device could not open messaging.");
     }
   };
 
-  // ==========================================================
-  // SHARE LIVE LOCATION
-  // ==========================================================
-
-  const handleShareLocation = async () => {
+  const shareStatus = async () => {
+    if (!tracking) return;
     try {
+      const where =
+        `https://www.google.com/maps/search/?api=1&query=` +
+        `${tracking.latitude},${tracking.longitude}`;
+      const eta =
+        tracking.responder && tracking.eta_minutes != null && !arrived
+          ? `Responder ETA: ${tracking.eta_minutes} min\n`
+          : "";
       await Share.share({
         message:
-          `I am currently being assisted through SafeSync.\n\n` +
-          `Emergency: ${emergencyType}\n` +
-          `Incident: INC-10502\n` +
-          `My emergency response is being tracked live.`,
+          `I am being assisted through SafeSync.\n\n` +
+          `Emergency: ${tracking.emergency_type_name}\n` +
+          `Incident: ${tracking.public_id}\n` +
+          eta +
+          `Location: ${where}`,
       });
     } catch {
-      // User cancelled sharing.
+      // user cancelled sharing
     }
   };
-
-  // ==========================================================
-  // NOTIFY EMERGENCY CONTACTS
-  // ==========================================================
-
-  const handleNotifyContacts = () => {
-    Alert.alert(
-      "Emergency Contacts",
-      "Your emergency contacts have been notified with your emergency status and location."
-    );
-  };
-
-  // ==========================================================
-  // CANCEL EMERGENCY
-  // ==========================================================
 
   const handleCancel = () => {
     Alert.alert(
       "Cancel Emergency",
       "Are you sure you want to cancel this emergency request?",
       [
-        {
-          text: "Keep Request",
-          style: "cancel",
-        },
+        { text: "Keep Request", style: "cancel" },
         {
           text: "Cancel Request",
           style: "destructive",
-          onPress: () => {
-            router.replace("/home");
+          onPress: async () => {
+            setCancelling(true);
+            try {
+              await apiFetch<unknown>(
+                `/api/v1/emergencies/${incidentId}/cancel`,
+                { method: "POST", body: JSON.stringify({}) }
+              );
+              router.replace("/home");
+            } catch (err) {
+              Alert.alert(
+                "Couldn't cancel",
+                errorMessage(err, "Please try again.")
+              );
+            } finally {
+              setCancelling(false);
+            }
           },
         },
       ]
     );
   };
 
-  // ==========================================================
-  // RETURN TO HOME
-  // ==========================================================
+  const handleBackToHome = () => router.replace("/home");
 
-  const handleBackToHome = () => {
-    router.replace("/home");
+  const handleRetry = () => {
+    setLoading(true);
+    setLoadError(null);
+    setReloadKey((k) => k + 1);
   };
 
-  // ==========================================================
+  // ----------------------------------------------------------
+  // LOADING / ERROR
+  // ----------------------------------------------------------
+
+  if (!incidentId) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centerState}>
+          <Ionicons name="alert-circle-outline" size={34} color={COLORS.primary} />
+          <Text style={styles.centerTitle}>No emergency to track</Text>
+          <Pressable style={styles.locationRetryButton} onPress={handleBackToHome}>
+            <Text style={styles.locationRetryText}>Back to home</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!tracking) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centerState}>
+          {loading ? (
+            <>
+              <ActivityIndicator size="large" color={COLORS.primary} />
+              <Text style={styles.centerText}>Loading your emergency…</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="alert-circle-outline" size={34} color={COLORS.primary} />
+              <Text style={styles.centerTitle}>Couldn't load your emergency</Text>
+              <Text style={styles.centerText}>{loadError}</Text>
+              <Pressable style={styles.locationRetryButton} onPress={handleRetry}>
+                <Ionicons name="refresh" size={17} color={COLORS.white} />
+                <Text style={styles.locationRetryText}>Try again</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const responder = tracking.responder;
+  const pricing = tracking.pricing;
+  const escalated = status === "escalated";
+  const cancelled = status === "cancelled";
+
+  const mapStatusText = arrived
+    ? "Responder arrived"
+    : hasResponder
+    ? "Responder on the way"
+    : escalated
+    ? "No responder available"
+    : cancelled
+    ? "Request cancelled"
+    : "Finding the nearest responder…";
+
+  const subtitle = escalated
+    ? "no responder available"
+    : cancelled
+    ? "cancelled"
+    : arrived
+    ? "response complete"
+    : hasResponder
+    ? "live tracking"
+    : "finding a responder";
+
+  // ----------------------------------------------------------
   // RENDER
-  // ==========================================================
+  // ----------------------------------------------------------
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -444,394 +469,305 @@ export default function TrackScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* ==================================================
-            HEADER / STATUS
-        ================================================== */}
-
+        {/* STATUS */}
         <View style={styles.statusCard}>
-          {/* Ambulance Icon */}
           <View style={styles.ambulanceCircle}>
             <MaterialCommunityIcons
-              name="ambulance"
+              name={vehicleIcon}
               size={23}
               color={COLORS.white}
             />
           </View>
 
-          {/* Status Information */}
           <View style={styles.statusInformation}>
-            <Text
-              style={styles.statusTitle}
-              numberOfLines={1}
-            >
-              {emergencyType}
+            <Text style={styles.statusTitle} numberOfLines={1}>
+              {tracking.emergency_type_name}
             </Text>
-
-            <Text
-              style={styles.statusSubtitle}
-              numberOfLines={1}
-            >
-              Incident INC-10502 ·{" "}
-              {isArrived
-                ? "response complete"
-                : "live tracking"}
+            <Text style={styles.statusSubtitle} numberOfLines={1}>
+              Incident {tracking.public_id} · {subtitle}
             </Text>
           </View>
 
-          {/* LIVE Badge */}
-          <View
-            style={[
-              styles.liveBadge,
-              isArrived && styles.arrivedBadge,
-            ]}
-          >
-            <View
-              style={[
-                styles.liveDot,
-                isArrived && styles.arrivedDot,
-              ]}
-            />
-
+          <View style={[styles.liveBadge, (arrived || terminal) && styles.arrivedBadge]}>
+            <View style={[styles.liveDot, (arrived || terminal) && styles.arrivedDot]} />
             <Text style={styles.liveBadgeText}>
-              {isArrived ? "ARRIVED" : "LIVE"}
+              {arrived ? "ARRIVED" : terminal ? "ENDED" : "LIVE"}
             </Text>
           </View>
         </View>
 
-        {/* ==================================================
-            MAP
-        ================================================== */}
-
+        {/* MAP */}
         <View style={styles.mapContainer}>
-          {locationLoading && !currentLocation ? (
-            <View style={styles.mapLoading}>
-              <ActivityIndicator size="large" color={COLORS.primary} />
-
-              <Text style={styles.mapLoadingText}>
-                Getting your location...
-              </Text>
-            </View>
-          ) : locationError && !currentLocation ? (
-            <View style={styles.mapError}>
-              <Ionicons
-                name="location-outline"
-                size={32}
-                color={COLORS.primary}
+          <MapView
+            ref={mapRef}
+            provider={PROVIDER_GOOGLE}
+            style={styles.map}
+            onMapReady={() => setMapReady(true)}
+            onPanDrag={() => {
+              userMovedMapRef.current = true;
+            }}
+            showsUserLocation={false}
+            showsMyLocationButton={false}
+            showsCompass
+            mapType="standard"
+            initialRegion={{
+              latitude: tracking.latitude,
+              longitude: tracking.longitude,
+              latitudeDelta: 0.03,
+              longitudeDelta: 0.03,
+            }}
+          >
+            {route && !arrived && (
+              <Polyline
+                coordinates={route.polyline}
+                strokeColor={COLORS.route}
+                strokeWidth={5}
               />
+            )}
 
-              <Text style={styles.mapErrorTitle}>
-                Location unavailable
-              </Text>
-
-              <Text style={styles.mapErrorText}>{locationError}</Text>
-
-              <Pressable
-                style={styles.locationRetryButton}
-                onPress={() => getCurrentLocation(true)}
-              >
-                <Ionicons name="refresh" size={17} color={COLORS.white} />
-
-                <Text style={styles.locationRetryText}>Try again</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <MapView
-              ref={mapRef}
-              provider={PROVIDER_GOOGLE}
-              style={styles.map}
-              onMapReady={() => setMapReady(true)}
-              showsUserLocation={false}
-              showsMyLocationButton={false}
-              showsCompass
-              mapType="standard"
-              initialRegion={{
-                latitude: currentLocation?.latitude ?? -1.2921,
-                longitude: currentLocation?.longitude ?? 36.8219,
-                latitudeDelta: 0.03,
-                longitudeDelta: 0.03,
-              }}
+            {/* YOUR LOCATION (where the responder is heading) */}
+            <Marker
+              coordinate={{ latitude: tracking.latitude, longitude: tracking.longitude }}
+              title="Your location"
+              description={tracking.address ?? undefined}
+              anchor={{ x: 0.5, y: 0.5 }}
             >
-              {/* CLIENT (YOUR) LOCATION */}
-              {currentLocation && (
-                <Marker
-                  coordinate={currentLocation}
-                  title="Your location"
-                  anchor={{ x: 0.5, y: 0.5 }}
-                >
-                  <View style={styles.clientMarkerWrap}>
-                    <View style={styles.clientPulse} />
+              <View style={styles.clientMarkerWrap}>
+                <View style={styles.clientPulse} />
+                <View style={styles.clientOuter}>
+                  <View style={styles.clientInner} />
+                </View>
+              </View>
+            </Marker>
 
-                    <View style={styles.clientOuter}>
-                      <View style={styles.clientInner} />
-                    </View>
-                  </View>
-                </Marker>
-              )}
-
-              {/* RESPONDER — moves towards you as the timeline advances */}
-              {!isArrived && responderPosition && (
-                <Marker
-                  coordinate={responderPosition}
-                  title="Responder"
-                  description="A. Mwangi · Unit KDA 241X"
-                  anchor={{ x: 0.5, y: 0.5 }}
-                >
-                  <View style={styles.responderMarkerWrap}>
-                    <View style={styles.vehiclePulse} />
-
-                    <View style={styles.vehicleCircle}>
-                      <MaterialCommunityIcons
-                        name="ambulance"
-                        size={18}
-                        color={COLORS.white}
-                      />
-                    </View>
-                  </View>
-                </Marker>
-              )}
-
-              {/* INCIDENT LOCATION */}
-              {emergencyLocation && (
-                <Marker
-                  coordinate={emergencyLocation}
-                  title="Incident location"
-                  description={EMERGENCY_ADDRESS}
-                >
-                  <View style={styles.destinationMarker}>
-                    <Ionicons
-                      name="location"
+            {/* RESPONDING VEHICLE (live) */}
+            {vehLat != null && vehLng != null && !arrived && responder && (
+              <Marker
+                coordinate={{ latitude: vehLat, longitude: vehLng }}
+                title={responder.name}
+                description={responder.vehicle_registration ?? undefined}
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <View style={styles.responderMarkerWrap}>
+                  <View style={styles.vehiclePulse} />
+                  <View style={styles.vehicleCircle}>
+                    <MaterialCommunityIcons
+                      name={vehicleIcon}
                       size={18}
                       color={COLORS.white}
                     />
                   </View>
-                </Marker>
-              )}
-            </MapView>
-          )}
+                </View>
+              </Marker>
+            )}
+          </MapView>
 
-          {/* Map status */}
           <View style={styles.mapStatus}>
-            <Ionicons
-              name="navigate"
-              size={14}
-              color={COLORS.primary}
-            />
-
-            <Text style={styles.mapStatusText}>
-              {isArrived
-                ? "Responder arrived"
-                : "Responder tracking live"}
-            </Text>
+            <Ionicons name="navigate" size={14} color={COLORS.primary} />
+            <Text style={styles.mapStatusText}>{mapStatusText}</Text>
           </View>
 
-          {/* Recenter on my location */}
-          {currentLocation && (
-            <Pressable
-              style={styles.myLocationButton}
-              onPress={() => getCurrentLocation(true)}
-            >
-              {locationLoading ? (
-                <ActivityIndicator size="small" color={COLORS.text} />
-              ) : (
-                <Ionicons name="locate" size={20} color={COLORS.text} />
-              )}
-            </Pressable>
+          <Pressable
+            style={styles.myLocationButton}
+            onPress={() => {
+              userMovedMapRef.current = false;
+              fitMap();
+            }}
+          >
+            <Ionicons name="locate" size={20} color={COLORS.text} />
+          </Pressable>
+        </View>
+
+        {/* PRICE */}
+        <View style={styles.priceCard}>
+          <View style={styles.priceHeader}>
+            <View style={styles.actionIcon}>
+              <Ionicons name="cash-outline" size={19} color={COLORS.primary} />
+            </View>
+            <Text style={styles.priceTitle}>Response fare</Text>
+          </View>
+
+          {pricing ? (
+            <>
+              <Text style={styles.priceTotal}>
+                {formatMoney(pricing.total, pricing.currency)}
+              </Text>
+              <Text style={styles.priceNote}>
+                {pricing.distance_km.toFixed(2)} km route · includes{" "}
+                {Math.round(pricing.vat_rate * 100)}% VAT
+              </Text>
+
+              <View style={styles.priceDivider} />
+
+              {pricing.breakdown.map((tier, index) => (
+                <View key={index} style={styles.priceRow}>
+                  <Text style={styles.priceRowLabel}>
+                    {tier.km.toFixed(2)} km × {formatMoney(tier.rate_per_km, pricing.currency)}
+                  </Text>
+                  <Text style={styles.priceRowValue}>
+                    {formatMoney(tier.amount, pricing.currency)}
+                  </Text>
+                </View>
+              ))}
+
+              <View style={styles.priceRow}>
+                <Text style={styles.priceRowLabel}>Subtotal</Text>
+                <Text style={styles.priceRowValue}>
+                  {formatMoney(pricing.subtotal, pricing.currency)}
+                </Text>
+              </View>
+              <View style={styles.priceRow}>
+                <Text style={styles.priceRowLabel}>VAT</Text>
+                <Text style={styles.priceRowValue}>
+                  {formatMoney(pricing.vat_amount, pricing.currency)}
+                </Text>
+              </View>
+            </>
+          ) : (
+            <View style={styles.priceLoading}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={styles.priceNote}>Calculating your fare…</Text>
+            </View>
           )}
         </View>
 
-        {/* ==================================================
-            ETA / DETAILS CARD
-        ================================================== */}
-
+        {/* DETAILS */}
         <View style={styles.detailsCard}>
-          {/* Metrics */}
-
-          <View style={styles.metricsRow}>
-            <Metric
-              label="ETA"
-              value={
-                isArrived
-                  ? "Arrived"
-                  : `${eta} min`
-              }
-              emphasis
-            />
-
-            <Metric
-              label="Distance"
-              value={
-                isArrived
-                  ? "0.0 km"
-                  : `${(eta * 0.3).toFixed(1)} km`
-              }
-            />
-
-            <Metric
-              label="Unit"
-              value="KDA 241X"
-            />
-          </View>
-
-          {/* ==================================================
-              RESPONDER CARD
-          ================================================== */}
-
-          <View style={styles.responderCard}>
-            {/* Avatar */}
-
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                AM
+          {escalated && (
+            <View style={styles.noticeCard}>
+              <Ionicons name="alert-circle" size={22} color={COLORS.primary} />
+              <Text style={styles.noticeText}>
+                No responder could be reached for this emergency. If it is life
+                threatening, call your local emergency number now.
               </Text>
             </View>
+          )}
 
-            {/* Information */}
-
-            <View style={styles.responderInfo}>
-              <Text
-                style={styles.responderName}
-                numberOfLines={1}
-              >
-                A. Mwangi · Paramedic
+          {!responder && !terminal && (
+            <View style={styles.searchingCard}>
+              <ActivityIndicator size="small" color={COLORS.primary} />
+              <Text style={styles.searchingText}>
+                Contacting the nearest available responders…
               </Text>
+            </View>
+          )}
 
-              <Text
-                style={styles.responderStation}
-                numberOfLines={2}
-              >
-                Nairobi Hospital Station,
-                Upper Hill
-              </Text>
-
-              <View style={styles.verifiedRow}>
-                <View style={styles.verifiedDot} />
-
-                <Text style={styles.verifiedText}>
-                  Verified responder
-                </Text>
+          {responder && (
+            <>
+              <View style={styles.metricsRow}>
+                <Metric
+                  label="ETA"
+                  value={
+                    arrived
+                      ? "Arrived"
+                      : tracking.eta_minutes != null
+                      ? `${tracking.eta_is_estimate ? "~" : ""}${tracking.eta_minutes} min`
+                      : "—"
+                  }
+                  emphasis
+                />
+                <Metric
+                  label="Distance"
+                  value={
+                    tracking.distance_km != null
+                      ? `${tracking.distance_km.toFixed(1)} km`
+                      : "—"
+                  }
+                />
+                <Metric label="Unit" value={responder.vehicle_registration ?? "—"} />
               </View>
-            </View>
 
-            {/* Contact Buttons */}
+              <View style={styles.responderCard}>
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>{initials(responder.name)}</Text>
+                </View>
 
-            <View style={styles.contactButtons}>
-              <Pressable
-                style={styles.callButton}
-                onPress={handleCall}
-              >
-                <Ionicons
-                  name="call"
-                  size={18}
-                  color={COLORS.white}
-                />
-              </Pressable>
+                <View style={styles.responderInfo}>
+                  <Text style={styles.responderName} numberOfLines={1}>
+                    {responder.name}
+                    {responder.role ? ` · ${responder.role}` : ""}
+                  </Text>
 
-              <Pressable
-                style={styles.messageButton}
-                onPress={handleMessage}
-              >
-                <Ionicons
-                  name="chatbubble-outline"
-                  size={18}
-                  color={COLORS.primary}
-                />
-              </Pressable>
-            </View>
-          </View>
+                  {!!responder.station && (
+                    <Text style={styles.responderStation} numberOfLines={2}>
+                      {responder.station}
+                    </Text>
+                  )}
 
-          {/* ==================================================
-              EMERGENCY INFORMATION
-          ================================================== */}
+                  <View style={styles.verifiedRow}>
+                    <View style={styles.verifiedDot} />
+                    <Text style={styles.verifiedText}>Verified responder</Text>
+                  </View>
+                </View>
 
+                {!!responder.phone && (
+                  <View style={styles.contactButtons}>
+                    <Pressable style={styles.callButton} onPress={callResponder}>
+                      <Ionicons name="call" size={18} color={COLORS.white} />
+                    </Pressable>
+                    <Pressable style={styles.messageButton} onPress={messageResponder}>
+                      <Ionicons name="chatbubble-outline" size={18} color={COLORS.primary} />
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            </>
+          )}
+
+          {/* INFO */}
           <View style={styles.emergencyInfo}>
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>
-                Emergency
-              </Text>
-
-              <Text style={styles.infoValue}>
-                {emergencyType}
-              </Text>
+              <Text style={styles.infoLabel}>Emergency</Text>
+              <Text style={styles.infoValue}>{tracking.emergency_type_name}</Text>
             </View>
 
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>
-                Incident ID
-              </Text>
-
-              <Text style={styles.infoValue}>
-                INC-10502
-              </Text>
+              <Text style={styles.infoLabel}>Incident ID</Text>
+              <Text style={styles.infoValue}>{tracking.public_id}</Text>
             </View>
 
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>
-                Location
-              </Text>
-
-              <Text
-                style={[
-                  styles.infoValue,
-                  styles.locationValue,
-                ]}
-                numberOfLines={1}
-              >
-                Wood Avenue, Kilimani
+              <Text style={styles.infoLabel}>Location</Text>
+              <Text style={[styles.infoValue, styles.locationValue]} numberOfLines={1}>
+                {tracking.address ??
+                  `${tracking.latitude.toFixed(5)}, ${tracking.longitude.toFixed(5)}`}
               </Text>
             </View>
+
+            {!!tracking.description && (
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Details</Text>
+                <Text style={styles.infoValue} numberOfLines={2}>
+                  {tracking.description}
+                </Text>
+              </View>
+            )}
           </View>
 
-          {/* ==================================================
-              TIMELINE
-          ================================================== */}
+          {/* TIMELINE */}
+          {!escalated && !cancelled && (
+            <View style={styles.timeline}>
+              <Text style={styles.timelineHeading}>Response Progress</Text>
 
-          <View style={styles.timeline}>
-            <Text style={styles.timelineHeading}>
-              Response Progress
-            </Text>
-
-            {trackingTimeline.map(
-              (item, index) => {
+              {TIMELINE.map((item, index) => {
                 const done = index <= stage;
-
-                const current =
-                  index === stage && !isArrived;
-
-                const isLast =
-                  index ===
-                  trackingTimeline.length - 1;
+                const current = index === stage && !arrived;
+                const isLast = index === TIMELINE.length - 1;
 
                 return (
-                  <View
-                    key={item.label}
-                    style={styles.timelineItem}
-                  >
-                    {/* Timeline left */}
-
-                    <View
-                      style={styles.timelineLeft}
-                    >
+                  <View key={item.label} style={styles.timelineItem}>
+                    <View style={styles.timelineLeft}>
                       <View
                         style={[
                           styles.timelineCircle,
-                          done &&
-                            styles.timelineCircleDone,
-                          current &&
-                            styles.timelineCircleCurrent,
+                          done && styles.timelineCircleDone,
+                          current && styles.timelineCircleCurrent,
                         ]}
                       >
                         {done ? (
-                          <Ionicons
-                            name="checkmark"
-                            size={14}
-                            color={COLORS.white}
-                          />
+                          <Ionicons name="checkmark" size={14} color={COLORS.white} />
                         ) : (
-                          <View
-                            style={
-                              styles.emptyDot
-                            }
-                          />
+                          <View style={styles.emptyDot} />
                         )}
                       </View>
 
@@ -839,160 +775,78 @@ export default function TrackScreen() {
                         <View
                           style={[
                             styles.timelineLine,
-                            index < stage &&
-                              styles.timelineLineDone,
+                            index < stage && styles.timelineLineDone,
                           ]}
                         />
                       )}
                     </View>
 
-                    {/* Timeline content */}
-
-                    <View
-                      style={styles.timelineContent}
-                    >
-                      <View
-                        style={
-                          styles.timelineTitleRow
-                        }
-                      >
+                    <View style={styles.timelineContent}>
+                      <View style={styles.timelineTitleRow}>
                         <Text
                           style={[
                             styles.timelineTitle,
-                            !done &&
-                              styles.timelineTitleInactive,
+                            !done && styles.timelineTitleInactive,
                           ]}
                         >
                           {item.label}
                         </Text>
 
                         {current && (
-                          <View
-                            style={
-                              styles.currentBadge
-                            }
-                          >
-                            <Text
-                              style={
-                                styles.currentBadgeText
-                              }
-                            >
-                              CURRENT
-                            </Text>
+                          <View style={styles.currentBadge}>
+                            <Text style={styles.currentBadgeText}>CURRENT</Text>
                           </View>
                         )}
                       </View>
 
-                      <Text
-                        style={
-                          styles.timelineDetail
-                        }
-                      >
-                        {item.detail}
-                      </Text>
+                      <Text style={styles.timelineDetail}>{item.detail}</Text>
                     </View>
                   </View>
                 );
-              }
-            )}
-          </View>
+              })}
+            </View>
+          )}
 
-          {/* ==================================================
-              SHARE LOCATION
-          ================================================== */}
-
-          <Pressable
-            style={styles.actionButton}
-            onPress={handleShareLocation}
-          >
+          {/* SHARE */}
+          <Pressable style={styles.actionButton} onPress={shareStatus}>
             <View style={styles.actionIcon}>
-              <Ionicons
-                name="share-social-outline"
-                size={19}
-                color={COLORS.primary}
-              />
+              <Ionicons name="share-social-outline" size={19} color={COLORS.primary} />
             </View>
 
             <View style={styles.actionInfo}>
-              <Text style={styles.actionTitle}>
-                Share Live Location
-              </Text>
-
+              <Text style={styles.actionTitle}>Share Emergency Status</Text>
               <Text style={styles.actionSubtitle}>
-                Send your emergency tracking
-                status to someone
-              </Text>
-            </View>
-          </Pressable>
-
-          {/* ==================================================
-              NOTIFY CONTACTS
-          ================================================== */}
-
-          <Pressable
-            style={styles.actionButton}
-            onPress={handleNotifyContacts}
-          >
-            <View style={styles.actionIcon}>
-              <Ionicons
-                name="people-outline"
-                size={19}
-                color={COLORS.primary}
-              />
-            </View>
-
-            <View style={styles.actionInfo}>
-              <Text style={styles.actionTitle}>
-                Notify Emergency Contacts
-              </Text>
-
-              <Text style={styles.actionSubtitle}>
-                Send your current emergency
-                status to your contacts
+                Send the incident details and your location to someone
               </Text>
             </View>
           </Pressable>
         </View>
 
-        {/* ==================================================
-            ARRIVED / CANCEL
-        ================================================== */}
-
-        {isArrived ? (
-          <Pressable
-            style={styles.dashboardButton}
-            onPress={handleBackToHome}
-          >
-            <Text
-              style={styles.dashboardButtonText}
-            >
-              RETURN TO HOME
-            </Text>
+        {/* FOOTER ACTION */}
+        {terminal || arrived ? (
+          <Pressable style={styles.dashboardButton} onPress={handleBackToHome}>
+            <Text style={styles.dashboardButtonText}>RETURN TO HOME</Text>
           </Pressable>
-        ) : (
+        ) : tracking.can_cancel ? (
           <Pressable
             style={styles.cancelButton}
             onPress={handleCancel}
+            disabled={cancelling}
           >
-            <Ionicons
-              name="close"
-              size={18}
-              color={COLORS.muted}
-            />
-
-            <Text style={styles.cancelText}>
-              Cancel Request
-            </Text>
+            {cancelling ? (
+              <ActivityIndicator size="small" color={COLORS.muted} />
+            ) : (
+              <>
+                <Ionicons name="close" size={18} color={COLORS.muted} />
+                <Text style={styles.cancelText}>Cancel Request</Text>
+              </>
+            )}
           </Pressable>
-        )}
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
 }
-
-// ============================================================
-// METRIC COMPONENT
-// ============================================================
 
 function Metric({
   label,
@@ -1005,17 +859,8 @@ function Metric({
 }) {
   return (
     <View style={styles.metric}>
-      <Text style={styles.metricLabel}>
-        {label}
-      </Text>
-
-      <Text
-        style={[
-          styles.metricValue,
-          emphasis &&
-            styles.metricValueEmphasis,
-        ]}
-      >
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={[styles.metricValue, emphasis && styles.metricValueEmphasis]}>
         {value}
       </Text>
     </View>
@@ -1027,10 +872,6 @@ function Metric({
 // ============================================================
 
 const styles = StyleSheet.create({
-  // ========================================================
-  // GENERAL
-  // ========================================================
-
   safeArea: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -1046,7 +887,52 @@ const styles = StyleSheet.create({
   },
 
   // ========================================================
-  // STATUS
+  // LOADING / ERROR STATES
+  // ========================================================
+
+  centerState: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 28,
+  },
+
+  centerTitle: {
+    marginTop: 10,
+    fontSize: 16,
+    fontWeight: "800",
+    color: COLORS.text,
+    textAlign: "center",
+  },
+
+  centerText: {
+    marginTop: 8,
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLORS.muted,
+    textAlign: "center",
+  },
+
+  locationRetryButton: {
+    marginTop: 14,
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: 11,
+    backgroundColor: COLORS.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+
+  locationRetryText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  // ========================================================
+  // STATUS CARD
   // ========================================================
 
   statusCard: {
@@ -1061,10 +947,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
 
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.07,
     shadowRadius: 8,
     elevation: 3,
@@ -1146,63 +1029,6 @@ const styles = StyleSheet.create({
     height: "100%",
   },
 
-  mapLoading: {
-    flex: 1,
-    backgroundColor: "#F1F5F9",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 30,
-  },
-
-  mapLoadingText: {
-    marginTop: 10,
-    fontSize: 13,
-    fontWeight: "700",
-    color: COLORS.muted,
-    textAlign: "center",
-  },
-
-  mapError: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 25,
-  },
-
-  mapErrorTitle: {
-    marginTop: 8,
-    fontSize: 15,
-    fontWeight: "800",
-    color: COLORS.text,
-  },
-
-  mapErrorText: {
-    marginTop: 6,
-    fontSize: 11,
-    lineHeight: 17,
-    color: COLORS.muted,
-    textAlign: "center",
-  },
-
-  locationRetryButton: {
-    marginTop: 14,
-    height: 40,
-    paddingHorizontal: 16,
-    borderRadius: 11,
-    backgroundColor: COLORS.primary,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-  },
-
-  locationRetryText: {
-    color: COLORS.white,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-
   myLocationButton: {
     position: "absolute",
     right: 12,
@@ -1218,6 +1044,25 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 5,
+  },
+
+  mapStatus: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.94)",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+
+  mapStatusText: {
+    marginLeft: 5,
+    fontSize: 9,
+    fontWeight: "800",
+    color: COLORS.text,
   },
 
   // ========================================================
@@ -1287,45 +1132,77 @@ const styles = StyleSheet.create({
     borderColor: COLORS.white,
 
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 4,
   },
 
-  destinationMarker: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: COLORS.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: COLORS.white,
+  // ========================================================
+  // PRICE CARD
+  // ========================================================
+
+  priceCard: {
+    marginTop: 15,
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
 
-  // ========================================================
-  // MAP STATUS
-  // ========================================================
-
-  mapStatus: {
-    position: "absolute",
-    top: 12,
-    left: 12,
+  priceHeader: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.94)",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 10,
   },
 
-  mapStatusText: {
-    marginLeft: 5,
-    fontSize: 9,
+  priceTitle: {
+    marginLeft: 11,
+    fontSize: 13,
+    fontWeight: "800",
+    color: COLORS.text,
+  },
+
+  priceTotal: {
+    marginTop: 12,
+    fontSize: 28,
+    fontWeight: "900",
+    color: COLORS.primary,
+  },
+
+  priceNote: {
+    marginTop: 4,
+    fontSize: 11,
+    color: COLORS.muted,
+  },
+
+  priceLoading: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  priceDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginVertical: 12,
+  },
+
+  priceRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    minHeight: 24,
+  },
+
+  priceRowLabel: {
+    fontSize: 11,
+    color: COLORS.muted,
+  },
+
+  priceRowValue: {
+    fontSize: 11,
     fontWeight: "800",
     color: COLORS.text,
   },
@@ -1343,13 +1220,44 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
 
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.06,
     shadowRadius: 10,
     elevation: 3,
+  },
+
+  searchingCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 14,
+    borderRadius: 15,
+    backgroundColor: COLORS.secondary,
+    marginBottom: 14,
+  },
+
+  searchingText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "700",
+    color: COLORS.text,
+  },
+
+  noticeCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 14,
+    borderRadius: 15,
+    backgroundColor: COLORS.dangerLight,
+    marginBottom: 14,
+  },
+
+  noticeText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLORS.primaryDark,
   },
 
   // ========================================================
@@ -1565,10 +1473,7 @@ const styles = StyleSheet.create({
 
   timelineCircleCurrent: {
     shadowColor: COLORS.primary,
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
+    shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.35,
     shadowRadius: 6,
     elevation: 5,
@@ -1685,7 +1590,7 @@ const styles = StyleSheet.create({
   cancelButton: {
     minHeight: 54,
     marginTop: 8,
-    marginBottom:60,
+    marginBottom: 60,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
@@ -1697,10 +1602,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: COLORS.muted,
   },
-
-  // ========================================================
-  // HOME BUTTON
-  // ========================================================
 
   dashboardButton: {
     minHeight: 54,
