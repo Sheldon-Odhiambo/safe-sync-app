@@ -12,10 +12,7 @@ export type LocationAccess =
   | { granted: false; reason: LocationDeniedReason; message: string };
 
 type EnsureOptions = {
-  // false = only check, never show a system dialog (used when the app comes
-  // back to the foreground and we just want to know if the user fixed it).
   prompt?: boolean;
-  // Finishes the sentence "SafeSync needs your location to ...".
   purpose?: string;
 };
 

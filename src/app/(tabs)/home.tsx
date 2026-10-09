@@ -16,8 +16,16 @@ import {
 import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import * as Location from "expo-location";
 import { Ionicons, FontAwesome5 } from "@expo/vector-icons";
+import { useFocusEffect } from "expo-router";
 
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
+import { log } from "@/lib/debug-log";
+import {
+  ensureLocationAccess,
+  promptLocationSettings,
+  useOnAppForeground,
+  type LocationDeniedReason,
+} from "@/lib/location-access";
 import { useAuth } from "../../contexts/auth-context";
 
 /* ============================================================
@@ -26,7 +34,13 @@ import { useAuth } from "../../contexts/auth-context";
 
 const API = {
   nearbyUnits: "/api/v1/locations/nearby-units",
+  // Same endpoints the Wallet screen uses.
+  paymentsProfile: "/api/v1/payments/profile",
+  wallet: "/api/v1/payments/wallet",
+  subscription: "/api/v1/payments/subscription",
 };
+
+const LOCATION_PURPOSE = "find responders near you";
 
 const SEARCH_RADIUS_METERS = 10_000;
 // Re-query units when the client has moved this far since the last query.
@@ -57,11 +71,29 @@ type NearbyUnit = {
   eta_minutes: number | null;
   price_total: number | null;
   currency: string;
+  // true when ETA/distance is a straight-line estimate (routing was down).
+  estimated?: boolean;
 };
 
 type NearbyUnitsResponse = {
   units: NearbyUnit[];
 };
+
+// From GET /payments/profile, /payments/wallet and /payments/subscription.
+type PaymentProfile = {
+  account_kind: "public" | "organisation";
+};
+
+type WalletOut = { balance: number; currency?: string };
+
+type SubscriptionOut = { status: "active" | "grace" | "expired" };
+
+type Billing =
+  | { kind: "public"; balance: number; currency: string }
+  | {
+      kind: "organisation";
+      subscriptionStatus: SubscriptionOut["status"] | null;
+    };
 
 /* ============================================================
    HELPERS
@@ -100,16 +132,17 @@ function formatPlace(address: Location.LocationGeocodedAddress): string {
   return Array.from(new Set(parts)).join(", ");
 }
 
-const formatPrice = (value: number | null, currency: string) => {
-  if (value == null) return "—";
-  const amount = Math.round(value)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const formatBalance = (value: number, currency: string) => {
+  const amount = value.toLocaleString("en-KE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
   return `${currency === "KES" ? "KSh" : currency} ${amount}`;
 };
 
-const formatEta = (minutes: number | null) =>
-  minutes == null ? "—" : `${minutes} min`;
+// "~" marks an estimate made from the straight-line distance.
+const formatEta = (minutes: number | null, estimated = false) =>
+  minutes == null ? "—" : `${estimated ? "~" : ""}${minutes} min`;
 
 const isAmbulance = (unit: NearbyUnit) =>
   unit.vehicle_type_code === "AMBULANCE";
@@ -133,6 +166,8 @@ export default function Home() {
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [locationRetry, setLocationRetry] = useState(0);
+  const [locationReason, setLocationReason] =
+    useState<LocationDeniedReason | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [mapReady, setMapReady] = useState(false);
 
@@ -142,33 +177,108 @@ export default function Home() {
   const [unitsLoaded, setUnitsLoaded] = useState(false);
   const [unitsError, setUnitsError] = useState<string | null>(null);
 
+  // null until the first answer arrives.
+  const [billing, setBilling] = useState<Billing | null>(null);
+
   const currentRef = useRef<Coordinates | null>(null);
   const lastFetchRef = useRef<Coordinates | null>(null);
   const lastGeocodeRef = useRef<Coordinates | null>(null);
   const hasCenteredRef = useRef(false);
 
+  // Newest-request-wins bookkeeping for the units list.
+  const unitsSeqRef = useRef(0);
+  const unitsPendingRef = useRef(0);
+
+  // Location access prompts.
+  const settingsPromptedRef = useRef(false); // "Open settings" shown once on load
+  const userRetryRef = useRef(false); // the client tapped "Enable location"
+  const systemPromptRef = useRef(true); // false = check only, no dialogs
+
   /* ============================================================
-     BACKEND: nearby units (ETA + price computed server-side)
+     BACKEND: nearby units (ETA computed server-side)
      ============================================================ */
 
-  const loadUnits = useCallback(async (coords: Coordinates) => {
+  // Requests can overlap (position change + 15 s poll) and the server may
+  // answer them out of order. Only the newest request may update the screen,
+  // otherwise a slow old answer overwrites a newer one and a responder who
+  // just went off shift reappears (or vice versa).
+  const loadUnits = useCallback(
+    async (coords: Coordinates, fromPoll = false) => {
+      // A poll tick never stacks on top of a request that is still running.
+      if (fromPoll && unitsPendingRef.current > 0) return;
+
+      const seq = ++unitsSeqRef.current;
+      unitsPendingRef.current += 1;
+
+      try {
+        const query =
+          `latitude=${coords.latitude}&longitude=${coords.longitude}` +
+          `&radius_meters=${SEARCH_RADIUS_METERS}`;
+
+        const data = await apiFetch<NearbyUnitsResponse>(
+          `${API.nearbyUnits}?${query}`
+        );
+
+        if (seq !== unitsSeqRef.current) return; // superseded
+
+        setUnits(Array.isArray(data?.units) ? data.units : []);
+        setUnitsError(null);
+      } catch (err) {
+        if (seq === unitsSeqRef.current) {
+          setUnitsError(errorMessage(err, "Couldn't load nearby responders."));
+        }
+      } finally {
+        unitsPendingRef.current -= 1;
+        if (seq === unitsSeqRef.current) setUnitsLoaded(true);
+      }
+    },
+    []
+  );
+
+  /* ============================================================
+     BACKEND: account balance (public) / subscription (organisation)
+     ============================================================ */
+
+  const loadBilling = useCallback(async () => {
     try {
-      const query =
-        `latitude=${coords.latitude}&longitude=${coords.longitude}` +
-        `&radius_meters=${SEARCH_RADIUS_METERS}`;
+      const account = await apiFetch<PaymentProfile>(API.paymentsProfile);
 
-      const data = await apiFetch<NearbyUnitsResponse>(
-        `${API.nearbyUnits}?${query}`
-      );
+      if (account.account_kind === "public") {
+        const wallet = await apiFetch<WalletOut>(API.wallet);
 
-      setUnits(Array.isArray(data?.units) ? data.units : []);
-      setUnitsError(null);
+        setBilling({
+          kind: "public",
+          balance: Number(wallet.balance) || 0,
+          currency: wallet.currency || "KES",
+        });
+        return;
+      }
+
+      // Client and service-provider organisations have no wallet: they
+      // subscribe to a plan instead.
+      const subscription = await apiFetch<SubscriptionOut | null>(
+        API.subscription
+      ).catch(() => null);
+
+      setBilling({
+        kind: "organisation",
+        subscriptionStatus: subscription?.status ?? null,
+      });
     } catch (err) {
-      setUnitsError(errorMessage(err, "Couldn't load nearby responders."));
-    } finally {
-      setUnitsLoaded(true);
+      // Keep whatever was shown before; this is not worth an error banner.
+      log.warn("home", "billing summary unavailable", {
+        message: errorMessage(err, "unknown error"),
+      });
     }
   }, []);
+
+  // Refresh whenever the Home tab is shown, so a top-up or subscription
+  // payment made in the Wallet tab is reflected on return.
+  useFocusEffect(
+    useCallback(() => {
+      loadBilling();
+    }, [loadBilling])
+  );
 
   /* ============================================================
      FRONTEND ONLY: reverse geocoding
@@ -241,20 +351,31 @@ export default function Home() {
         setLocationLoading(true);
         setLocationError(null);
 
-        const servicesEnabled = await Location.hasServicesEnabledAsync();
-        if (!servicesEnabled) {
-          throw new Error(
-            "Location services are disabled. Please enable GPS/location services on your device."
-          );
+        const allowPrompt = systemPromptRef.current;
+        systemPromptRef.current = true;
+
+        // Asks to switch location on / grant permission when it isn't.
+        const access = await ensureLocationAccess({
+          prompt: allowPrompt,
+          purpose: LOCATION_PURPOSE,
+        });
+        if (cancelled) return;
+
+        if (!access.granted) {
+          setLocationReason(access.reason);
+          setLocationError(access.message);
+
+          // Offer the Settings shortcut on the first failure, and whenever
+          // the client taps "Enable location" themselves.
+          if (allowPrompt && (userRetryRef.current || !settingsPromptedRef.current)) {
+            settingsPromptedRef.current = true;
+            userRetryRef.current = false;
+            promptLocationSettings(access);
+          }
+          return;
         }
 
-        const permission =
-          await Location.requestForegroundPermissionsAsync();
-        if (permission.status !== "granted") {
-          throw new Error(
-            "Location permission was denied. SafeSync needs your location to find responders near you."
-          );
-        }
+        setLocationReason(null);
 
         const first = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.High,
@@ -297,11 +418,20 @@ export default function Home() {
   useEffect(() => {
     const timer = setInterval(() => {
       const here = currentRef.current;
-      if (here) loadUnits(here);
+      if (here) loadUnits(here, true);
     }, UNITS_POLL_MS);
 
     return () => clearInterval(timer);
   }, [loadUnits]);
+
+  // Back from the Settings screen: if the client switched location on or
+  // granted permission there, start locating again without any tap.
+  useOnAppForeground(() => {
+    if (!currentRef.current) {
+      systemPromptRef.current = false; // just check, don't re-show dialogs
+      setLocationRetry((n) => n + 1);
+    }
+  });
 
   // Centre the map on the first fix.
   useEffect(() => {
@@ -323,6 +453,18 @@ export default function Home() {
 
     try {
       setRefreshing(true);
+
+      // Location may have been switched off or revoked since the first fix.
+      const access = await ensureLocationAccess({ purpose: LOCATION_PURPOSE });
+
+      if (!access.granted) {
+        setLocationReason(access.reason);
+        setLocationError(access.message);
+        promptLocationSettings(access);
+        return;
+      }
+
+      setLocationReason(null);
 
       const position = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
@@ -357,6 +499,32 @@ export default function Home() {
      ============================================================ */
 
   const nearestUnit = units[0] ?? null;
+
+  // Replaces the old "Estimated cost" tile:
+  //   organisation account -> subscription state ("Subscribed" when active)
+  //   public account       -> wallet balance
+  const billingDisplay: {
+    label: string;
+    value: string;
+    icon: keyof typeof Ionicons.glyphMap;
+  } = !billing
+    ? { label: "Account", value: "—", icon: "wallet-outline" }
+    : billing.kind === "public"
+    ? {
+        label: "Account balance",
+        value: formatBalance(billing.balance, billing.currency),
+        icon: "wallet-outline",
+      }
+    : {
+        label: "Subscription",
+        value:
+          billing.subscriptionStatus === "active"
+            ? "Subscribed"
+            : billing.subscriptionStatus === "grace"
+            ? "Grace period"
+            : "Not subscribed",
+        icon: "ribbon-outline",
+      };
 
   const locationLine = currentLocation
     ? [
@@ -435,7 +603,7 @@ export default function Home() {
                         longitude: unit.longitude,
                       }}
                       title={`${unit.vehicle_type_name} · ${unit.registration_number}`}
-                      description={`${formatEta(unit.eta_minutes)} · ${unit.distance_km.toFixed(1)} km`}
+                      description={`${formatEta(unit.eta_minutes, unit.estimated)} · ${unit.distance_km.toFixed(1)} km`}
                     >
                       <View style={styles.responderMarker}>
                         {isAmbulance(unit) ? (
@@ -480,10 +648,19 @@ export default function Home() {
 
                 <Pressable
                   style={styles.retryButton}
-                  onPress={() => setLocationRetry((n) => n + 1)}
+                  onPress={() => {
+                    userRetryRef.current = true;
+                    setLocationRetry((n) => n + 1);
+                  }}
                 >
-                  <Ionicons name="refresh" size={17} color="#FFFFFF" />
-                  <Text style={styles.retryButtonText}>Try again</Text>
+                  <Ionicons
+                    name={locationReason ? "location" : "refresh"}
+                    size={17}
+                    color="#FFFFFF"
+                  />
+                  <Text style={styles.retryButtonText}>
+                    {locationReason ? "Enable location" : "Try again"}
+                  </Text>
                 </Pressable>
               </View>
             )}
@@ -510,7 +687,10 @@ export default function Home() {
             <View style={styles.etaPriceTextBox}>
               <Text style={styles.etaPriceLabel}>Estimated arrival</Text>
               <Text style={styles.etaPriceValue}>
-                {formatEta(nearestUnit?.eta_minutes ?? null)}
+                {formatEta(
+                  nearestUnit?.eta_minutes ?? null,
+                  nearestUnit?.estimated
+                )}
               </Text>
             </View>
           </View>
@@ -518,14 +698,11 @@ export default function Home() {
           <View style={styles.etaPriceDivider} />
 
           <View style={styles.etaPriceItem}>
-            <Ionicons name="cash-outline" size={20} color="#DC2626" />
+            <Ionicons name={billingDisplay.icon} size={20} color="#DC2626" />
             <View style={styles.etaPriceTextBox}>
-              <Text style={styles.etaPriceLabel}>Estimated cost</Text>
-              <Text style={styles.etaPriceValue}>
-                {formatPrice(
-                  nearestUnit?.price_total ?? null,
-                  nearestUnit?.currency ?? "KES"
-                )}
+              <Text style={styles.etaPriceLabel}>{billingDisplay.label}</Text>
+              <Text style={styles.etaPriceValue} numberOfLines={1}>
+                {billingDisplay.value}
               </Text>
             </View>
           </View>
@@ -581,11 +758,15 @@ export default function Home() {
                 </View>
 
                 <View style={styles.metricsGrid}>
-                  <Stat label="ETA" value={formatEta(unit.eta_minutes)} emphasis />
+                  <Stat
+                    label="ETA"
+                    value={formatEta(unit.eta_minutes, unit.estimated)}
+                    emphasis
+                  />
                   <Stat label="DISTANCE" value={`${unit.distance_km.toFixed(1)} km`} />
                   <Stat
-                    label="ESTIMATED COST"
-                    value={formatPrice(unit.price_total, unit.currency)}
+                    label={billingDisplay.label.toUpperCase()}
+                    value={billingDisplay.value}
                   />
                   <Stat label="VEHICLE" value={unit.registration_number} />
                 </View>
