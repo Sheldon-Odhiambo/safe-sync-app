@@ -244,21 +244,23 @@ function TabsLayoutContent() {
   //   (via EmergencyBarProvider).
   // - Everywhere else: the default "request help" button.
   // ---------------------------------------------------------
-  const barConfig = isTrackScreen
-    ? null
-    : isEmergencyScreen
-    ? {
-        label: config?.label ?? "SELECT AN EMERGENCY",
-        disabled: config?.disabled ?? true,
-        loading: config?.loading ?? false,
-        onPress: config?.onPress ?? (() => {}),
-      }
-    : {
-        label: "REQUEST EMERGENCY HELP",
-        disabled: false,
-        loading: false,
-        onPress: handleEmergency,
-      };
+  
+  const barConfig =
+    isResponder || isTrackScreen
+      ? null
+      : isEmergencyScreen
+        ? {
+            label: config?.label ?? "SELECT AN EMERGENCY",
+            disabled: config?.disabled ?? true,
+            loading: config?.loading ?? false,
+            onPress: config?.onPress ?? (() => {}),
+          }
+        : {
+            label: "REQUEST EMERGENCY HELP",
+            disabled: false,
+            loading: false,
+            onPress: handleEmergency,
+          };
 
   return (
     <SafeAreaView style={styles.safeArea}>
