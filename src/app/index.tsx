@@ -1,6 +1,8 @@
 import React, { useState } from "react";
+
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -12,6 +14,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+
 import { useRouter } from "expo-router";
 import { supabase } from "../lib/supabase";
 
@@ -26,6 +29,10 @@ const COLORS = {
   border: "#E2E8F0",
   background: "#F8FAFC",
 };
+
+// SafeSync actual logo
+const SAFE_SYNC_LOGO =
+  "https://res.cloudinary.com/di15s67o/image/upload/v1790591289/safesync-logo_dlahyy.png";
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -43,6 +50,8 @@ export default function LoginScreen() {
     setError("");
 
     const cleanEmail = email.trim().toLowerCase();
+
+    // Correct email validation regex
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     if (!cleanEmail) {
@@ -58,12 +67,12 @@ export default function LoginScreen() {
     setLoading(true);
 
     try {
-      // shouldCreateUser: false means this only succeeds for emails that
-      // already have an account — anyone without one gets a clear error
-      // instead of silently being signed up from the login screen.
+      // Only allows existing users to request an OTP.
       const { error: otpError } = await supabase.auth.signInWithOtp({
         email: cleanEmail,
-        options: { shouldCreateUser: false },
+        options: {
+          shouldCreateUser: false,
+        },
       });
 
       if (otpError) {
@@ -71,19 +80,27 @@ export default function LoginScreen() {
           otpError.message?.toLowerCase().includes("signups not allowed") ||
           otpError.message?.toLowerCase().includes("user not found")
         ) {
-          setError("No account found with that email. Please sign up first.");
+          setError(
+            "No account found with that email. Please sign up first."
+          );
         } else {
           setError(otpError.message);
         }
+
         return;
       }
 
       router.push({
         pathname: "/verify-code",
-        params: { email: cleanEmail, mode: "login" },
+        params: {
+          email: cleanEmail,
+          mode: "login",
+        },
       });
     } catch (err: any) {
-      setError(err?.message || "Something went wrong. Please try again.");
+      setError(
+        err?.message || "Something went wrong. Please try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -95,9 +112,16 @@ export default function LoginScreen() {
         style={styles.keyboard}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <View style={[styles.page, isDesktop && styles.pageDesktop]}>
+        <View
+          style={[
+            styles.page,
+            isDesktop && styles.pageDesktop,
+          ]}
+        >
+          {/* Desktop brand section */}
           {isDesktop && <BrandPanel />}
 
+          {/* Login section */}
           <View
             style={[
               styles.loginPanel,
@@ -114,36 +138,49 @@ export default function LoginScreen() {
               showsVerticalScrollIndicator={false}
             >
               <View style={styles.loginContainer}>
+                {/* Mobile logo */}
                 {!isDesktop && (
                   <View style={styles.mobileLogoContainer}>
-                    <View style={styles.mobileLogoCircle}>
-                      <View style={styles.mobileLogoShield}>
-                        <Text style={styles.mobileLogoPlus}>+</Text>
-                      </View>
-                    </View>
+                    <Image
+                      source={{ uri: SAFE_SYNC_LOGO }}
+                      style={styles.mobileLogoImage}
+                      resizeMode="contain"
+                    />
 
-                    <Text style={styles.mobileLogoText}>SafeSync</Text>
+                    {/* <Text style={styles.mobileLogoText}>
+                      SafeSync
+                    </Text> */}
                   </View>
                 )}
 
+                {/* Heading */}
                 <View style={styles.heading}>
-                  <Text style={styles.welcomeTitle}>Sign in</Text>
+                  <Text style={styles.welcomeTitle}>
+                    Sign in
+                  </Text>
 
                   <Text style={styles.welcomeSubtitle}>
-                    Enter your email to receive a 6-digit verification code.
+                    Enter your email to receive a 6-digit
+                    verification code.
                   </Text>
                 </View>
 
+                {/* Email */}
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Email address</Text>
+                  <Text style={styles.inputLabel}>
+                    Email address
+                  </Text>
 
                   <View
                     style={[
                       styles.inputWrapper,
-                      isFocused && styles.inputWrapperFocused,
+                      isFocused &&
+                        styles.inputWrapperFocused,
                     ]}
                   >
-                    <Text style={styles.inputSymbol}>@</Text>
+                    <Text style={styles.inputSymbol}>
+                      @
+                    </Text>
 
                     <TextInput
                       style={styles.input}
@@ -153,14 +190,20 @@ export default function LoginScreen() {
                         setError("");
                       }}
                       placeholder="you@example.com"
-                      placeholderTextColor={COLORS.placeholder}
+                      placeholderTextColor={
+                        COLORS.placeholder
+                      }
                       keyboardType="email-address"
                       autoCapitalize="none"
                       autoCorrect={false}
                       autoComplete="email"
                       textContentType="emailAddress"
-                      onFocus={() => setIsFocused(true)}
-                      onBlur={() => setIsFocused(false)}
+                      onFocus={() =>
+                        setIsFocused(true)
+                      }
+                      onBlur={() =>
+                        setIsFocused(false)
+                      }
                       returnKeyType="done"
                       onSubmitEditing={handleGetOtp}
                       selectionColor={COLORS.primary}
@@ -169,12 +212,16 @@ export default function LoginScreen() {
                   </View>
                 </View>
 
+                {/* Error */}
                 {error ? (
                   <View style={styles.errorBox}>
-                    <Text style={styles.errorText}>{error}</Text>
+                    <Text style={styles.errorText}>
+                      {error}
+                    </Text>
                   </View>
                 ) : null}
 
+                {/* Login button */}
                 <Pressable
                   style={({ pressed }) => [
                     styles.loginButton,
@@ -185,22 +232,41 @@ export default function LoginScreen() {
                   disabled={loading}
                 >
                   {loading ? (
-                    <ActivityIndicator size="small" color={COLORS.white} />
+                    <ActivityIndicator
+                      size="small"
+                      color={COLORS.white}
+                    />
                   ) : (
-                    <Text style={styles.loginButtonText}>Get OTP Code</Text>
+                    <Text
+                      style={styles.loginButtonText}
+                    >
+                      Get OTP Code
+                    </Text>
                   )}
                 </Pressable>
 
+                {/* Security message */}
                 <View style={styles.securityMessage}>
                   <Text style={styles.securityText}>
-                    Passwordless secure authentication by SafeSync.
+                    Passwordless secure authentication by
+                    SafeSync.
                   </Text>
                 </View>
 
+                {/* Sign up */}
                 <View style={styles.signupRow}>
-                  <Text style={styles.signupPrompt}>Don't have an account?</Text>
-                  <Pressable onPress={() => router.push("/signup")}>
-                    <Text style={styles.signupLink}>Sign Up</Text>
+                  <Text style={styles.signupPrompt}>
+                    Don't have an account?
+                  </Text>
+
+                  <Pressable
+                    onPress={() =>
+                      router.push("/signup")
+                    }
+                  >
+                    <Text style={styles.signupLink}>
+                      Sign Up
+                    </Text>
                   </Pressable>
                 </View>
               </View>
@@ -212,20 +278,28 @@ export default function LoginScreen() {
   );
 }
 
+/* =========================================================
+   DESKTOP BRAND PANEL
+========================================================= */
+
 function BrandPanel() {
   return (
     <View style={styles.brandPanel}>
       <View style={styles.brandContent}>
+        {/* Logo */}
         <View style={styles.logoRow}>
-          <View style={styles.logoCircle}>
-            <View style={styles.logoShield}>
-              <Text style={styles.logoPlus}>+</Text>
-            </View>
-          </View>
+          <Image
+            source={{ uri: SAFE_SYNC_LOGO }}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
 
-          <Text style={styles.logoText}>SafeSync</Text>
+          <Text style={styles.logoText}>
+            SafeSync
+          </Text>
         </View>
 
+        {/* Brand message */}
         <View style={styles.brandMessage}>
           <Text style={styles.brandTitle}>
             Every second you{"\n"}
@@ -234,98 +308,312 @@ function BrandPanel() {
           </Text>
 
           <Text style={styles.brandDescription}>
-            Emergency response coordination designed to connect people,
-            responders and organizations in real time.
+            Emergency response coordination designed to
+            connect people, responders and organizations
+            in real time.
           </Text>
         </View>
 
-        <Text style={styles.copyright}>© 2026 SafeSync Technologies Ltd.</Text>
+        {/* Copyright */}
+        <Text style={styles.copyright}>
+          © 2026 SafeSync Technologies Ltd.
+        </Text>
       </View>
     </View>
   );
 }
 
+/* =========================================================
+   STYLES
+========================================================= */
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: COLORS.white },
-  keyboard: { flex: 1 },
-  page: { flex: 1, backgroundColor: COLORS.white },
-  pageDesktop: { flexDirection: "row" },
-  scrollContent: { flexGrow: 1, justifyContent: "center" },
-  scrollContentMobile: { paddingVertical: 28 },
-
-  brandPanel: { flex: 1, backgroundColor: COLORS.primary, paddingHorizontal: 48, paddingVertical: 48 },
-  brandContent: { flex: 1, justifyContent: "space-between" },
-  logoRow: { flexDirection: "row", alignItems: "center" },
-  logoCircle: {
-    width: 38, height: 38, borderRadius: 19, backgroundColor: COLORS.white,
-    alignItems: "center", justifyContent: "center", marginRight: 10,
+  safeArea: {
+    flex: 1,
+    backgroundColor: COLORS.white,
   },
-  logoShield: {
-    width: 21, height: 23, borderWidth: 2, borderColor: COLORS.primary,
-    borderRadius: 5, alignItems: "center", justifyContent: "center",
+
+  keyboard: {
+    flex: 1,
   },
-  logoPlus: { color: COLORS.primary, fontSize: 14, fontWeight: "900" },
-  logoText: { color: COLORS.white, fontSize: 21, fontWeight: "800" },
-  brandMessage: { marginVertical: "auto" },
-  brandTitle: { color: COLORS.white, fontSize: 40, lineHeight: 48, fontWeight: "800", letterSpacing: -1 },
-  brandDescription: { maxWidth: 400, marginTop: 20, color: COLORS.white, opacity: 0.9, fontSize: 15, lineHeight: 22 },
-  copyright: { color: COLORS.white, opacity: 0.8, fontSize: 12 },
 
-  loginPanel: { flex: 1, backgroundColor: COLORS.white, paddingHorizontal: 40, paddingVertical: 40 },
-  loginPanelMobile: { paddingHorizontal: 24, paddingVertical: 20 },
-  loginPanelSmallPhone: { paddingHorizontal: 18 },
-  loginContainer: { width: "100%", maxWidth: 420, alignSelf: "center" },
-
-  mobileLogoContainer: { alignItems: "center", marginBottom: 32 },
-  mobileLogoCircle: {
-    width: 58, height: 58, borderRadius: 29, backgroundColor: COLORS.primary,
-    alignItems: "center", justifyContent: "center", marginBottom: 10,
+  page: {
+    flex: 1,
+    backgroundColor: COLORS.white,
   },
-  mobileLogoShield: {
-    width: 28, height: 31, borderWidth: 2, borderColor: COLORS.white,
-    borderRadius: 7, alignItems: "center", justifyContent: "center",
+
+  pageDesktop: {
+    flexDirection: "row",
   },
-  mobileLogoPlus: { color: COLORS.white, fontSize: 19, fontWeight: "900" },
-  mobileLogoText: { color: COLORS.black, fontSize: 21, fontWeight: "800" },
 
-  heading: { marginBottom: 28 },
-  welcomeTitle: { color: COLORS.black, fontSize: 32, fontWeight: "800", letterSpacing: -0.8 },
-  welcomeSubtitle: { marginTop: 8, color: COLORS.muted, fontSize: 14, lineHeight: 21 },
+  /* =====================================================
+     DESKTOP BRAND PANEL
+  ===================================================== */
 
-  inputGroup: { marginBottom: 18 },
-  inputLabel: { marginBottom: 8, color: COLORS.black, fontSize: 13, fontWeight: "600" },
+  brandPanel: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 48,
+    paddingVertical: 48,
+  },
+
+  brandContent: {
+    flex: 1,
+    justifyContent: "space-between",
+  },
+
+  logoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  logoImage: {
+    width: 90,
+    height: 90,
+    marginRight: 12,
+  },
+
+  logoText: {
+    color: COLORS.white,
+    fontSize: 21,
+    fontWeight: "800",
+  },
+
+  brandMessage: {
+    marginVertical: "auto",
+  },
+
+  brandTitle: {
+    color: COLORS.white,
+    fontSize: 40,
+    lineHeight: 48,
+    fontWeight: "800",
+    letterSpacing: -1,
+  },
+
+  brandDescription: {
+    maxWidth: 400,
+    marginTop: 20,
+    color: COLORS.white,
+    opacity: 0.9,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+
+  copyright: {
+    color: COLORS.white,
+    opacity: 0.8,
+    fontSize: 12,
+  },
+
+  /* =====================================================
+     LOGIN PANEL
+  ===================================================== */
+
+  loginPanel: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 40,
+    paddingVertical: 40,
+  },
+
+  loginPanelMobile: {
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+  },
+
+  loginPanelSmallPhone: {
+    paddingHorizontal: 18,
+  },
+
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+  },
+
+  scrollContentMobile: {
+    paddingVertical: 28,
+  },
+
+  loginContainer: {
+    width: "100%",
+    maxWidth: 420,
+    alignSelf: "center",
+  },
+
+  /* =====================================================
+     MOBILE LOGO
+  ===================================================== */
+
+  mobileLogoContainer: {
+    alignItems: "center",
+    marginBottom: 32,
+  },
+
+  mobileLogoImage: {
+    width: 150,
+    height: 150,
+    marginBottom: 4,
+  },
+
+  mobileLogoText: {
+    color: COLORS.black,
+    fontSize: 21,
+    fontWeight: "800",
+  },
+
+  /* =====================================================
+     HEADING
+  ===================================================== */
+
+  heading: {
+    marginBottom: 28,
+  },
+
+  welcomeTitle: {
+    color: COLORS.black,
+    fontSize: 32,
+    fontWeight: "800",
+    letterSpacing: -0.8,
+  },
+
+  welcomeSubtitle: {
+    marginTop: 8,
+    color: COLORS.muted,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+
+  /* =====================================================
+     INPUT
+  ===================================================== */
+
+  inputGroup: {
+    marginBottom: 18,
+  },
+
+  inputLabel: {
+    marginBottom: 8,
+    color: COLORS.black,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+
   inputWrapper: {
-    minHeight: 54, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10,
-    backgroundColor: COLORS.white, flexDirection: "row", alignItems: "center",
+    minHeight: 54,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    flexDirection: "row",
+    alignItems: "center",
   },
-  inputWrapperFocused: { borderColor: COLORS.primary, borderWidth: 1.5 },
-  inputSymbol: { width: 48, textAlign: "center", color: COLORS.muted, fontSize: 18, fontWeight: "700" },
+
+  inputWrapperFocused: {
+    borderColor: COLORS.primary,
+    borderWidth: 1.5,
+  },
+
+  inputSymbol: {
+    width: 48,
+    textAlign: "center",
+    color: COLORS.muted,
+    fontSize: 18,
+    fontWeight: "700",
+  },
+
   input: {
-    flex: 1, minHeight: 52, paddingVertical: 12, paddingHorizontal: 0,
-    color: COLORS.black, backgroundColor: "transparent", fontSize: 15,
+    flex: 1,
+    minHeight: 52,
+    paddingVertical: 12,
+    paddingHorizontal: 0,
+    color: COLORS.black,
+    backgroundColor: "transparent",
+    fontSize: 15,
   },
+
+  /* =====================================================
+     ERROR
+  ===================================================== */
 
   errorBox: {
-    marginBottom: 14, paddingHorizontal: 12, paddingVertical: 11,
-    borderRadius: 9, backgroundColor: "#FEF2F2",
+    marginBottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 9,
+    backgroundColor: "#FEF2F2",
   },
-  errorText: { color: "#B91C1C", fontSize: 12, fontWeight: "600" },
+
+  errorText: {
+    color: "#B91C1C",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+
+  /* =====================================================
+     BUTTON
+  ===================================================== */
 
   loginButton: {
-    minHeight: 54, borderRadius: 10, alignItems: "center", justifyContent: "center",
-    backgroundColor: COLORS.primary, marginTop: 4,
+    minHeight: 54,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.primary,
+    marginTop: 4,
   },
-  buttonPressed: { backgroundColor: COLORS.primaryDark },
-  buttonDisabled: { opacity: 0.7 },
-  loginButtonText: { color: COLORS.white, fontSize: 15, fontWeight: "700" },
 
-  securityMessage: { alignItems: "center", marginTop: 22, paddingHorizontal: 10 },
-  securityText: { color: COLORS.muted, fontSize: 12, textAlign: "center", lineHeight: 18 },
+  buttonPressed: {
+    backgroundColor: COLORS.primaryDark,
+  },
+
+  buttonDisabled: {
+    opacity: 0.7,
+  },
+
+  loginButtonText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+
+  /* =====================================================
+     SECURITY MESSAGE
+  ===================================================== */
+
+  securityMessage: {
+    alignItems: "center",
+    marginTop: 22,
+    paddingHorizontal: 10,
+  },
+
+  securityText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    textAlign: "center",
+    lineHeight: 18,
+  },
+
+  /* =====================================================
+     SIGN UP
+  ===================================================== */
 
   signupRow: {
-    flexDirection: "row", justifyContent: "center", alignItems: "center",
-    marginTop: 18, gap: 5,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 18,
+    gap: 5,
   },
-  signupPrompt: { fontSize: 13, color: COLORS.muted },
-  signupLink: { fontSize: 13, fontWeight: "800", color: COLORS.primary },
+
+  signupPrompt: {
+    fontSize: 13,
+    color: COLORS.muted,
+  },
+
+  signupLink: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: COLORS.primary,
+  },
 });
