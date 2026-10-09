@@ -36,6 +36,12 @@ import * as Location from "expo-location";
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { DebugLogButton } from "@/components/debug-log-panel";
 import { log } from "@/lib/debug-log";
+import {
+  ensureLocationAccess,
+  promptLocationSettings,
+  useOnAppForeground,
+  type LocationDeniedReason,
+} from "@/lib/location-access";
 
 
 const API = {
@@ -52,6 +58,13 @@ const API = {
 };
 
 const DISPATCH_POLL_MS = 10_000;
+
+// While on shift the position is re-sent this often, even if the phone hasn't
+// moved. The backend hides units whose last report is older than ~60 s, so a
+// parked ambulance would otherwise vanish from the client's map.
+const LOCATION_HEARTBEAT_MS = 10_000;
+
+const LOCATION_PURPOSE = "share your position with dispatch and show it on the map";
 
 /* ============================================================
    TYPES
@@ -178,11 +191,24 @@ export default function ResponderConsole() {
     useState<Coordinates | null>(null);
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationReason, setLocationReason] =
+    useState<LocationDeniedReason | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
   const mapRef = useRef<MapView | null>(null);
   const currentLocationRef = useRef<Coordinates | null>(null);
   const dispatchRef = useRef<Dispatch | null>(null);
+
+  // Read from inside callbacks without making them re-create (which used to
+  // re-run the first-fix effect every time the map finished loading).
+  const mapReadyRef = useRef(false);
+  const reportBusyRef = useRef(false);
+  const settingsPromptedRef = useRef(false);
+
+  // When location access had failed and is later fixed, bumping this restarts
+  // the live position watcher (which only starts when the shift goes online).
+  const hadLocationFailureRef = useRef(false);
+  const [watchNonce, setWatchNonce] = useState(0);
 
   /* ============================================================
      DERIVED
@@ -361,41 +387,68 @@ export default function ResponderConsole() {
      LOCATION
      ============================================================ */
 
-  const reportLocation = useCallback(async (coords: Coordinates) => {
-    try {
-      await apiFetch<unknown>(API.location, {
-        method: "POST",
-        body: JSON.stringify({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        }),
-      });
-    } catch {
-      // Non-fatal: the map already reflects the location locally and the
-      // next report will bring the backend up to date.
-    }
-  }, []);
+  // `skipIfBusy` is used by the heartbeat so slow requests never pile up.
+  const reportLocation = useCallback(
+    async (coords: Coordinates, skipIfBusy = false) => {
+      if (skipIfBusy && reportBusyRef.current) return;
 
+      reportBusyRef.current = true;
+
+      try {
+        await apiFetch<unknown>(API.location, {
+          method: "POST",
+          body: JSON.stringify({
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+          }),
+        });
+      } catch (err) {
+        // Non-fatal: the next heartbeat brings the backend up to date. It is
+        // logged so a failing location feed is visible in the debug panel.
+        log.warn("responder", "location report failed", {
+          message: errorMessage(err, "unknown error"),
+        });
+      } finally {
+        reportBusyRef.current = false;
+      }
+    },
+    []
+  );
+
+  // showAlert: the responder tapped the locate / enable button themselves.
+  // prompt:    false = only check (no system dialogs), used when the app
+  //            returns to the foreground.
   const getCurrentLocation = useCallback(
-    async (showAlert = false) => {
+    async (showAlert = false, prompt = true) => {
       try {
         setLocationLoading(true);
         setLocationError(null);
 
-        const servicesEnabled = await Location.hasServicesEnabledAsync();
+        // Asks to switch location on / grant permission when it isn't.
+        const access = await ensureLocationAccess({
+          prompt,
+          purpose: LOCATION_PURPOSE,
+        });
 
-        if (!servicesEnabled) {
-          throw new Error(
-            "Location services are disabled. Please enable GPS/location services on your device."
-          );
+        if (!access.granted) {
+          hadLocationFailureRef.current = true;
+          setLocationReason(access.reason);
+          setLocationError(access.message);
+
+          // Offer the Settings shortcut on the first failure, and whenever
+          // the responder explicitly asked for location.
+          if (prompt && (showAlert || !settingsPromptedRef.current)) {
+            settingsPromptedRef.current = true;
+            promptLocationSettings(access);
+          }
+          return;
         }
 
-        const permission = await Location.requestForegroundPermissionsAsync();
+        setLocationReason(null);
 
-        if (permission.status !== "granted") {
-          throw new Error(
-            "Location permission was denied. SafeSync needs your location to show your position on the responder map."
-          );
+        if (hadLocationFailureRef.current) {
+          hadLocationFailureRef.current = false;
+          setWatchNonce((n) => n + 1);
         }
 
         const position = await Location.getCurrentPositionAsync({
@@ -407,10 +460,11 @@ export default function ResponderConsole() {
           longitude: position.coords.longitude,
         };
 
+        currentLocationRef.current = coordinates;
         setCurrentLocation(coordinates);
         reportLocation(coordinates);
 
-        if (mapReady && mapRef.current) {
+        if (mapReadyRef.current && mapRef.current) {
           mapRef.current.animateToRegion(
             {
               ...coordinates,
@@ -443,13 +497,23 @@ export default function ResponderConsole() {
         setLocationLoading(false);
       }
     },
-    [mapReady, reportLocation]
+    // mapReady is read through a ref, so this callback stays stable and the
+    // first-fix effect below runs once instead of every time the map loads.
+    [reportLocation]
   );
 
-  // First fix as soon as the screen opens.
+  // First fix as soon as the screen opens (asks for permission if needed).
   useEffect(() => {
     getCurrentLocation();
   }, [getCurrentLocation]);
+
+  // Coming back from the Settings screen: pick the position up automatically
+  // if the responder switched location on / granted permission there.
+  useOnAppForeground(() => {
+    if (!currentLocationRef.current) {
+      getCurrentLocation(false, false);
+    }
+  });
 
   useEffect(() => {
     currentLocationRef.current = currentLocation;
@@ -464,20 +528,31 @@ export default function ResponderConsole() {
     let subscription: Location.LocationSubscription | undefined;
 
     (async () => {
-      const permission = await Location.getForegroundPermissionsAsync();
-      if (permission.status !== "granted") return;
+      const access = await ensureLocationAccess({ purpose: LOCATION_PURPOSE });
+
+      if (!access.granted) {
+        if (cancelled) return;
+        hadLocationFailureRef.current = true;
+        setLocationReason(access.reason);
+        setLocationError(access.message);
+        promptLocationSettings(access);
+        return;
+      }
 
       const sub = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
           timeInterval: 10_000,
-          distanceInterval: 20,
+          // Small on purpose: a 20 m threshold meant a parked unit sent
+          // nothing at all. The heartbeat below covers standing still.
+          distanceInterval: 5,
         },
         (position) => {
           const coords: Coordinates = {
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
           };
+          currentLocationRef.current = coords;
           setCurrentLocation(coords);
           reportLocation(coords);
         }
@@ -494,6 +569,24 @@ export default function ResponderConsole() {
       cancelled = true;
       subscription?.remove();
     };
+  }, [online, reportLocation, watchNonce]);
+
+  // Heartbeat: while on shift, re-send the latest position every few seconds
+  // whether or not the phone moved. This keeps `last_location_at` fresh so
+  // clients keep seeing the unit. The first beat fires immediately, which
+  // also makes a freshly started shift dispatchable right away.
+  useEffect(() => {
+    if (!online) return;
+
+    const beat = () => {
+      const here = currentLocationRef.current;
+      if (here) reportLocation(here, true);
+    };
+
+    beat();
+    const timer = setInterval(beat, LOCATION_HEARTBEAT_MS);
+
+    return () => clearInterval(timer);
   }, [online, reportLocation]);
 
   // Geocode the dispatch address only if the backend sent no coordinates.
@@ -584,6 +677,21 @@ export default function ResponderConsole() {
         return;
       }
 
+      // Dispatch can only find a unit that reports its position, so going
+      // online without location would leave the driver invisible. Ask for
+      // location (or send them to Settings) before the shift starts.
+      const access = await ensureLocationAccess({ purpose: LOCATION_PURPOSE });
+
+      if (!access.granted) {
+        setLocationReason(access.reason);
+        setLocationError(access.message);
+        promptLocationSettings(access);
+        return;
+      }
+
+      setLocationReason(null);
+      setLocationError(null);
+
       setShiftBusy(true);
 
       try {
@@ -651,17 +759,63 @@ export default function ResponderConsole() {
      SIGN OUT
      ============================================================ */
 
+  // Signing out while on shift used to leave the shift open on the backend
+  // with nothing sending a location, so the unit looked available but was
+  // unreachable. The shift is ended first.
+  const signOutNow = () => {
+    router.replace("/");
+  };
+
   const handleSignOut = () => {
-    Alert.alert("Sign out", "Are you sure you want to sign out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Sign out",
-        style: "destructive",
-        onPress: () => {
-          router.replace("/");
+    if (accepted) {
+      Alert.alert(
+        "Active dispatch",
+        "Finish or hand over your current emergency before signing out."
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Sign out",
+      online
+        ? "You are on shift. Signing out will end your shift and release your vehicle."
+        : "Are you sure you want to sign out?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Sign out",
+          style: "destructive",
+          onPress: async () => {
+            if (!online) {
+              signOutNow();
+              return;
+            }
+
+            setShiftBusy(true);
+
+            try {
+              await apiFetch<unknown>(API.shiftEnd, { method: "POST" });
+              setOnline(false);
+              signOutNow();
+            } catch (err) {
+              Alert.alert(
+                "Couldn't end your shift",
+                `${errorMessage(
+                  err,
+                  "Please check your connection."
+                )}\n\nSigning out now would leave your shift open.`,
+                [
+                  { text: "Stay signed in", style: "cancel" },
+                  { text: "Sign out anyway", style: "destructive", onPress: signOutNow },
+                ]
+              );
+            } finally {
+              setShiftBusy(false);
+            }
+          },
         },
-      },
-    ]);
+      ]
+    );
   };
 
   /* ============================================================
@@ -923,8 +1077,14 @@ export default function ResponderConsole() {
                     style={styles.locationRetryButton}
                     onPress={() => getCurrentLocation(true)}
                   >
-                    <Ionicons name="refresh" size={17} color="#FFFFFF" />
-                    <Text style={styles.locationRetryText}>Try again</Text>
+                    <Ionicons
+                      name={locationReason ? "location" : "refresh"}
+                      size={17}
+                      color="#FFFFFF"
+                    />
+                    <Text style={styles.locationRetryText}>
+                      {locationReason ? "Enable location" : "Try again"}
+                    </Text>
                   </Pressable>
                 </View>
               ) : (
@@ -932,7 +1092,10 @@ export default function ResponderConsole() {
                   ref={mapRef}
                   provider={PROVIDER_GOOGLE}
                   style={styles.googleMap}
-                  onMapReady={() => setMapReady(true)}
+                  onMapReady={() => {
+                    mapReadyRef.current = true;
+                    setMapReady(true);
+                  }}
                   showsUserLocation={true}
                   showsMyLocationButton={false}
                   showsCompass={true}
