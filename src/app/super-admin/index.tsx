@@ -127,7 +127,7 @@ export default function SuperAdminScreen() {
         style: "destructive",
         onPress: () => {
           // 👈 FIXED: Route directly back to Sign In
-          router.replace("/index");
+          router.replace("/");
         },
       },
     ]);
