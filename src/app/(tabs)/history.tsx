@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -9,13 +9,15 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useFocusEffect } from "expo-router";
 
 import { ToastBanner } from "@/components/toast";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "../../contexts/auth-context";
+import { apiFetch } from "../../lib/api-client";
 
 const COLORS = {
   primary: "#DC2626",
-  primaryDark: "#B91C1C",
   white: "#FFFFFF",
   black: "#0F172A",
   text: "#1E293B",
@@ -28,78 +30,82 @@ const COLORS = {
   successLight: "#ECFDF5",
 };
 
+const PAGE_SIZE = 20;
+
 /* =========================================================
-   API
+   TYPES (match GET /api/v1/history)
 ========================================================= */
 
-import { apiFetch } from "../../lib/api-client";
+type HistoryRole = "requester" | "responder";
 
-type EmergencyType = "fire" | "ambulance";
-
-type EmergencyStatus =
-  | "pending"
-  | "dispatching"
-  | "assigned"
-  | "accepted"
-  | "en_route"
-  | "arriving"
-  | "arrived"
-  | "in_progress"
-  | "completed"
-  | "cancelled"
-  | "failed";
-
-type EmergencySummary = {
+type HistoryItem = {
   id: string;
-  emergency_type: EmergencyType;
-  status: EmergencyStatus;
+  incident_id: string;
+  public_id: string;
+  role: HistoryRole;
+  emergency_type: string;
+  emergency_type_name: string;
+  status: string;
+  address: string | null;
+  description: string | null;
   latitude: number;
   longitude: number;
   created_at: string;
   updated_at: string;
-};
-
-type EmergencyDetail = EmergencySummary & {
-  address: string | null;
-  description: string | null;
-  responder_id: string | null;
-  dispatch_id: string | null;
-  estimated_distance_meters: number | null;
-  estimated_duration_seconds: number | null;
-  estimated_cost: number | null;
+  closed_at: string | null;
   cancelled_at: string | null;
-  completed_at: string | null;
+  distance_km: number | null;
+  eta_minutes: number | null;
+  response_seconds: number | null;
+  responder_name: string | null;
+  client_name: string | null;
+  vehicle_registration: string | null;
+  vehicle_type: string | null;
+  station: string | null;
 };
 
-type EmergencyListResponse = {
-  emergencies: EmergencySummary[];
+type HistoryResponse = {
+  role: HistoryRole;
+  items: HistoryItem[];
   total: number;
+  completed: number;
+  has_more: boolean;
 };
 
-const EMERGENCY_TYPE_LABEL: Record<EmergencyType, string> = {
-  fire: "Fire Emergency",
-  ambulance: "Medical Emergency",
-};
-
+// Every value of emergency.incident_status.
 const STATUS_META: Record<
-  EmergencyStatus,
+  string,
   { label: string; color: string; bg: string }
 > = {
-  pending: { label: "Pending", color: "#B45309", bg: "#FEF3C7" },
-  dispatching: { label: "Dispatching", color: "#B45309", bg: "#FEF3C7" },
-  assigned: { label: "Assigned", color: "#B45309", bg: "#FEF3C7" },
+  created: { label: "Requested", color: "#B45309", bg: "#FEF3C7" },
+  searching: { label: "Finding responder", color: "#B45309", bg: "#FEF3C7" },
+  dispatched: { label: "Dispatched", color: "#B45309", bg: "#FEF3C7" },
   accepted: { label: "Accepted", color: "#2563EB", bg: "#DBEAFE" },
-  en_route: { label: "En Route", color: "#2563EB", bg: "#DBEAFE" },
-  arriving: { label: "Arriving", color: "#2563EB", bg: "#DBEAFE" },
+  en_route: { label: "En route", color: "#2563EB", bg: "#DBEAFE" },
   arrived: { label: "Arrived", color: "#2563EB", bg: "#DBEAFE" },
-  in_progress: { label: "In Progress", color: "#2563EB", bg: "#DBEAFE" },
-  completed: { label: "Resolved", color: COLORS.success, bg: COLORS.successLight },
+  on_scene: { label: "On scene", color: "#2563EB", bg: "#DBEAFE" },
+  completed: {
+    label: "Resolved",
+    color: COLORS.success,
+    bg: COLORS.successLight,
+  },
   cancelled: { label: "Cancelled", color: COLORS.muted, bg: COLORS.secondary },
-  failed: { label: "Failed", color: "#DC2626", bg: "#FEE2E2" },
+  escalated: { label: "Escalated", color: "#B91C1C", bg: "#FEE2E2" },
+  expired: { label: "Expired", color: COLORS.muted, bg: COLORS.secondary },
 };
 
+function statusMeta(status: string) {
+  return (
+    STATUS_META[status] ?? {
+      label: status.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()),
+      color: COLORS.muted,
+      bg: COLORS.secondary,
+    }
+  );
+}
+
 /* =========================================================
-   FORMATTING HELPERS
+   HELPERS
 ========================================================= */
 
 function formatDateTime(iso: string): string {
@@ -114,121 +120,166 @@ function formatDateTime(iso: string): string {
   });
 }
 
-function formatDurationBetween(startIso: string, endIso: string): string {
-  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
-  const totalMinutes = Math.max(0, Math.round(ms / 60000));
+function formatSeconds(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  if (seconds < 60) return `${seconds} sec`;
+  const totalMinutes = Math.round(seconds / 60);
   if (totalMinutes < 60) return `${totalMinutes} min`;
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return minutes > 0 ? `${hours} hr ${minutes} min` : `${hours} hr`;
 }
 
-function formatCurrency(value: number): string {
-  return `KSh ${Math.round(value).toLocaleString("en-KE")}`;
+function secondsBetween(startIso: string, endIso: string): number {
+  return (new Date(endIso).getTime() - new Date(startIso).getTime()) / 1000;
+}
+
+const errorText = (err: unknown, fallback: string) =>
+  err instanceof Error && err.message ? err.message : fallback;
+
+function fetchPage(role: HistoryRole, offset: number) {
+  return apiFetch<HistoryResponse>(
+    `/api/v1/history?role=${role}&limit=${PAGE_SIZE}&offset=${offset}`
+  );
 }
 
 /* =========================================================
-   COMPONENT
+   SCREEN
 ========================================================= */
 
 export default function HistoryScreen() {
-  const [items, setItems] = useState<EmergencySummary[]>([]);
+  const { profile } = useAuth();
+  const role: HistoryRole =
+    profile?.userKind === "responder" ? "responder" : "requester";
+  const isResponder = role === "responder";
+
+  const [items, setItems] = useState<HistoryItem[]>([]);
   const [total, setTotal] = useState(0);
+  const [completed, setCompleted] = useState(0);
+
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState("");
 
-  const [details, setDetails] = useState<Record<string, EmergencyDetail>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
 
   const { toast, showToast } = useToast();
 
-  const loadHistory = useCallback(async () => {
-    setLoading(true);
-    setLoadError("");
+  // Kept in a ref so the focus effect below does not re-run (and refetch)
+  // whenever the toast helper changes identity.
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+
+  // Newest request wins: a slow old answer must not overwrite a newer one.
+  const seqRef = useRef(0);
+  const hasLoadedRef = useRef(false);
+
+  const loadFirstPage = useCallback(
+    async (mode: "focus" | "pull") => {
+      const seq = ++seqRef.current;
+
+      if (mode === "pull") setRefreshing(true);
+      else if (!hasLoadedRef.current) setLoading(true);
+
+      try {
+        const data = await fetchPage(role, 0);
+        if (seq !== seqRef.current) return;
+
+        setItems(data.items);
+        setTotal(data.total);
+        setCompleted(data.completed);
+        setLoadError("");
+        hasLoadedRef.current = true;
+      } catch (err) {
+        if (seq !== seqRef.current) return;
+
+        const message = errorText(err, "Failed to load your history.");
+        if (hasLoadedRef.current) {
+          // Keep the list that is already on screen.
+          showToastRef.current("Couldn't refresh", message, "error");
+        } else {
+          setLoadError(message);
+        }
+      } finally {
+        if (seq === seqRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [role]
+  );
+
+  // Reload every time the History tab is shown.
+  useFocusEffect(
+    useCallback(() => {
+      loadFirstPage("focus");
+    }, [loadFirstPage])
+  );
+
+  const loadMore = useCallback(async () => {
+    if (loading || refreshing || loadingMore) return;
+
+    const seq = seqRef.current;
+    setLoadingMore(true);
 
     try {
-      const data = await apiFetch<EmergencyListResponse>(
-        "/api/v1/emergencies"
-      );
-      setItems(data.emergencies);
+      const data = await fetchPage(role, items.length);
+      if (seq !== seqRef.current) return;
+
+      setItems((current) => {
+        const seen = new Set(current.map((item) => item.id));
+        return [...current, ...data.items.filter((item) => !seen.has(item.id))];
+      });
       setTotal(data.total);
+      setCompleted(data.completed);
     } catch (err) {
-      setLoadError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load your emergency history."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
-
-  // Based on the currently loaded page, not the full history — there's
-  // no separate stats endpoint, so with more than one page loaded this
-  // becomes an approximation. Fine at typical history sizes.
-  const resolvedCount = items.filter((item) => item.status === "completed")
-    .length;
-  const resolvedPercent =
-    items.length > 0 ? Math.round((resolvedCount / items.length) * 100) : 0;
-
-  const handleToggleDetails = async (item: EmergencySummary) => {
-    if (expandedId === item.id) {
-      setExpandedId(null);
-      return;
-    }
-
-    setExpandedId(item.id);
-
-    if (details[item.id]) {
-      return;
-    }
-
-    setDetailLoadingId(item.id);
-    try {
-      const detail = await apiFetch<EmergencyDetail>(
-        `/api/v1/emergencies/${item.id}`
-      );
-      setDetails((current) => ({ ...current, [item.id]: detail }));
-    } catch (err) {
-      showToast(
-        "You're offline",
-        "Couldn't load details for this incident. Check your connection and try again.",
+      showToastRef.current(
+        "Couldn't load more",
+        errorText(err, "Please try again."),
         "error"
       );
-      setExpandedId(null);
     } finally {
-      setDetailLoadingId(null);
+      setLoadingMore(false);
     }
-  };
+  }, [role, items.length, loading, refreshing, loadingMore]);
 
-  const handleDownload = (item: EmergencySummary) => {
-    Alert.alert(
-      "Report",
-      `Report ${item.id} would be downloaded here once the backend has a report/document-generation endpoint.`
-    );
-  };
+  const resolvedPercent =
+    total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  const hasMore = items.length < total;
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
         {/* HEADER */}
         <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>Emergency History</Text>
-            <Text style={styles.subtitle}>
-              View your previous emergency requests and reports.
-            </Text>
-          </View>
+          <Text style={styles.title}>
+            {isResponder ? "Response History" : "Emergency History"}
+          </Text>
+          <Text style={styles.subtitle}>
+            {isResponder
+              ? "Emergencies you have responded to."
+              : "Emergencies you have requested."}
+          </Text>
         </View>
 
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            // Clear the floating tab bar (and the emergency button for clients).
+            { paddingBottom: isResponder ? 110 : 170 },
+          ]}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => loadFirstPage("pull")}
+              tintColor={COLORS.primary}
+              colors={[COLORS.primary]}
+            />
+          }
         >
           {loading ? (
             <View style={styles.loadingState}>
@@ -236,12 +287,12 @@ export default function HistoryScreen() {
               <Text style={styles.emptyStateText}>Loading your history…</Text>
             </View>
           ) : loadError ? (
-            <View style={styles.summaryCard}>
+            <View style={styles.summaryCardColumn}>
               <Text style={styles.emptyStateTitle}>Couldn't load history</Text>
               <Text style={styles.emptyStateText}>{loadError}</Text>
               <TouchableOpacity
                 style={styles.retryButton}
-                onPress={loadHistory}
+                onPress={() => loadFirstPage("focus")}
               >
                 <Text style={styles.retryButtonText}>Retry</Text>
               </TouchableOpacity>
@@ -252,7 +303,9 @@ export default function HistoryScreen() {
               <View style={styles.summaryCard}>
                 <View style={styles.summaryItem}>
                   <Text style={styles.summaryValue}>{total}</Text>
-                  <Text style={styles.summaryLabel}>Total incidents</Text>
+                  <Text style={styles.summaryLabel}>
+                    {isResponder ? "Total responses" : "Total incidents"}
+                  </Text>
                 </View>
 
                 <View style={styles.summaryDivider} />
@@ -265,15 +318,23 @@ export default function HistoryScreen() {
 
               {/* SECTION TITLE */}
               <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Previous incidents</Text>
-                <Text style={styles.sectionCount}>{items.length} shown</Text>
+                <Text style={styles.sectionTitle}>
+                  {isResponder ? "Previous responses" : "Previous incidents"}
+                </Text>
+                <Text style={styles.sectionCount}>
+                  {items.length} of {total}
+                </Text>
               </View>
 
               {items.length === 0 ? (
                 <View style={styles.emptyState}>
-                  <Text style={styles.emptyStateTitle}>No incidents yet</Text>
+                  <Text style={styles.emptyStateTitle}>
+                    {isResponder ? "No responses yet" : "No incidents yet"}
+                  </Text>
                   <Text style={styles.emptyStateText}>
-                    Your emergency requests will show up here.
+                    {isResponder
+                      ? "Emergencies you accept will show up here."
+                      : "Your emergency requests will show up here."}
                   </Text>
                 </View>
               ) : (
@@ -281,16 +342,30 @@ export default function HistoryScreen() {
                   <HistoryCard
                     key={item.id}
                     item={item}
-                    detail={details[item.id]}
                     expanded={expandedId === item.id}
-                    detailLoading={detailLoadingId === item.id}
-                    onToggleDetails={() => handleToggleDetails(item)}
-                    onDownload={() => handleDownload(item)}
+                    onToggle={() =>
+                      setExpandedId((current) =>
+                        current === item.id ? null : item.id
+                      )
+                    }
                   />
                 ))
               )}
 
-              <View style={{ height: 30 }} />
+              {hasMore ? (
+                <TouchableOpacity
+                  style={styles.loadMoreButton}
+                  activeOpacity={0.8}
+                  onPress={loadMore}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? (
+                    <ActivityIndicator size="small" color={COLORS.primary} />
+                  ) : (
+                    <Text style={styles.loadMoreText}>Load more</Text>
+                  )}
+                </TouchableOpacity>
+              ) : null}
             </>
           )}
         </ScrollView>
@@ -307,20 +382,34 @@ export default function HistoryScreen() {
 
 function HistoryCard({
   item,
-  detail,
   expanded,
-  detailLoading,
-  onToggleDetails,
-  onDownload,
+  onToggle,
 }: {
-  item: EmergencySummary;
-  detail?: EmergencyDetail;
+  item: HistoryItem;
   expanded: boolean;
-  detailLoading: boolean;
-  onToggleDetails: () => void;
-  onDownload: () => void;
+  onToggle: () => void;
 }) {
-  const meta = STATUS_META[item.status];
+  const meta = statusMeta(item.status);
+  const isResponder = item.role === "responder";
+
+  const vehicle = [item.vehicle_type, item.vehicle_registration]
+    .filter(Boolean)
+    .join(" · ");
+
+  // Recorded arrival time when there is one, otherwise the estimate.
+  const responseValue =
+    item.response_seconds != null
+      ? formatSeconds(item.response_seconds)
+      : item.eta_minutes != null
+      ? `~${item.eta_minutes} min`
+      : null;
+  const responseLabel =
+    item.response_seconds != null ? "Response time" : "Est. response time";
+
+  const totalDuration =
+    item.status === "completed" && item.closed_at
+      ? formatSeconds(secondsBetween(item.created_at, item.closed_at))
+      : null;
 
   return (
     <View style={styles.historyCard}>
@@ -328,12 +417,11 @@ function HistoryCard({
       <View style={styles.cardTopRow}>
         <View style={styles.cardTitleContainer}>
           <Text style={styles.emergencyType}>
-            {EMERGENCY_TYPE_LABEL[item.emergency_type]}
+            {item.emergency_type_name || item.emergency_type}
           </Text>
 
           <Text style={styles.emergencyId}>
-            {formatDateTime(item.created_at)} ·{" "}
-            {item.id.slice(0, 8).toUpperCase()}
+            {formatDateTime(item.created_at)} · {item.public_id}
           </Text>
         </View>
 
@@ -345,97 +433,73 @@ function HistoryCard({
         </View>
       </View>
 
-      {/* DETAILS (fetched on demand — the list endpoint only returns
-          the lean summary shape, not cost/distance/address) */}
+      {/* ONE-LINE SUMMARY (visible when collapsed) */}
+      {!expanded && item.address ? (
+        <Text style={styles.addressPreview} numberOfLines={1}>
+          {item.address}
+        </Text>
+      ) : null}
+
+      {/* DETAILS */}
       {expanded && (
         <View style={styles.infoGrid}>
-          {detailLoading ? (
-            <ActivityIndicator color={COLORS.primary} />
-          ) : detail ? (
-            <>
-              {detail.address ? (
-                <InfoCell label="Location" value={detail.address} fullWidth />
-              ) : null}
+          {item.address ? (
+            <InfoCell label="Location" value={item.address} fullWidth />
+          ) : null}
 
-              {detail.estimated_distance_meters != null ? (
-                <InfoCell
-                  label="Distance"
-                  value={`${(detail.estimated_distance_meters / 1000).toFixed(
-                    1
-                  )} km`}
-                />
-              ) : null}
+          {isResponder && item.client_name ? (
+            <InfoCell label="Client" value={item.client_name} />
+          ) : null}
 
-              {detail.estimated_duration_seconds != null ? (
-                <InfoCell
-                  label="Est. response time"
-                  value={`${Math.round(
-                    detail.estimated_duration_seconds / 60
-                  )} min`}
-                />
-              ) : null}
+          {!isResponder && item.responder_name ? (
+            <InfoCell label="Responder" value={item.responder_name} />
+          ) : null}
 
-              {detail.estimated_cost != null ? (
-                <InfoCell
-                  label="Cost"
-                  value={formatCurrency(Number(detail.estimated_cost))}
-                />
-              ) : null}
+          {vehicle ? <InfoCell label="Vehicle" value={vehicle} /> : null}
 
-              {detail.completed_at ? (
-                <InfoCell
-                  label="Total duration"
-                  value={formatDurationBetween(
-                    detail.created_at,
-                    detail.completed_at
-                  )}
-                />
-              ) : null}
+          {item.station ? (
+            <InfoCell label="Station" value={item.station} />
+          ) : null}
 
-              {detail.cancelled_at ? (
-                <InfoCell
-                  label="Cancelled"
-                  value={formatDateTime(detail.cancelled_at)}
-                />
-              ) : null}
+          {item.distance_km != null ? (
+            <InfoCell
+              label="Distance"
+              value={`${item.distance_km.toFixed(1)} km`}
+            />
+          ) : null}
 
-              {!detail.address &&
-              detail.estimated_distance_meters == null &&
-              detail.estimated_duration_seconds == null &&
-              detail.estimated_cost == null &&
-              !detail.completed_at &&
-              !detail.cancelled_at ? (
-                <Text style={styles.noDetailsText}>
-                  No further details recorded for this incident yet.
-                </Text>
-              ) : null}
-            </>
+          {responseValue ? (
+            <InfoCell label={responseLabel} value={responseValue} />
+          ) : null}
+
+          {totalDuration ? (
+            <InfoCell label="Total duration" value={totalDuration} />
+          ) : null}
+
+          {item.cancelled_at ? (
+            <InfoCell
+              label="Cancelled"
+              value={formatDateTime(item.cancelled_at)}
+            />
+          ) : null}
+
+          {item.description ? (
+            <InfoCell label="Notes" value={item.description} fullWidth />
           ) : null}
         </View>
       )}
 
       {/* ACTIONS */}
-      <View style={styles.actions}>
-        <TouchableOpacity
-          style={styles.outlineButton}
-          activeOpacity={0.8}
-          onPress={onDownload}
-        >
-          <Text style={styles.downloadIcon}>↓</Text>
-          <Text style={styles.outlineButtonText}>Download report</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.detailsButton}
-          activeOpacity={0.7}
-          onPress={onToggleDetails}
-        >
-          <Text style={styles.fileIcon}>▤</Text>
-          <Text style={styles.detailsButtonText}>
-            {expanded ? "Hide details" : "View details"}
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <TouchableOpacity
+        style={styles.detailsButton}
+        activeOpacity={0.7}
+        onPress={onToggle}
+      >
+        <Text style={styles.fileIcon}>▤</Text>
+        <Text style={styles.detailsButtonText}>
+          {expanded ? "Hide details" : "View details"}
+        </Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -456,7 +520,7 @@ function InfoCell({
   return (
     <View style={[styles.infoCell, fullWidth && styles.infoCellFull]}>
       <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue} numberOfLines={2}>
+      <Text style={styles.infoValue} numberOfLines={fullWidth ? 4 : 2}>
         {value}
       </Text>
     </View>
@@ -482,7 +546,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 25, fontWeight: "800", color: COLORS.black },
   subtitle: { marginTop: 5, fontSize: 13, lineHeight: 19, color: COLORS.muted },
 
-  scrollContent: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 30 },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 16 },
 
   loadingState: { alignItems: "center", paddingVertical: 60, gap: 12 },
 
@@ -494,6 +558,16 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     paddingHorizontal: 10,
     flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 22,
+  },
+  summaryCardColumn: {
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 18,
+    paddingVertical: 22,
+    paddingHorizontal: 16,
     alignItems: "center",
     marginBottom: 22,
   },
@@ -561,6 +635,11 @@ const styles = StyleSheet.create({
     color: COLORS.lightMuted,
     fontWeight: "500",
   },
+  addressPreview: {
+    marginTop: 10,
+    fontSize: 12,
+    color: COLORS.muted,
+  },
 
   statusBadge: {
     flexDirection: "row",
@@ -599,45 +678,34 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: COLORS.text,
   },
-  noDetailsText: {
-    fontSize: 11,
-    color: COLORS.lightMuted,
-    fontStyle: "italic",
-  },
 
-  actions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginTop: 16,
-  },
-  outlineButton: {
-    flex: 1,
-    minHeight: 46,
+  detailsButton: {
+    marginTop: 14,
+    minHeight: 44,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 8,
   },
-  downloadIcon: {
-    fontSize: 18,
+  fileIcon: {
+    fontSize: 16,
     fontWeight: "800",
-    color: COLORS.text,
+    color: COLORS.muted,
     marginRight: 6,
   },
-  outlineButtonText: { fontSize: 12, fontWeight: "700", color: COLORS.text },
+  detailsButtonText: { fontSize: 12, fontWeight: "700", color: COLORS.text },
 
-  detailsButton: {
+  loadMoreButton: {
+    marginTop: 4,
     minHeight: 46,
-    paddingHorizontal: 12,
     borderRadius: 12,
-    flexDirection: "row",
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.white,
     alignItems: "center",
     justifyContent: "center",
   },
-  fileIcon: { fontSize: 16, fontWeight: "800", color: COLORS.muted, marginRight: 5 },
-  detailsButtonText: { fontSize: 12, fontWeight: "700", color: COLORS.text },
+  loadMoreText: { fontSize: 13, fontWeight: "800", color: COLORS.primary },
 });
