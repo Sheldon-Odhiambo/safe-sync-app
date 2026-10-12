@@ -1,4 +1,3 @@
-
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -17,6 +16,7 @@ import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
+import { playSiren, stopSiren } from "@/lib/siren";
 
 // ============================================================
 // TYPES
@@ -283,6 +283,9 @@ export default function TrackScreen() {
   const userMovedMapRef = useRef(false);
   const mountedRef = useRef(true);
   const cancelInProgressRef = useRef(false);
+  // null until the first tracking answer, then whether the responder had
+  // already arrived. Used to play the arrival siren only on the change.
+  const previousArrivedRef = useRef<boolean | null>(null);
 
   const params = useLocalSearchParams<{
     incidentId?: string | string[];
@@ -381,6 +384,29 @@ export default function TrackScreen() {
 
     return () => {
       mountedRef.current = false;
+    };
+  }, []);
+
+  // ----------------------------------------------------------
+  // ARRIVAL SIREN
+  // ----------------------------------------------------------
+
+  // Plays once when the responder arrives while this screen is open. If the
+  // screen opens on an emergency that has already arrived, it stays quiet.
+  useEffect(() => {
+    if (!tracking) return;
+
+    if (previousArrivedRef.current === false && arrived) {
+      void playSiren();
+    }
+
+    previousArrivedRef.current = arrived;
+  }, [tracking, arrived]);
+
+  // Never leave a siren playing after the screen closes.
+  useEffect(() => {
+    return () => {
+      stopSiren();
     };
   }, []);
 
