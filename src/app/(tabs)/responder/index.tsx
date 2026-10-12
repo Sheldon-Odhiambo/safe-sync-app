@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  Modal,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -28,6 +29,7 @@ import {
 
 import MapView, {
   Marker,
+  Polyline,
   PROVIDER_GOOGLE,
 } from "react-native-maps";
 
@@ -55,6 +57,7 @@ const API = {
   dispatches: "/api/v1/drivers/dispatches",
   stats: "/api/v1/drivers/stats",
   route: "/api/v1/drivers/dispatch/route",
+  freeVehicle: "/api/v1/drivers/vehicle/free",
 };
 
 const DISPATCH_POLL_MS = 4_000;
@@ -80,7 +83,7 @@ type Profile = {
   responder_type: string;
   badge_number: string | null;
   verification_status: string;
-  status: string;
+  status: string; // "available" | "busy" | "offline"
   shift_status: string; // "on_shift" | "off_shift"
   active_vehicle_id: string | null;
   shift_started_at: string | null;
@@ -100,12 +103,6 @@ type InspectionItem = {
   is_mandatory: boolean;
 };
 
-type DispatchStep = {
-  id: string;
-  label: string;
-  done: boolean;
-};
-
 type Dispatch = {
   id: string;
   status: string;
@@ -118,9 +115,12 @@ type Dispatch = {
   distance_km: number | null;
   eta_minutes: number | null;
   notes: string | null;
-  completed_steps: number;
-  steps: DispatchStep[];
   expires_at: string | null;
+};
+
+type ClientProfile = {
+  name: string | null;
+  phone: string | null;
 };
 
 type Stats = {
@@ -138,6 +138,8 @@ type Coordinates = {
 const isFireEngine = (vehicle?: Vehicle) =>
   vehicle?.vehicle_type_code === "FIRE_ENGINE";
 
+const isFireEmergency = (type: string) => type.toLowerCase().includes("fire");
+
 const titleCase = (value: string) =>
   value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 
@@ -150,6 +152,14 @@ const formatDuration = (seconds: number | null) => {
 
 const errorMessage = (err: unknown, fallback: string) =>
   err instanceof Error ? err.message : fallback;
+
+const initials = (name: string | null) =>
+  (name ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "?";
 
 /* ============================================================
    MAIN COMPONENT
@@ -176,6 +186,23 @@ export default function ResponderConsole() {
   const [shiftBusy, setShiftBusy] = useState(false);
   const [dispatchBusy, setDispatchBusy] = useState(false);
 
+  /* ---------------- end-of-emergency state ---------------- */
+
+  // The emergency that was just completed ("Located"). Kept so its details
+  // stay on screen until the responder frees the vehicle.
+  const [finished, setFinished] = useState<Dispatch | null>(null);
+  // True from "Arrived" until the responder taps "Free vehicle". The server
+  // keeps the responder 'busy' for exactly this period.
+  const [awaitingRelease, setAwaitingRelease] = useState(false);
+  const [releaseBusy, setReleaseBusy] = useState(false);
+
+  /* ---------------- client profile ---------------- */
+
+  const [clientProfile, setClientProfile] = useState<ClientProfile | null>(null);
+  const [clientProfileOpen, setClientProfileOpen] = useState(false);
+  const [clientProfileLoading, setClientProfileLoading] = useState(false);
+  const [clientProfileError, setClientProfileError] = useState("");
+
   /* ---------------- local UI state ---------------- */
 
   const [online, setOnline] = useState(false);
@@ -199,6 +226,9 @@ export default function ResponderConsole() {
   const mapRef = useRef<MapView | null>(null);
   const currentLocationRef = useRef<Coordinates | null>(null);
   const dispatchRef = useRef<Dispatch | null>(null);
+  // Dispatch ids completed on this device. A poll that was already in flight
+  // when "Arrived" was confirmed can return the old assignment; ignore it.
+  const completedRef = useRef<Set<string>>(new Set());
 
   const mapReadyRef = useRef(false);
   const reportBusyRef = useRef(false);
@@ -233,10 +263,11 @@ export default function ResponderConsole() {
   const checkedCount = online ? checklistItems.length : checkedIds.length;
 
   const accepted = !!dispatch && dispatch.status !== "pending";
-  const completedSteps = dispatch?.completed_steps ?? 0;
 
-  const dispatchLat = dispatch?.latitude ?? null;
-  const dispatchLng = dispatch?.longitude ?? null;
+  // The emergency shown on the map: the live one, or the one just completed.
+  const shown = dispatch ?? finished;
+  const dispatchLat = shown?.latitude ?? null;
+  const dispatchLng = shown?.longitude ?? null;
 
   // Prefer coordinates from the backend; fall back to geocoding the address.
   const emergencyLocation = useMemo<Coordinates | null>(() => {
@@ -299,6 +330,12 @@ export default function ResponderConsole() {
       if (me.shift_status === "on_shift") {
         setOnline(true);
         setSelectedVehicle(me.active_vehicle_id ?? "");
+
+        // Still 'busy' with no live emergency: the driver finished one and
+        // has not freed the vehicle yet (e.g. the app was restarted).
+        if (!activeDispatch && me.status === "busy") {
+          setAwaitingRelease(true);
+        }
       } else {
         setOnline(false);
       }
@@ -355,13 +392,18 @@ export default function ResponderConsole() {
     };
   }, [selectedVehicle, checklistReload]);
 
-  // (5) REPLACE the "Poll for new/updated dispatches while on shift" effect
-useEffect(() => {
-  if (!online) return;
+  // Poll for new / updated dispatches while on shift.
+  useEffect(() => {
+    if (!online) return;
 
-  const timer = setInterval(async () => {
+    const timer = setInterval(async () => {
       try {
         const next = await apiFetch<Dispatch | null>(API.dispatch);
+
+        // A response that raced with "Arrived": the emergency is already
+        // completed on this device, so ignore the stale assignment.
+        if (next && completedRef.current.has(next.id)) return;
+
         const previous = dispatchRef.current;
 
         if (previous?.status === "pending" && next?.id !== previous.id) {
@@ -622,6 +664,7 @@ useEffect(() => {
 
   const hasFix = currentLocation !== null;
 
+  // Seconds left to answer a pending offer.
   useEffect(() => {
     if (!dispatch?.expires_at || accepted) {
       setSecondsLeft(null);
@@ -800,6 +843,8 @@ useEffect(() => {
       setVehicleDropdownOpen(false);
       setCheckedIds([]);
       setDispatch(null);
+      setFinished(null);
+      setAwaitingRelease(false);
       refreshVehicles();
 
       Alert.alert(
@@ -892,6 +937,8 @@ useEffect(() => {
       );
 
       setDispatch(updated);
+      setFinished(null);
+      setAwaitingRelease(false);
 
       Alert.alert(
         "Dispatch accepted",
@@ -945,38 +992,109 @@ useEffect(() => {
     );
   };
 
-  const handleAdvanceStep = async (index: number) => {
-    // Only the next outstanding step can be tapped.
-    if (!dispatch || dispatchBusy || index !== completedSteps) return;
+  // "Arrived": the responder has reached the client. This ends the emergency
+  // (the client is told the responder has arrived) but keeps the responder
+  // busy until they free the vehicle below.
+  const handleArrived = () => {
+    if (!dispatch || dispatchBusy) return;
 
-    const step = dispatch.steps[index];
-    if (!step) return;
+    Alert.alert(
+      "Confirm arrival",
+      "Confirm that you have reached the client. This ends the emergency and notifies them that you have arrived.",
+      [
+        { text: "Not yet", style: "cancel" },
+        {
+          text: "Confirm",
+          onPress: async () => {
+            setDispatchBusy(true);
 
-    setDispatchBusy(true);
+            try {
+              const updated = await apiFetch<Dispatch | null>(
+                `${API.dispatches}/${dispatch.id}/arrive`,
+                { method: "POST" }
+              );
+
+              completedRef.current.add(dispatch.id);
+              dispatchRef.current = null;
+
+              setFinished(updated ?? dispatch);
+              setDispatch(null);
+              setRoute(null);
+              setAwaitingRelease(true);
+              refreshStats();
+            } catch (err) {
+              Alert.alert(
+                "Couldn't confirm arrival",
+                errorMessage(err, "Please try again.")
+              );
+            } finally {
+              setDispatchBusy(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // "Free vehicle": the responder is back and ready for the next emergency.
+  const handleRelease = async () => {
+    if (releaseBusy) return;
+
+    setReleaseBusy(true);
 
     try {
-      const updated = await apiFetch<Dispatch | null>(
-        `${API.dispatches}/${dispatch.id}/progress`,
-        {
-          method: "POST",
-          body: JSON.stringify({ step_id: step.id }),
-        }
+      await apiFetch<unknown>(API.freeVehicle, { method: "POST" });
+
+      setAwaitingRelease(false);
+      setFinished(null);
+      setProfile((current) =>
+        current ? { ...current, status: "available" } : current
       );
 
-      if (!updated || updated.status === "completed") {
-        setDispatch(null);
-        refreshStats();
-      } else {
-        setDispatch(updated);
-      }
+      Alert.alert(
+        "You are available",
+        "Dispatch can now send you the next emergency."
+      );
     } catch (err) {
       Alert.alert(
-        "Couldn't update status",
+        "Couldn't free your vehicle",
         errorMessage(err, "Please try again.")
       );
     } finally {
-      setDispatchBusy(false);
+      setReleaseBusy(false);
     }
+  };
+
+  const openClientProfile = async () => {
+    const target = dispatch ?? finished;
+    if (!target) return;
+
+    setClientProfileOpen(true);
+    setClientProfileLoading(true);
+    setClientProfileError("");
+    setClientProfile(null);
+
+    try {
+      const data = await apiFetch<ClientProfile>(
+        `${API.dispatches}/${target.id}/client`
+      );
+      setClientProfile(data ?? null);
+    } catch (err) {
+      setClientProfileError(
+        errorMessage(err, "Couldn't load the client's profile.")
+      );
+    } finally {
+      setClientProfileLoading(false);
+    }
+  };
+
+  const callClient = () => {
+    const phone = clientProfile?.phone;
+    if (!phone) return;
+
+    Linking.openURL(`tel:${phone}`).catch(() =>
+      Alert.alert("Unable to call", "Your device could not open the phone app.")
+    );
   };
 
   const handleNavigate = () => {
@@ -1202,7 +1320,7 @@ useEffect(() => {
                     <Marker
                       coordinate={emergencyLocation}
                       title="Emergency location"
-                      description={dispatch?.address ?? undefined}
+                      description={shown?.address ?? undefined}
                     >
                       <View style={styles.emergencyMarker}>
                         <Ionicons name="location" size={34} color="#DC2626" />
@@ -1372,9 +1490,11 @@ useEffect(() => {
                   </Text>
 
                   <Text style={styles.availabilitySubtitle}>
-                    {online
-                      ? "Dispatch can see you"
-                      : "You are currently unavailable"}
+                    {!online
+                      ? "You are currently unavailable"
+                      : awaitingRelease || accepted
+                      ? "Busy — not receiving new emergencies"
+                      : "Dispatch can see you"}
                   </Text>
                 </View>
               </View>
@@ -1422,7 +1542,7 @@ useEffect(() => {
             />
           </View>
 
-          {/* INCOMING / ACTIVE REQUEST */}
+          {/* INCOMING / ACTIVE / LOCATED */}
 
           {dispatch ? (
             <View style={styles.card}>
@@ -1430,7 +1550,7 @@ useEffect(() => {
                 <View style={styles.emergencyIcon}>
                   <MaterialCommunityIcons
                     name={
-                      dispatch.emergency_type.toLowerCase() === "fire"
+                      isFireEmergency(dispatch.emergency_type)
                         ? "fire-truck"
                         : "ambulance"
                     }
@@ -1441,7 +1561,7 @@ useEffect(() => {
 
                 <View style={styles.emergencyHeaderText}>
                   <Text style={styles.emergencyTitle} numberOfLines={2}>
-                    {accepted ? "ACTIVE" : "INCOMING"} •{" "}
+                    {accepted ? "EN ROUTE" : "INCOMING"} •{" "}
                     {titleCase(dispatch.emergency_type)} Emergency • Severity{" "}
                     {titleCase(dispatch.severity)}
                   </Text>
@@ -1455,6 +1575,9 @@ useEffect(() => {
                       : ""}
                     {dispatch.eta_minutes != null
                       ? ` • ${dispatch.eta_minutes} min`
+                      : ""}
+                    {!accepted && secondsLeft != null
+                      ? ` • ${secondsLeft}s left`
                       : ""}
                   </Text>
                 </View>
@@ -1547,54 +1670,133 @@ useEffect(() => {
                       <Text style={styles.navigateText}>Navigate to scene</Text>
                     </Pressable>
 
-                    <View style={styles.responseProgress}>
-                      <Text style={styles.responseTitle}>Response status</Text>
+                    <Pressable
+                      style={styles.secondaryButton}
+                      onPress={openClientProfile}
+                    >
+                      <Ionicons
+                        name="person-circle-outline"
+                        size={21}
+                        color="#0F172A"
+                      />
+                      <Text style={styles.secondaryButtonText}>
+                        View client profile
+                      </Text>
+                    </Pressable>
 
-                      {dispatch.steps.map((step, index) => {
-                        const done = step.done;
-                        const isNext = index === completedSteps;
-
-                        return (
-                          <Pressable
-                            key={step.id}
-                            style={styles.responseItem}
-                            onPress={() => handleAdvanceStep(index)}
-                            disabled={!isNext || dispatchBusy}
-                          >
-                            <View
-                              style={[
-                                styles.responseCircle,
-                                done && styles.responseCircleActive,
-                              ]}
-                            >
-                              {done ? (
-                                <Ionicons
-                                  name="checkmark"
-                                  size={14}
-                                  color="#FFFFFF"
-                                />
-                              ) : (
-                                <Text style={styles.responseNumber}>
-                                  {index + 1}
-                                </Text>
-                              )}
-                            </View>
-
-                            <Text
-                              style={[
-                                styles.responseText,
-                                (done || isNext) && styles.responseTextActive,
-                              ]}
-                            >
-                              {step.label}
-                              {isNext ? "  (tap when done)" : ""}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
+                    <Pressable
+                      style={[
+                        styles.arrivedButton,
+                        dispatchBusy && { opacity: 0.6 },
+                      ]}
+                      onPress={handleArrived}
+                      disabled={dispatchBusy}
+                    >
+                      {dispatchBusy ? (
+                        <ActivityIndicator color="#FFFFFF" />
+                      ) : (
+                        <>
+                          <Ionicons name="flag" size={20} color="#FFFFFF" />
+                          <Text style={styles.arrivedButtonText}>Arrived</Text>
+                        </>
+                      )}
+                    </Pressable>
                   </>
                 )}
+              </View>
+            </View>
+          ) : awaitingRelease ? (
+            <View style={styles.card}>
+              <View style={styles.locatedHeader}>
+                <View style={styles.locatedIcon}>
+                  <Ionicons name="checkmark-done" size={24} color="#FFFFFF" />
+                </View>
+
+                <View style={styles.emergencyHeaderText}>
+                  <Text style={styles.emergencyTitle}>
+                    LOCATED • CLIENT FOUND
+                  </Text>
+
+                  <Text style={styles.emergencySubtitle}>
+                    Emergency completed. The client has been notified.
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.cardContent}>
+                {finished && (
+                  <View style={styles.detailsGrid}>
+                    <Cell
+                      label="Emergency type"
+                      value={titleCase(finished.emergency_type)}
+                    />
+                    <Cell
+                      label="Client"
+                      value={finished.caller_name ?? "Unknown"}
+                    />
+                  </View>
+                )}
+
+                {finished?.address ? (
+                  <View style={styles.notesBox}>
+                    <Text style={styles.notesLabel}>LOCATION</Text>
+                    <Text style={styles.notesText}>{finished.address}</Text>
+                  </View>
+                ) : null}
+
+                {finished && (
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={openClientProfile}
+                  >
+                    <Ionicons
+                      name="person-circle-outline"
+                      size={21}
+                      color="#0F172A"
+                    />
+                    <Text style={styles.secondaryButtonText}>
+                      View client profile
+                    </Text>
+                  </Pressable>
+                )}
+
+                <View style={styles.notesBox}>
+                  <Text style={styles.notesLabel}>NOT AVAILABLE YET</Text>
+
+                  <Text style={styles.notesText}>
+                    You won't receive new emergencies until you free your
+                    vehicle. Tap the button below once you are ready for the
+                    next call.
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={[
+                    styles.availableButton,
+                    releaseBusy && { opacity: 0.6 },
+                  ]}
+                  onPress={handleRelease}
+                  disabled={releaseBusy}
+                >
+                  {releaseBusy ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons
+                        name={
+                          isFireEngine(activeVehicle)
+                            ? "fire-truck"
+                            : "ambulance"
+                        }
+                        size={21}
+                        color="#FFFFFF"
+                      />
+                      <Text style={styles.availableButtonText}>
+                        Free vehicle • I'm available
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
               </View>
             </View>
           ) : (
@@ -1620,6 +1822,9 @@ useEffect(() => {
               </View>
             </View>
           )}
+
+          {/* INSPECTION CHECKLIST */}
+
           <View style={styles.card}>
             <View style={styles.checklistHeader}>
               <View style={styles.checklistHeaderText}>
@@ -1760,6 +1965,64 @@ useEffect(() => {
           </View>
         </ScrollView>
       </View>
+
+      {/* CLIENT PROFILE */}
+
+      <Modal
+        visible={clientProfileOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setClientProfileOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Client profile</Text>
+
+              <Pressable
+                onPress={() => setClientProfileOpen(false)}
+                hitSlop={12}
+              >
+                <Ionicons name="close" size={22} color="#0F172A" />
+              </Pressable>
+            </View>
+
+            {clientProfileLoading ? (
+              <View style={styles.modalBody}>
+                <ActivityIndicator size="large" color="#DC2626" />
+              </View>
+            ) : clientProfileError ? (
+              <View style={styles.modalBody}>
+                <Ionicons name="alert-circle-outline" size={30} color="#DC2626" />
+                <Text style={styles.clientPhone}>{clientProfileError}</Text>
+              </View>
+            ) : (
+              <View style={styles.modalBody}>
+                <View style={styles.clientAvatar}>
+                  <Text style={styles.clientAvatarText}>
+                    {initials(clientProfile?.name ?? null)}
+                  </Text>
+                </View>
+
+                <Text style={styles.clientName}>
+                  {clientProfile?.name ?? "Name unavailable"}
+                </Text>
+
+                <Text style={styles.clientPhone}>
+                  {clientProfile?.phone ?? "No phone number on file"}
+                </Text>
+
+                {clientProfile?.phone ? (
+                  <Pressable style={styles.callClientButton} onPress={callClient}>
+                    <Ionicons name="call" size={18} color="#FFFFFF" />
+                    <Text style={styles.callClientText}>Call client</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1984,26 +2247,6 @@ const styles = StyleSheet.create({
     color: "#64748B",
     letterSpacing: 1,
     marginBottom: 10,
-  },
-
-  vehicleList: {
-    gap: 8,
-  },
-
-  vehicleOption: {
-    minHeight: 66,
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-
-  vehicleOptionSelected: {
-    backgroundColor: "#DC2626",
-    borderColor: "#DC2626",
   },
 
   vehicleOptionDisabled: {
@@ -2363,7 +2606,7 @@ const styles = StyleSheet.create({
   navigateButton: {
     height: 54,
     borderRadius: 14,
-    backgroundColor: "#DC2626",
+    backgroundColor: "#0F172A",
     marginTop: 14,
     flexDirection: "row",
     alignItems: "center",
@@ -2372,6 +2615,167 @@ const styles = StyleSheet.create({
   },
 
   navigateText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  secondaryButton: {
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+
+  secondaryButtonText: {
+    color: "#0F172A",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  arrivedButton: {
+    height: 58,
+    borderRadius: 16,
+    backgroundColor: "#16A34A",
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+  },
+
+  arrivedButtonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+
+  availableButton: {
+    height: 58,
+    borderRadius: 16,
+    backgroundColor: "#DC2626",
+    marginTop: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+  },
+
+  availableButtonText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  /* ==========================================================
+     LOCATED
+  ========================================================== */
+
+  locatedHeader: {
+    minHeight: 75,
+    backgroundColor: "#16A34A",
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  locatedIcon: {
+    width: 43,
+    height: 43,
+    borderRadius: 22,
+    backgroundColor: "#15803D",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+
+  /* ==========================================================
+     CLIENT PROFILE MODAL
+  ========================================================== */
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+
+  modalCard: {
+    width: "100%",
+    maxWidth: 380,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 22,
+    padding: 20,
+  },
+
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+
+  modalBody: {
+    alignItems: "center",
+    paddingVertical: 22,
+  },
+
+  clientAvatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  clientAvatarText: {
+    color: "#FFFFFF",
+    fontSize: 24,
+    fontWeight: "900",
+  },
+
+  clientName: {
+    marginTop: 14,
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0F172A",
+    textAlign: "center",
+  },
+
+  clientPhone: {
+    marginTop: 6,
+    fontSize: 13,
+    color: "#64748B",
+    textAlign: "center",
+  },
+
+  callClientButton: {
+    marginTop: 18,
+    height: 48,
+    paddingHorizontal: 24,
+    borderRadius: 14,
+    backgroundColor: "#16A34A",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+
+  callClientText: {
     color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "800",
@@ -2563,60 +2967,6 @@ const styles = StyleSheet.create({
   },
 
   /* ==========================================================
-     RESPONSE PROGRESS
-  ========================================================== */
-
-  responseProgress: {
-    marginTop: 18,
-    padding: 14,
-    backgroundColor: "#F8FAFC",
-    borderRadius: 15,
-  },
-
-  responseTitle: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#0F172A",
-    marginBottom: 11,
-  },
-
-  responseItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 9,
-  },
-
-  responseCircle: {
-    width: 27,
-    height: 27,
-    borderRadius: 14,
-    backgroundColor: "#E2E8F0",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 9,
-  },
-
-  responseCircleActive: {
-    backgroundColor: "#16A34A",
-  },
-
-  responseNumber: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#64748B",
-  },
-
-  responseText: {
-    fontSize: 12,
-    color: "#64748B",
-  },
-
-  responseTextActive: {
-    color: "#16A34A",
-    fontWeight: "800",
-  },
-
-  /* ==========================================================
      CHECKLIST
   ========================================================== */
 
@@ -2660,38 +3010,6 @@ const styles = StyleSheet.create({
 
   progressTextWarning: {
     color: "#B45309",
-  },
-
-  tabContainer: {
-    marginHorizontal: 16,
-    flexDirection: "row",
-    backgroundColor: "#F1F5F9",
-    padding: 4,
-    borderRadius: 13,
-  },
-
-  tab: {
-    flex: 1,
-    height: 43,
-    borderRadius: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-  },
-
-  tabActive: {
-    backgroundColor: "#DC2626",
-  },
-
-  tabText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#475569",
-  },
-
-  tabTextActive: {
-    color: "#FFFFFF",
   },
 
   checklist: {

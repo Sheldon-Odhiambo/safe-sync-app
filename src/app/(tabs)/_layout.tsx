@@ -1,7 +1,4 @@
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { Redirect, Tabs, usePathname, useRouter } from "expo-router";
-import type { Href } from "expo-router";
-import { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,59 +9,102 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import {
+  Redirect,
+  Tabs,
+  usePathname,
+  useRouter,
+} from "expo-router";
+import type { Href } from "expo-router";
 
 import {
   EmergencyBarProvider,
   useEmergencyBar,
 } from "../../components/emergency-bar-context";
 import { useAuth } from "../../contexts/auth-context";
-import type { UserKind } from "../../lib/user-profile";
+import type { UserKind, UserProfileBundle } from "../../lib/user-profile";
 
+const TAG = "[SafeSync Tabs]";
 const ACTIVE_COLOR = "#DC2626";
 const INACTIVE_COLOR = "#94A3B8";
-
-// How long to wait for the profile before offering "Try again".
 const PROFILE_TIMEOUT_MS = 8000;
 
-const ADMIN_PREFIX = "/admin";
+type LandingRoute = "/home" | "/responder" | "/admin" | "/super-admin";
 
-const ROUTE_ACCESS: { prefix: string; kinds: UserKind[] }[] = [
-  { prefix: "/home", kinds: ["super_admin", "admin", "public"] },
-  { prefix: "/history", kinds: ["responder", "public"] },
-  { prefix: "/wallet", kinds: ["super_admin", "public"] },
-  { prefix: ADMIN_PREFIX, kinds: ["admin"] },
+type RouteRule = {
+  prefix: string;
+  kinds: UserKind[];
+};
+
+const ROUTE_RULES: RouteRule[] = [
+  { prefix: "/home", kinds: ["public", "admin", "super_admin"] },
+  { prefix: "/history", kinds: ["public", "responder"] },
+  { prefix: "/wallet", kinds: ["public", "super_admin"] },
+  { prefix: "/admin", kinds: ["admin"] },
   { prefix: "/super-admin", kinds: ["super_admin"] },
   { prefix: "/responder", kinds: ["responder"] },
 ];
 
-function findRule(pathname: string) {
-  return ROUTE_ACCESS.find(
-    (r) => pathname === r.prefix || pathname.startsWith(`${r.prefix}/`)
+const PRIMARY_ROUTES: string[] = [
+  "/home",
+  "/responder",
+  "/admin",
+  "/super-admin",
+];
+
+function getOrganizationType(
+  profile: UserProfileBundle | null
+): string | undefined {
+  return profile?.organization?.organization_type;
+}
+
+function homeRouteFor(
+  kind: UserKind,
+  profile: UserProfileBundle | null
+): LandingRoute {
+  switch (kind) {
+    case "responder":
+      return "/responder";
+
+    case "super_admin":
+      return "/super-admin";
+
+    case "admin":
+      return getOrganizationType(profile) === "service_provider"
+        ? "/admin"
+        : "/home";
+
+    case "public":
+    default:
+      return "/home";
+  }
+}
+
+function findRule(pathname: string): RouteRule | undefined {
+  return ROUTE_RULES.find(
+    ({ prefix }) =>
+      pathname === prefix || pathname.startsWith(`${prefix}/`)
   );
 }
 
-function homeRouteFor(kind: UserKind): Href {
-  return (kind === "responder" ? "/responder" : "/home") as Href;
+function isAdminRoute(pathname: string): boolean {
+  return pathname === "/admin" || pathname.startsWith("/admin/");
 }
 
-/**
- * The organisation type ('client' | 'service_provider') of the signed-in
- * user's organisation, if the profile carries it.
- *
- * ADAPT: make sure lib/user-profile loads `organization_type` onto
- * profile.organization (core.organizations.organization_type). Until it does,
- * this returns undefined and the backend (which returns 403 for client
- * organisations) is the only thing enforcing the rule.
- */
-function getOrganizationType(profile: unknown): string | undefined {
-  const org = (
-    profile as
-      | { organization?: { organization_type?: string; type?: string } | null }
-      | null
-      | undefined
-  )?.organization;
-
-  return org?.organization_type ?? org?.type;
+function LoadingScreen({
+  message = "Loading your SafeSync account...",
+}: {
+  message?: string;
+}) {
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={ACTIVE_COLOR} />
+        <Text style={styles.loadingText}>{message}</Text>
+      </View>
+    </SafeAreaView>
+  );
 }
 
 export default function TabsLayout() {
@@ -75,18 +115,17 @@ export default function TabsLayout() {
   );
 }
 
-function LoadingScreen() {
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={ACTIVE_COLOR} />
-      </View>
-    </SafeAreaView>
-  );
-}
-
 function TabsLayoutContent() {
-  const { session, profile, initializing, refreshProfile, signOut } = useAuth();
+  const {
+    session,
+    profile,
+    initializing,
+    loadingProfile,
+    refreshingProfile,
+    refreshProfile,
+    signOut,
+  } = useAuth();
+
   const router = useRouter();
   const pathname = usePathname();
   const { config } = useEmergencyBar();
@@ -94,74 +133,304 @@ function TabsLayoutContent() {
   const [signingOut, setSigningOut] = useState(false);
   const [stalled, setStalled] = useState(false);
 
-  const hasSession = !!session;
-  const hasProfile = !!profile;
-  const kind = profile?.userKind;
+  // Tracks which user's initial route has been resolved.
+  const initialRouteResolvedFor = useRef<string | null>(null);
 
-  const isSuperAdmin = kind === "super_admin";
-  const isAdmin = kind === "admin";
+  // Prevents the same redirect from firing on every render.
+  const lastRedirect = useRef<string | null>(null);
+
+  const userId = session?.user?.id ?? null;
+  const hasSession = Boolean(session);
+  const hasProfile = Boolean(profile);
+  const kind = profile?.userKind ?? null;
+
   const isResponder = kind === "responder";
+  const isAdmin = kind === "admin";
+  const isSuperAdmin = kind === "super_admin";
 
-  // Only SERVICE PROVIDER organisations have the admin (fleet) page.
-  // Client organisations never see it. Fail open only when the type is
-  // unknown; the backend still answers 403 for client organisations.
-  const isClientOrg = getOrganizationType(profile) === "client";
-  const canUseAdmin = isAdmin && !isClientOrg;
+  const organizationType = getOrganizationType(profile);
+  const canUseAdmin =
+    isAdmin && organizationType === "service_provider";
 
-  const isEmergencyScreen = pathname?.includes("/emergency");
-  const isTrackScreen = pathname?.includes("/track");
+  const isEmergencyScreen =
+    pathname === "/emergency" || pathname.endsWith("/emergency");
+  const isTrackScreen =
+    pathname === "/track" || pathname.endsWith("/track");
 
-  // Is the user standing on a route their role (or organisation) doesn't allow?
-  const rule = pathname ? findRule(pathname) : undefined;
-  const blockedByRole = !!(kind && rule && !rule.kinds.includes(kind));
-  const blockedByOrg = !!(rule && rule.prefix === ADMIN_PREFIX && isAdmin && !canUseAdmin);
-  const routeBlocked = blockedByRole || blockedByOrg;
+  const rule = findRule(pathname);
 
-  // ---------------------------------------------------------
-  // Route guard: send users away from screens their role
-  // doesn't allow (deep links, or the default first tab, e.g. a
-  // responder landing on Home right after login).
-  // ---------------------------------------------------------
+  const blockedByRole = Boolean(
+    kind && rule && !rule.kinds.includes(kind)
+  );
+
+  const blockedByOrganization =
+    isAdminRoute(pathname) && isAdmin && !canUseAdmin;
+
+  const routeBlocked = blockedByRole || blockedByOrganization;
+
+  // Diagnostic snapshot. Do not log session tokens or OTPs.
   useEffect(() => {
-    if (routeBlocked && kind) {
-      router.replace(homeRouteFor(kind));
-    }
-  }, [routeBlocked, kind]);
+    console.info(`${TAG} route state`, {
+      pathname,
+      userId,
+      hasSession,
+      hasProfile,
+      userKind: kind,
+      organizationType: organizationType ?? null,
+      initializing,
+      loadingProfile,
+      refreshingProfile,
+      routeBlocked,
+      blockedByRole,
+      blockedByOrganization,
+    });
+  }, [
+    pathname,
+    userId,
+    hasSession,
+    hasProfile,
+    kind,
+    organizationType,
+    initializing,
+    loadingProfile,
+    refreshingProfile,
+    routeBlocked,
+    blockedByRole,
+    blockedByOrganization,
+  ]);
 
-  // ---------------------------------------------------------
-  // Profile timeout. Right after login there is a short gap where
-  // a session exists but the profile hasn't loaded yet. That is
-  // normal, so we show a spinner. Only if it takes too long do we
-  // offer a retry.
-  // ---------------------------------------------------------
+  // Reset per-user navigation state on sign-out or account switch.
   useEffect(() => {
-    if (hasProfile || !hasSession) {
-      if (stalled) setStalled(false);
+    if (!userId) {
+      initialRouteResolvedFor.current = null;
+      lastRedirect.current = null;
+      setStalled(false);
+      console.info(`${TAG} no authenticated user; route state reset`);
       return;
     }
 
-    if (stalled) return;
+    if (
+      initialRouteResolvedFor.current &&
+      initialRouteResolvedFor.current !== userId
+    ) {
+      console.info(`${TAG} authenticated user changed`, {
+        previousUserId: initialRouteResolvedFor.current,
+        currentUserId: userId,
+      });
 
-    const timer = setTimeout(() => setStalled(true), PROFILE_TIMEOUT_MS);
+      initialRouteResolvedFor.current = null;
+      lastRedirect.current = null;
+    }
+  }, [userId]);
+
+  // Resolve the initial landing route once the profile is ready.
+  useEffect(() => {
+    if (initializing || !userId || !profile || !kind) {
+      console.info(`${TAG} initial route resolution deferred`, {
+        initializing,
+        hasUserId: Boolean(userId),
+        hasProfile: Boolean(profile),
+        userKind: kind,
+      });
+      return;
+    }
+
+    if (initialRouteResolvedFor.current === userId) {
+      return;
+    }
+
+    // Do not override a deliberate secondary-screen navigation.
+    // Only resolve the initial landing route when on a primary screen.
+    if (!PRIMARY_ROUTES.includes(pathname)) {
+      console.info(`${TAG} preserving current non-primary route`, {
+        pathname,
+        userKind: kind,
+      });
+
+      initialRouteResolvedFor.current = userId;
+      return;
+    }
+
+    const destination = homeRouteFor(kind, profile);
+
+    initialRouteResolvedFor.current = userId;
+
+    if (pathname === destination) {
+      console.info(`${TAG} initial route already correct`, {
+        pathname,
+        userKind: kind,
+      });
+      return;
+    }
+
+    const redirectKey = `${userId}:${pathname}->${destination}`;
+    lastRedirect.current = redirectKey;
+
+    console.info(`${TAG} resolving initial landing route`, {
+      userId,
+      userKind: kind,
+      organizationType: organizationType ?? null,
+      from: pathname,
+      to: destination,
+    });
+
+    try {
+      router.replace(destination as Href);
+    } catch (error) {
+      initialRouteResolvedFor.current = null;
+      lastRedirect.current = null;
+
+      console.error(`${TAG} initial route navigation failed`, {
+        from: pathname,
+        to: destination,
+        error,
+      });
+    }
+  }, [
+    initializing,
+    userId,
+    profile,
+    kind,
+    pathname,
+    organizationType,
+    router,
+  ]);
+
+  // Guard against direct navigation and deep links to forbidden screens.
+  useEffect(() => {
+    if (
+      initializing ||
+      !userId ||
+      !profile ||
+      !kind ||
+      !routeBlocked
+    ) {
+      return;
+    }
+
+    const destination = homeRouteFor(kind, profile);
+
+    if (pathname === destination) {
+      return;
+    }
+
+    const redirectKey = `${userId}:${pathname}->${destination}`;
+
+    if (lastRedirect.current === redirectKey) {
+      return;
+    }
+
+    lastRedirect.current = redirectKey;
+
+    console.warn(`${TAG} blocked route; redirecting`, {
+      userId,
+      userKind: kind,
+      organizationType: organizationType ?? null,
+      from: pathname,
+      to: destination,
+      blockedByRole,
+      blockedByOrganization,
+    });
+
+    try {
+      router.replace(destination as Href);
+    } catch (error) {
+      lastRedirect.current = null;
+
+      console.error(`${TAG} protected-route redirect failed`, {
+        from: pathname,
+        to: destination,
+        error,
+      });
+    }
+  }, [
+    initializing,
+    userId,
+    profile,
+    kind,
+    pathname,
+    organizationType,
+    routeBlocked,
+    blockedByRole,
+    blockedByOrganization,
+    router,
+  ]);
+
+  // Display a retry screen if the session exists but profile resolution stalls.
+  useEffect(() => {
+    if (
+      initializing ||
+      !hasSession ||
+      hasProfile ||
+      loadingProfile ||
+      refreshingProfile
+    ) {
+      setStalled(false);
+      return;
+    }
+
+    console.warn(`${TAG} profile is unavailable; starting timeout`, {
+      userId,
+      pathname,
+      timeoutMs: PROFILE_TIMEOUT_MS,
+    });
+
+    const timer = setTimeout(() => {
+      console.error(`${TAG} profile loading timed out`, {
+        userId,
+        pathname,
+      });
+
+      setStalled(true);
+    }, PROFILE_TIMEOUT_MS);
+
     return () => clearTimeout(timer);
-  }, [hasProfile, hasSession, stalled]);
+  }, [
+    initializing,
+    hasSession,
+    hasProfile,
+    loadingProfile,
+    refreshingProfile,
+    userId,
+    pathname,
+  ]);
 
-  // ---------------------------------------------------------
-  // Sign out
-  // ---------------------------------------------------------
-  const performSignOut = async () => {
-    if (signingOut) return;
+  const performSignOut = useCallback(async () => {
+    if (signingOut) {
+      return;
+    }
+
+    console.info(`${TAG} sign-out requested`, { userId });
     setSigningOut(true);
+
     try {
       await signOut();
+
+      initialRouteResolvedFor.current = null;
+      lastRedirect.current = null;
+
+      console.info(`${TAG} sign-out completed; returning to login`);
+
+      router.replace("/");
+    } catch (error) {
+      console.error(`${TAG} sign-out failed`, error);
+
+      if (Platform.OS === "web") {
+        window.alert(
+          "Sign-out could not be completed. Please try again."
+        );
+      } else {
+        Alert.alert(
+          "Sign-out failed",
+          "Sign-out could not be completed. Please try again."
+        );
+      }
     } finally {
       setSigningOut(false);
-      router.replace("/");
     }
-  };
+  }, [signingOut, signOut, router, userId]);
 
-  const confirmSignOut = () => {
-    // Alert.alert with buttons does nothing on web.
+  const confirmSignOut = useCallback(() => {
     if (Platform.OS === "web") {
       if (window.confirm("Are you sure you want to sign out?")) {
         void performSignOut();
@@ -174,47 +443,76 @@ function TabsLayoutContent() {
       {
         text: "Sign out",
         style: "destructive",
-        onPress: () => {
-          void performSignOut();
-        },
+        onPress: () => void performSignOut(),
       },
     ]);
-  };
+  }, [performSignOut]);
 
-  const handleEmergency = () => {
-    router.push("/emergency");
-  };
+  const handleEmergency = useCallback(() => {
+    console.info(`${TAG} emergency action pressed`, {
+      userId,
+      pathname,
+    });
 
-  // =========================================================
-  // Gates. Everything below runs only for a signed-in user whose
-  // profile is loaded and who is allowed on this route.
-  // =========================================================
+    router.push("/emergency" as Href);
+  }, [router, userId, pathname]);
 
-  // Still restoring the stored session.
-  if (initializing) return <LoadingScreen />;
+  const handleRetryProfile = useCallback(async () => {
+    console.info(`${TAG} profile retry requested`, { userId });
 
-  // Not signed in (or just signed out): back to the login screen.
-  if (!hasSession) return <Redirect href="/" />;
+    setStalled(false);
 
-  // Signed in, profile not here yet.
-  if (!hasProfile) {
-    if (!stalled) return <LoadingScreen />;
+    try {
+      await refreshProfile();
+
+      console.info(`${TAG} profile retry finished`, {
+        hasProfile: Boolean(profile),
+      });
+    } catch (error) {
+      console.error(`${TAG} profile retry failed`, error);
+      setStalled(true);
+    }
+  }, [refreshProfile, userId, profile]);
+
+  // Authentication gates.
+  if (initializing) {
+    return <LoadingScreen message="Restoring your session..." />;
+  }
+
+  if (!hasSession) {
+    console.warn(`${TAG} no session inside tabs; redirecting to login`);
+    return <Redirect href="/" />;
+  }
+
+  if (!hasProfile || !kind) {
+    if (!stalled || loadingProfile || refreshingProfile) {
+      return (
+        <LoadingScreen message="Loading your account and permissions..." />
+      );
+    }
 
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.centered}>
-          <Text style={styles.errorTitle}>Couldn't load your account</Text>
+          <MaterialCommunityIcons
+            name="account-alert-outline"
+            size={42}
+            color={ACTIVE_COLOR}
+          />
+
+          <Text style={styles.errorTitle}>
+            Couldn't load your account
+          </Text>
+
           <Text style={styles.errorText}>
-            Check your connection and try again.
+            Your session exists, but SafeSync could not load your profile
+            and role. Check your internet connection and retry.
           </Text>
 
           <TouchableOpacity
             style={styles.retryButton}
             activeOpacity={0.85}
-            onPress={() => {
-              setStalled(false);
-              void refreshProfile();
-            }}
+            onPress={() => void handleRetryProfile()}
           >
             <Text style={styles.retryText}>Try again</Text>
           </TouchableOpacity>
@@ -222,9 +520,7 @@ function TabsLayoutContent() {
           <TouchableOpacity
             style={styles.linkButton}
             activeOpacity={0.7}
-            onPress={() => {
-              void performSignOut();
-            }}
+            onPress={() => void performSignOut()}
           >
             <Text style={styles.linkText}>Sign out</Text>
           </TouchableOpacity>
@@ -233,18 +529,19 @@ function TabsLayoutContent() {
     );
   }
 
-  // Wrong route for this role/organisation: the effect above is redirecting.
-  // Show a spinner instead of flashing the wrong screen.
-  if (routeBlocked) return <LoadingScreen />;
+  const expectedLanding = homeRouteFor(kind, profile);
 
-  // ---------------------------------------------------------
-  // Resolve what the single global bottom button should show.
-  // - Track screen: no button at all.
-  // - Emergency screen: driven entirely by the screen itself
-  //   (via EmergencyBarProvider).
-  // - Everywhere else: the default "request help" button.
-  // ---------------------------------------------------------
-  
+  const wrongInitialRoute =
+    initialRouteResolvedFor.current !== userId &&
+    PRIMARY_ROUTES.includes(pathname) &&
+    pathname !== expectedLanding;
+
+  // Keep forbidden or incorrect initial screens hidden during redirects.
+  if (routeBlocked || wrongInitialRoute) {
+    return <LoadingScreen message="Opening the correct SafeSync screen..." />;
+  }
+
+  // Global emergency button visibility and behavior.
   const barConfig =
     isResponder || isTrackScreen
       ? null
@@ -265,17 +562,20 @@ function TabsLayoutContent() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        {/* ================================================= */}
-        {/* GLOBAL SAFESYNC HEADER                            */}
-        {/* ================================================= */}
         <View style={styles.header}>
           <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
-              <Ionicons name="shield-checkmark" size={18} color="#FFFFFF" />
+              <Ionicons
+                name="shield-checkmark"
+                size={18}
+                color="#FFFFFF"
+              />
             </View>
-            <View>
+
+            <View style={styles.brandTextContainer}>
               <Text style={styles.brandTitle}>SafeSync</Text>
-              {profile.organization ? (
+
+              {profile.organization?.name ? (
                 <Text style={styles.orgName} numberOfLines={1}>
                   {profile.organization.name}
                 </Text>
@@ -283,28 +583,28 @@ function TabsLayoutContent() {
             </View>
           </View>
 
-          <View style={styles.headerActions}>
-            <TouchableOpacity
-              style={[
-                styles.signOutButton,
-                signingOut && styles.signOutButtonBusy,
-              ]}
-              activeOpacity={0.7}
-              onPress={confirmSignOut}
-              disabled={signingOut}
-            >
-              {signingOut ? (
-                <ActivityIndicator size="small" color="#0F172A" />
-              ) : (
-                <Ionicons name="log-out-outline" size={20} color="#0F172A" />
-              )}
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[
+              styles.signOutButton,
+              signingOut && styles.signOutButtonBusy,
+            ]}
+            activeOpacity={0.7}
+            onPress={confirmSignOut}
+            disabled={signingOut}
+            accessibilityLabel="Sign out"
+          >
+            {signingOut ? (
+              <ActivityIndicator size="small" color="#0F172A" />
+            ) : (
+              <Ionicons
+                name="log-out-outline"
+                size={20}
+                color="#0F172A"
+              />
+            )}
+          </TouchableOpacity>
         </View>
 
-        {/* ================================================= */}
-        {/* PAGE CONTENT + TAB NAVIGATION                     */}
-        {/* ================================================= */}
         <View style={styles.tabsContainer}>
           <Tabs
             screenOptions={{
@@ -317,7 +617,6 @@ function TabsLayoutContent() {
               tabBarHideOnKeyboard: true,
             }}
           >
-            {/* HOME: super admin, admin, public. Not responder. */}
             <Tabs.Screen
               name="home"
               options={{
@@ -333,12 +632,11 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* HISTORY: responder, public. Not super admin / admin. */}
             <Tabs.Screen
               name="history"
               options={{
                 title: "History",
-                href: isSuperAdmin || isAdmin ? null : undefined,
+                href: isAdmin || isSuperAdmin ? null : undefined,
                 tabBarIcon: ({ color, focused, size }) => (
                   <Ionicons
                     name={focused ? "time" : "time-outline"}
@@ -349,7 +647,6 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* WALLET: super admin, public. Not admin / responder. */}
             <Tabs.Screen
               name="wallet"
               options={{
@@ -365,8 +662,6 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* ADMIN: admins of SERVICE PROVIDER organisations only.
-                Client organisations don't get this tab at all. */}
             <Tabs.Screen
               name="admin/index"
               options={{
@@ -382,7 +677,6 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* SUPER ADMIN: super admin only. */}
             <Tabs.Screen
               name="super-admin/index"
               options={{
@@ -398,7 +692,6 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* RESPONDER: responder only. */}
             <Tabs.Screen
               name="responder/index"
               options={{
@@ -414,7 +707,6 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* PROFILE: everyone. */}
             <Tabs.Screen
               name="profile"
               options={{
@@ -429,18 +721,16 @@ function TabsLayoutContent() {
               }}
             />
 
-            {/* HIDDEN SCREENS */}
             <Tabs.Screen name="emergency" options={{ href: null }} />
             <Tabs.Screen name="track" options={{ href: null }} />
+
             <Tabs.Screen
               name="super-admin/branch/[branchId]"
-              options={{
-                href: null,
-              }}
+              options={{ href: null }}
             />
           </Tabs>
 
-          {barConfig && (
+          {barConfig ? (
             <View style={styles.emergencyWrapper}>
               <TouchableOpacity
                 style={[
@@ -448,8 +738,10 @@ function TabsLayoutContent() {
                   barConfig.disabled && styles.emergencyButtonDisabled,
                 ]}
                 activeOpacity={0.85}
-                disabled={barConfig.disabled}
+                disabled={barConfig.disabled || barConfig.loading}
                 onPress={barConfig.onPress}
+                accessibilityRole="button"
+                accessibilityLabel={barConfig.label}
               >
                 <View style={styles.emergencyIcon}>
                   {barConfig.loading ? (
@@ -462,10 +754,13 @@ function TabsLayoutContent() {
                     />
                   )}
                 </View>
-                <Text style={styles.emergencyText}>{barConfig.label}</Text>
+
+                <Text style={styles.emergencyText}>
+                  {barConfig.label}
+                </Text>
               </TouchableOpacity>
             </View>
-          )}
+          ) : null}
         </View>
       </View>
     </SafeAreaView>
@@ -477,79 +772,78 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#F8FAFC",
   },
-
   container: {
     flex: 1,
     backgroundColor: "#F8FAFC",
   },
-
   centered: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 32,
   },
-
+  loadingText: {
+    marginTop: 12,
+    fontSize: 13,
+    color: "#64748B",
+    textAlign: "center",
+  },
   errorTitle: {
     fontSize: 18,
     fontWeight: "800",
     color: "#0F172A",
+    marginTop: 12,
     marginBottom: 6,
   },
-
   errorText: {
     fontSize: 14,
     color: "#64748B",
     textAlign: "center",
     marginBottom: 20,
+    lineHeight: 21,
   },
-
   retryButton: {
-    height: 48,
+    minHeight: 48,
     paddingHorizontal: 28,
     borderRadius: 14,
-    backgroundColor: "#DC2626",
+    backgroundColor: ACTIVE_COLOR,
     alignItems: "center",
     justifyContent: "center",
   },
-
   retryText: {
     color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "800",
   },
-
   linkButton: {
     marginTop: 14,
     padding: 8,
   },
-
   linkText: {
     color: "#64748B",
     fontSize: 13,
     fontWeight: "700",
   },
-
-  /* HEADER */
   header: {
-    height: 64,
+    minHeight: 64,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    marginTop: 35,
+    marginTop: 8,
     backgroundColor: "#FFFFFF",
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
     zIndex: 10,
   },
-
   brandContainer: {
     flexDirection: "row",
     alignItems: "center",
     flexShrink: 1,
   },
-
+  brandTextContainer: {
+    flexShrink: 1,
+  },
   logoBadge: {
     width: 34,
     height: 34,
@@ -559,27 +853,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginRight: 9,
   },
-
   brandTitle: {
     fontSize: 20,
     fontWeight: "800",
     color: "#0F172A",
   },
-
   orgName: {
     fontSize: 11,
     fontWeight: "600",
     color: "#64748B",
     maxWidth: 200,
   },
-
-  /* HEADER ACTIONS */
-  headerActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-
   signOutButton: {
     width: 40,
     height: 40,
@@ -590,17 +874,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#FFFFFF",
   },
-
   signOutButtonBusy: {
     opacity: 0.6,
   },
-
-  /* TABS CONTAINER */
   tabsContainer: {
     flex: 1,
   },
-
-  /* BOTTOM NAVIGATION */
   tabBar: {
     position: "absolute",
     left: 12,
@@ -613,25 +892,20 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingTop: 7,
     paddingBottom: Platform.OS === "ios" ? 8 : 6,
-
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
     shadowRadius: 12,
     elevation: 8,
   },
-
   tabItem: {
     paddingVertical: 2,
   },
-
   tabLabel: {
     fontSize: 10,
     fontWeight: "700",
     marginTop: 2,
   },
-
-  /* GLOBAL BOTTOM BUTTON */
   emergencyWrapper: {
     position: "absolute",
     left: 20,
@@ -639,29 +913,25 @@ const styles = StyleSheet.create({
     bottom: 88,
     zIndex: 20,
   },
-
   emergencyButton: {
-    height: 54,
-    backgroundColor: "#DC2626",
+    minHeight: 54,
+    backgroundColor: ACTIVE_COLOR,
     borderRadius: 18,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 20,
-
-    shadowColor: "#DC2626",
+    shadowColor: ACTIVE_COLOR,
     shadowOffset: { width: 0, height: 5 },
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 8,
   },
-
   emergencyButtonDisabled: {
     backgroundColor: "#94A3B8",
     shadowOpacity: 0,
     elevation: 0,
   },
-
   emergencyIcon: {
     width: 32,
     height: 32,
@@ -671,11 +941,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginRight: 9,
   },
-
   emergencyText: {
     color: "#FFFFFF",
     fontSize: 13,
     fontWeight: "900",
     letterSpacing: 0.4,
+    textAlign: "center",
+    flexShrink: 1,
   },
 });

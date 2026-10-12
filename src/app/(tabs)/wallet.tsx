@@ -21,24 +21,6 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "@/lib/supabase";
 
-/*
-|--------------------------------------------------------------------------
-| WHO PAYS FOR WHAT
-|--------------------------------------------------------------------------
-|
-|  Public user          -> has a wallet and tops it up (M-Pesa or bank transfer)
-|  Client organisation  -> NO wallet. The super admin pays for a subscription.
-|  Service provider     -> NO wallet. The super admin pays for a subscription.
-|
-| Subscription prices are PER BRANCH. The API returns each plan already
-| multiplied by the organisation's branch count (total + a summary line), so
-| the app only displays it and never does the maths itself.
-|
-| Both payment methods go: App -> FastAPI -> PayHero. PayHero calls FastAPI's
-| webhook, never the app, so the app polls FastAPI for the final status.
-| EXPO_PUBLIC_API_URL already includes /api/v1.
-*/
-
 const API_BASE = (
   process.env.EXPO_PUBLIC_API_URL || "https://api.safesync.co.ke/api/v1"
 ).replace(/\/+$/, "");
@@ -140,6 +122,8 @@ type DepositStatus = {
   status: string; // "PENDING" | "SUCCESS" | "FAILED"
   receipt?: string | null;
   reason?: string | null;
+  method?: PaymentMethod | null;
+  expires_at?: string | null;
 };
 
 type PendingBank = {
@@ -709,7 +693,9 @@ export default function Wallet() {
    * SHARED UI PIECES
    */
 
-  const methodSelector = bankEnabled ? (
+  // Always shown, so the customer can see both ways to pay. Bank transfer is
+  // greyed out until the backend switches it on (bank_transfer_enabled).
+  const methodSelector = (
     <View style={styles.inputGroup}>
       <Text style={styles.inputLabel}>Payment method</Text>
 
@@ -721,13 +707,18 @@ export default function Wallet() {
           ] as const
         ).map((option) => {
           const active = activeMethod === option.key;
+          const unavailable = option.key === "bank" && !bankEnabled;
 
           return (
             <TouchableOpacity
               key={option.key}
               activeOpacity={0.8}
-              disabled={busy}
-              style={[styles.methodOption, active && styles.methodOptionActive]}
+              disabled={busy || unavailable}
+              style={[
+                styles.methodOption,
+                active && styles.methodOptionActive,
+                unavailable && { opacity: 0.5 },
+              ]}
               onPress={() => setMethod(option.key)}
             >
               <Ionicons
@@ -739,13 +730,14 @@ export default function Wallet() {
                 style={[styles.methodOptionText, active && styles.methodOptionTextActive]}
               >
                 {option.label}
+                {unavailable ? " (soon)" : ""}
               </Text>
             </TouchableOpacity>
           );
         })}
       </View>
     </View>
-  ) : null;
+  );
 
   const phoneField =
     activeMethod === "mpesa" ? (

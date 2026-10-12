@@ -856,7 +856,7 @@ const styles = StyleSheet.create({
 
   mapWrapper: {
     height: 230,
-    width: "100%",
+    width: "100%"
   },
 
   map: {
