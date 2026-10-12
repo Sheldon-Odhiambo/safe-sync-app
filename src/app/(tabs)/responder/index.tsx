@@ -38,6 +38,7 @@ import * as Location from "expo-location";
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { DebugLogButton } from "@/components/debug-log-panel";
 import { log } from "@/lib/debug-log";
+import { startSirenLoop, stopSiren } from "@/lib/siren";
 import {
   ensureLocationAccess,
   promptLocationSettings,
@@ -180,6 +181,8 @@ export default function ResponderConsole() {
   const [checklistLoading, setChecklistLoading] = useState(false);
   const [checklistError, setChecklistError] = useState("");
   const [checklistReload, setChecklistReload] = useState(0);
+  // The checklist collapses once every item is marked; this reopens it.
+  const [checklistExpanded, setChecklistExpanded] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -202,6 +205,7 @@ export default function ResponderConsole() {
   const [clientProfileOpen, setClientProfileOpen] = useState(false);
   const [clientProfileLoading, setClientProfileLoading] = useState(false);
   const [clientProfileError, setClientProfileError] = useState("");
+  const [callBusy, setCallBusy] = useState(false);
 
   /* ---------------- local UI state ---------------- */
 
@@ -226,9 +230,17 @@ export default function ResponderConsole() {
   const mapRef = useRef<MapView | null>(null);
   const currentLocationRef = useRef<Coordinates | null>(null);
   const dispatchRef = useRef<Dispatch | null>(null);
-  // Dispatch ids completed on this device. A poll that was already in flight
-  // when "Arrived" was confirmed can return the old assignment; ignore it.
+  // Dispatch ids completed or cancelled on this device. A poll that was
+  // already in flight when "Arrived" / "Cancel" was confirmed can return the
+  // old assignment; ignore it.
   const completedRef = useRef<Set<string>>(new Set());
+  // The client's name and phone for one dispatch, so "Call client" and the
+  // profile sheet don't fetch it twice.
+  const clientCacheRef = useRef<{
+    dispatchId: string;
+    profile: ClientProfile;
+  } | null>(null);
+  const cancelInProgressRef = useRef(false);
 
   const mapReadyRef = useRef(false);
   const reportBusyRef = useRef(false);
@@ -262,6 +274,13 @@ export default function ResponderConsole() {
   const ready = online || inspectionPassed;
   const checkedCount = online ? checklistItems.length : checkedIds.length;
 
+  // Every item (not only the mandatory ones) is marked.
+  const allMarked =
+    checklistLoaded &&
+    checklistItems.length > 0 &&
+    (online || checklistItems.every((item) => checkedIds.includes(item.id)));
+  const showCollapsedChecklist = allMarked && !checklistExpanded;
+
   const accepted = !!dispatch && dispatch.status !== "pending";
 
   // The emergency shown on the map: the live one, or the one just completed.
@@ -276,6 +295,10 @@ export default function ResponderConsole() {
     }
     return geocodedEmergency;
   }, [dispatchLat, dispatchLng, geocodedEmergency]);
+
+  // An offer waiting for an answer (not yet accepted).
+  const incomingId =
+    dispatch && dispatch.status === "pending" ? dispatch.id : null;
 
   /* ============================================================
      LOAD BACKEND DATA
@@ -354,6 +377,24 @@ export default function ResponderConsole() {
     dispatchRef.current = dispatch;
   }, [dispatch]);
 
+  // Siren on repeat while an offer is waiting for an answer. The cleanup
+  // stops it when the offer is accepted, declined, expires or is cancelled
+  // (the id changes or disappears), and when the screen closes.
+  useEffect(() => {
+    if (!incomingId) return;
+
+    void startSirenLoop();
+
+    return () => {
+      stopSiren();
+    };
+  }, [incomingId]);
+
+  // Collapse the checklist as soon as the last item is marked.
+  useEffect(() => {
+    if (allMarked) setChecklistExpanded(false);
+  }, [allMarked]);
+
   // Load the inspection checklist for the selected vehicle's type.
   useEffect(() => {
     setCheckedIds([]);
@@ -400,8 +441,8 @@ export default function ResponderConsole() {
       try {
         const next = await apiFetch<Dispatch | null>(API.dispatch);
 
-        // A response that raced with "Arrived": the emergency is already
-        // completed on this device, so ignore the stale assignment.
+        // A response that raced with "Arrived" / "Cancel": the emergency is
+        // already finished on this device, so ignore the stale assignment.
         if (next && completedRef.current.has(next.id)) return;
 
         const previous = dispatchRef.current;
@@ -928,6 +969,8 @@ export default function ResponderConsole() {
   const handleAccept = async () => {
     if (!dispatch || dispatchBusy) return;
 
+    // Silence the siren the moment the responder answers.
+    stopSiren();
     setDispatchBusy(true);
 
     try {
@@ -970,6 +1013,7 @@ export default function ResponderConsole() {
           text: "Decline",
           style: "destructive",
           onPress: async () => {
+            stopSiren();
             setDispatchBusy(true);
 
             try {
@@ -1036,6 +1080,66 @@ export default function ResponderConsole() {
     );
   };
 
+  // "Cancel Request": same confirm-then-cancel flow as the client's track
+  // page. Only available after accepting and before confirming arrival.
+  const handleCancelRequest = () => {
+    if (!dispatch || !accepted || cancelInProgressRef.current) return;
+
+    const target = dispatch;
+
+    Alert.alert(
+      "Cancel Emergency",
+      "This cancels the emergency for the client as well, and they will no longer have help on the way. You will become available again. Only do this if you cannot respond.",
+      [
+        { text: "Keep Request", style: "cancel" },
+        {
+          text: "Cancel Request",
+          style: "destructive",
+          onPress: async () => {
+            if (cancelInProgressRef.current) return;
+
+            cancelInProgressRef.current = true;
+            setDispatchBusy(true);
+
+            try {
+              await apiFetch<unknown>(
+                `${API.dispatches}/${target.id}/cancel`,
+                { method: "POST" }
+              );
+
+              // Ignore any poll that was already in flight, and make sure
+              // the poll does not announce a cancellation by the client.
+              completedRef.current.add(target.id);
+              dispatchRef.current = null;
+
+              setDispatch(null);
+              setFinished(null);
+              setRoute(null);
+              setAwaitingRelease(false);
+              setProfile((current) =>
+                current ? { ...current, status: "available" } : current
+              );
+              refreshStats();
+
+              Alert.alert(
+                "Emergency cancelled",
+                "The client has been notified. You are available again."
+              );
+            } catch (err) {
+              Alert.alert(
+                "Couldn't cancel",
+                errorMessage(err, "Please try again.")
+              );
+            } finally {
+              cancelInProgressRef.current = false;
+              setDispatchBusy(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // "Free vehicle": the responder is back and ready for the next emergency.
   const handleRelease = async () => {
     if (releaseBusy) return;
@@ -1065,6 +1169,65 @@ export default function ResponderConsole() {
     }
   };
 
+  /* ============================================================
+     CLIENT: PROFILE + CALL
+     ============================================================ */
+
+  const fetchClientProfile = useCallback(
+    async (dispatchId: string): Promise<ClientProfile> => {
+      const cached = clientCacheRef.current;
+      if (cached && cached.dispatchId === dispatchId) return cached.profile;
+
+      const data = await apiFetch<ClientProfile>(
+        `${API.dispatches}/${dispatchId}/client`
+      );
+      const next: ClientProfile = data ?? { name: null, phone: null };
+
+      clientCacheRef.current = { dispatchId, profile: next };
+      return next;
+    },
+    []
+  );
+
+  const dialNumber = async (phone: string) => {
+    const number = phone.replace(/\s+/g, "");
+    try {
+      await Linking.openURL(`tel:${number}`);
+    } catch {
+      Alert.alert("Unable to call", "Your device could not open the phone app.");
+    }
+  };
+
+  // Calls the client straight from the emergency card.
+  const handleCallClient = async () => {
+    const target = dispatch ?? finished;
+    if (!target || callBusy) return;
+
+    setCallBusy(true);
+
+    try {
+      const client = await fetchClientProfile(target.id);
+      const phone = client.phone?.trim();
+
+      if (!phone) {
+        Alert.alert(
+          "No phone number",
+          "This client has no phone number on file."
+        );
+        return;
+      }
+
+      await dialNumber(phone);
+    } catch (err) {
+      Alert.alert(
+        "Couldn't call client",
+        errorMessage(err, "Please try again.")
+      );
+    } finally {
+      setCallBusy(false);
+    }
+  };
+
   const openClientProfile = async () => {
     const target = dispatch ?? finished;
     if (!target) return;
@@ -1075,10 +1238,7 @@ export default function ResponderConsole() {
     setClientProfile(null);
 
     try {
-      const data = await apiFetch<ClientProfile>(
-        `${API.dispatches}/${target.id}/client`
-      );
-      setClientProfile(data ?? null);
+      setClientProfile(await fetchClientProfile(target.id));
     } catch (err) {
       setClientProfileError(
         errorMessage(err, "Couldn't load the client's profile.")
@@ -1089,12 +1249,10 @@ export default function ResponderConsole() {
   };
 
   const callClient = () => {
-    const phone = clientProfile?.phone;
+    const phone = clientProfile?.phone?.trim();
     if (!phone) return;
 
-    Linking.openURL(`tel:${phone}`).catch(() =>
-      Alert.alert("Unable to call", "Your device could not open the phone app.")
-    );
+    void dialNumber(phone);
   };
 
   const handleNavigate = () => {
@@ -1670,19 +1828,41 @@ export default function ResponderConsole() {
                       <Text style={styles.navigateText}>Navigate to scene</Text>
                     </Pressable>
 
-                    <Pressable
-                      style={styles.secondaryButton}
-                      onPress={openClientProfile}
-                    >
-                      <Ionicons
-                        name="person-circle-outline"
-                        size={21}
-                        color="#0F172A"
-                      />
-                      <Text style={styles.secondaryButtonText}>
-                        View client profile
-                      </Text>
-                    </Pressable>
+                    <View style={styles.contactRow}>
+                      <Pressable
+                        style={[
+                          styles.callActionButton,
+                          callBusy && { opacity: 0.6 },
+                        ]}
+                        onPress={handleCallClient}
+                        disabled={callBusy}
+                      >
+                        {callBusy ? (
+                          <ActivityIndicator color="#FFFFFF" />
+                        ) : (
+                          <>
+                            <Ionicons name="call" size={19} color="#FFFFFF" />
+                            <Text style={styles.callActionText}>
+                              Call client
+                            </Text>
+                          </>
+                        )}
+                      </Pressable>
+
+                      <Pressable
+                        style={styles.profileActionButton}
+                        onPress={openClientProfile}
+                      >
+                        <Ionicons
+                          name="person-circle-outline"
+                          size={20}
+                          color="#0F172A"
+                        />
+                        <Text style={styles.profileActionText}>
+                          Client profile
+                        </Text>
+                      </Pressable>
+                    </View>
 
                     <Pressable
                       style={[
@@ -1700,6 +1880,20 @@ export default function ResponderConsole() {
                           <Text style={styles.arrivedButtonText}>Arrived</Text>
                         </>
                       )}
+                    </Pressable>
+
+                    <Pressable
+                      style={[
+                        styles.cancelRequestButton,
+                        dispatchBusy && { opacity: 0.6 },
+                      ]}
+                      onPress={handleCancelRequest}
+                      disabled={dispatchBusy}
+                    >
+                      <Ionicons name="close" size={18} color="#DC2626" />
+                      <Text style={styles.cancelRequestText}>
+                        Cancel Request
+                      </Text>
                     </Pressable>
                   </>
                 )}
@@ -1745,19 +1939,39 @@ export default function ResponderConsole() {
                 ) : null}
 
                 {finished && (
-                  <Pressable
-                    style={styles.secondaryButton}
-                    onPress={openClientProfile}
-                  >
-                    <Ionicons
-                      name="person-circle-outline"
-                      size={21}
-                      color="#0F172A"
-                    />
-                    <Text style={styles.secondaryButtonText}>
-                      View client profile
-                    </Text>
-                  </Pressable>
+                  <View style={styles.contactRow}>
+                    <Pressable
+                      style={[
+                        styles.callActionButton,
+                        callBusy && { opacity: 0.6 },
+                      ]}
+                      onPress={handleCallClient}
+                      disabled={callBusy}
+                    >
+                      {callBusy ? (
+                        <ActivityIndicator color="#FFFFFF" />
+                      ) : (
+                        <>
+                          <Ionicons name="call" size={19} color="#FFFFFF" />
+                          <Text style={styles.callActionText}>Call client</Text>
+                        </>
+                      )}
+                    </Pressable>
+
+                    <Pressable
+                      style={styles.profileActionButton}
+                      onPress={openClientProfile}
+                    >
+                      <Ionicons
+                        name="person-circle-outline"
+                        size={20}
+                        color="#0F172A"
+                      />
+                      <Text style={styles.profileActionText}>
+                        Client profile
+                      </Text>
+                    </Pressable>
+                  </View>
                 )}
 
                 <View style={styles.notesBox}>
@@ -1879,6 +2093,30 @@ export default function ResponderConsole() {
                   <Text style={styles.locationRetryText}>Try again</Text>
                 </Pressable>
               </View>
+            ) : showCollapsedChecklist ? (
+              <Pressable
+                style={styles.inspectionDone}
+                disabled={online}
+                onPress={() => setChecklistExpanded(true)}
+              >
+                <Ionicons name="checkmark-circle" size={24} color="#16A34A" />
+
+                <View style={styles.inspectionDoneInfo}>
+                  <Text style={styles.inspectionDoneTitle}>
+                    All {checklistItems.length} items checked
+                  </Text>
+
+                  <Text style={styles.inspectionDoneText}>
+                    {online
+                      ? "Inspection was completed before your shift."
+                      : "Vehicle inspection complete. You can go online."}
+                  </Text>
+                </View>
+
+                {!online && (
+                  <Text style={styles.inspectionDoneLink}>Review</Text>
+                )}
+              </Pressable>
             ) : (
               <>
                 <View style={styles.checklist}>
@@ -1945,6 +2183,15 @@ export default function ResponderConsole() {
                       ? "Vehicle inspection complete. You can go online."
                       : "Complete all inspection items before going online."}
                   </Text>
+
+                  {allMarked && !online && (
+                    <Pressable
+                      hitSlop={10}
+                      onPress={() => setChecklistExpanded(false)}
+                    >
+                      <Text style={styles.inspectionDoneLink}>Hide</Text>
+                    </Pressable>
+                  )}
                 </View>
               </>
             )}
@@ -2620,20 +2867,43 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
-  secondaryButton: {
+  contactRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 10,
+  },
+
+  callActionButton: {
+    flex: 1,
     height: 50,
     borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    backgroundColor: "#FFFFFF",
-    marginTop: 10,
+    backgroundColor: "#16A34A",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
   },
 
-  secondaryButtonText: {
+  callActionText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  profileActionButton: {
+    flex: 1,
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+
+  profileActionText: {
     color: "#0F172A",
     fontSize: 13,
     fontWeight: "800",
@@ -2654,6 +2924,25 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "900",
+  },
+
+  cancelRequestButton: {
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    backgroundColor: "#FFFFFF",
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+
+  cancelRequestText: {
+    color: "#DC2626",
+    fontSize: 13,
+    fontWeight: "800",
   },
 
   availableButton: {
@@ -3090,6 +3379,44 @@ const styles = StyleSheet.create({
 
   inspectionWarningText: {
     color: "#92400E",
+  },
+
+  /* Collapsed checklist */
+
+  inspectionDone: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#86EFAC",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
+
+  inspectionDoneInfo: {
+    flex: 1,
+  },
+
+  inspectionDoneTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#166534",
+  },
+
+  inspectionDoneText: {
+    marginTop: 2,
+    fontSize: 11,
+    lineHeight: 16,
+    color: "#166534",
+  },
+
+  inspectionDoneLink: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#15803D",
   },
 
   /* ==========================================================
