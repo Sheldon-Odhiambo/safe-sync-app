@@ -6,7 +6,7 @@ import {
 } from "expo-audio";
 
 // Put siren.wav in src/assets/sounds/ (this file lives in src/lib/).
-const SIREN_SOURCE = require("../assets/sounds/siren.wav");
+const SIREN_SOURCE = require("@/assets/sounds/siren.wav");
 
 let player: AudioPlayer | null = null;
 let audioModeSet = false;

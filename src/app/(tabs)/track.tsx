@@ -16,7 +16,7 @@ import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
-import { playSiren, stopSiren } from "@/lib/siren";
+import { playSiren, stopSiren } from "@/lib/sounds";
 
 // ============================================================
 // TYPES
