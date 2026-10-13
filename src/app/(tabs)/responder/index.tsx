@@ -11,7 +11,6 @@ import {
   Alert,
   Linking,
   Modal,
-  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -234,6 +233,7 @@ export default function ResponderConsole() {
   const currentLocationRef = useRef<Coordinates | null>(null);
   const dispatchRef = useRef<Dispatch | null>(null);
   const emergencyLocationRef = useRef<Coordinates | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
   // Dispatch ids completed or cancelled on this device. A poll that was
   // already in flight when "Arrived" / "Cancel" was confirmed can return the
   // old assignment; ignore it.
@@ -1270,6 +1270,8 @@ export default function ResponderConsole() {
     void dialNumber(phone);
   };
 
+  // "Navigate to scene": show the route on the map at the top of this screen
+  // (no external app). Scrolls back up and frames you + the emergency.
   const handleNavigate = () => {
     if (!emergencyLocation) {
       Alert.alert(
@@ -1279,17 +1281,27 @@ export default function ResponderConsole() {
       return;
     }
 
-    const { latitude, longitude } = emergencyLocation;
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
 
-    // Opens the device's own maps/navigation app (Apple Maps on iOS, the
-    // user's default navigation app on Android).
-    Linking.openURL(
-      Platform.OS === "ios"
-        ? `maps://?daddr=${latitude},${longitude}&dirflg=d`
-        : `geo:${latitude},${longitude}?q=${latitude},${longitude}(Emergency)`
-    ).catch(() =>
-      Alert.alert("Couldn't open maps", "No maps app is available.")
-    );
+    const here = currentLocationRef.current;
+    const padding = { top: 60, right: 60, bottom: 60, left: 60 };
+
+    if (route && route.polyline.length > 1) {
+      mapRef.current?.fitToCoordinates(route.polyline, {
+        edgePadding: padding,
+        animated: true,
+      });
+    } else if (here) {
+      mapRef.current?.fitToCoordinates([here, emergencyLocation], {
+        edgePadding: padding,
+        animated: true,
+      });
+    } else {
+      mapRef.current?.animateToRegion(
+        { ...emergencyLocation, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+        600
+      );
+    }
   };
 
   /* ============================================================
@@ -1365,6 +1377,7 @@ export default function ResponderConsole() {
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
         <ScrollView
+          ref={scrollRef}
           scrollEnabled={!mapTouching}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
