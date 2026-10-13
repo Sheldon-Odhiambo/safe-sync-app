@@ -38,7 +38,7 @@ import * as Location from "expo-location";
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { DebugLogButton } from "@/components/debug-log-panel";
 import { log } from "@/lib/debug-log";
-import { startSirenLoop, stopSiren } from "@/lib/siren";
+import { startSirenLoop, stopSiren } from "@/lib/sounds";
 import {
   ensureLocationAccess,
   promptLocationSettings,
