@@ -12,11 +12,17 @@ import {
   Text,
   View,
 } from "react-native";
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
+import {
+  TomTomMap,
+  TomTomMarker,
+  TomTomPolyline,
+  type TomTomMapHandle,
+} from "@/components/tomtom-map";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { playSiren, stopSiren } from "@/lib/sounds";
+import { fetchTomTomRoute } from "@/lib/tomtom";
 
 // ============================================================
 // TYPES
@@ -279,8 +285,10 @@ function normalizeEmergencyType(value: string | null | undefined): string {
 
 export default function TrackScreen() {
   const router = useRouter();
-  const mapRef = useRef<MapView | null>(null);
+  const mapRef = useRef<TomTomMapHandle | null>(null);
   const userMovedMapRef = useRef(false);
+  const vehicleRef = useRef<Coordinates | null>(null);
+  const incidentRef = useRef<Coordinates | null>(null);
   const mountedRef = useRef(true);
   const cancelInProgressRef = useRef(false);
   // null until the first tracking answer, then whether the responder had
@@ -303,6 +311,7 @@ export default function TrackScreen() {
   const [mapReady, setMapReady] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [mapTouching, setMapTouching] = useState(false);
 
   // ----------------------------------------------------------
   // DERIVED STATE
@@ -335,6 +344,9 @@ export default function TrackScreen() {
     tracking?.vehicle_location?.latitude,
     tracking?.vehicle_location?.longitude
   );
+
+  vehicleRef.current = vehicleCoordinates;
+  incidentRef.current = incidentCoordinates;
 
   const isFire =
     normalizeEmergencyType(tracking?.emergency_type) === "fire";
@@ -513,9 +525,15 @@ export default function TrackScreen() {
       inFlight = true;
 
       try {
-        const data = await apiFetch<RouteInfo | null>(
-          `/api/v1/emergencies/${encodeURIComponent(incidentId)}/route`
-        );
+        // Responder -> incident, fastest route with live traffic (TomTom).
+        const from = vehicleRef.current;
+        const to = incidentRef.current;
+
+        if (!from || !to) {
+          return;
+        }
+
+        const data = await fetchTomTomRoute(from, to);
 
         if (cancelledEffect) {
           return;
@@ -637,7 +655,7 @@ export default function TrackScreen() {
 
     try {
       const location = incidentCoordinates
-        ? `https://www.google.com/maps/search/?api=1&query=${incidentCoordinates.latitude},${incidentCoordinates.longitude}`
+        ? `https://www.openstreetmap.org/?mlat=${incidentCoordinates.latitude}&mlon=${incidentCoordinates.longitude}#map=17/${incidentCoordinates.latitude}/${incidentCoordinates.longitude}`
         : "Location coordinates are currently unavailable.";
 
       const eta =
@@ -840,6 +858,7 @@ export default function TrackScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
+        scrollEnabled={!mapTouching}
         style={styles.container}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -893,18 +912,14 @@ export default function TrackScreen() {
 
         <View style={styles.mapContainer}>
           {incidentCoordinates ? (
-            <MapView
+                        <TomTomMap
               ref={mapRef}
-              provider={PROVIDER_GOOGLE}
               style={styles.map}
               onMapReady={() => setMapReady(true)}
               onPanDrag={() => {
                 userMovedMapRef.current = true;
               }}
-              showsUserLocation={false}
-              showsMyLocationButton={false}
-              showsCompass
-              mapType="standard"
+              onInteractionChange={setMapTouching}
               initialRegion={{
                 ...incidentCoordinates,
                 latitudeDelta: 0.03,
@@ -912,55 +927,36 @@ export default function TrackScreen() {
               }}
             >
               {route && !arrived && (
-                <Polyline
+                <TomTomPolyline
+                  id="route"
                   coordinates={route.polyline}
-                  strokeColor={COLORS.route}
-                  strokeWidth={5}
+                  color={COLORS.route}
+                  width={5}
                 />
               )}
 
               {/* INCIDENT LOCATION */}
 
-              <Marker
+              <TomTomMarker
+                id="incident"
+                kind="client"
                 coordinate={incidentCoordinates}
                 title="Your location"
                 description={tracking.address ?? undefined}
-                anchor={{ x: 0.5, y: 0.5 }}
-              >
-                <View style={styles.clientMarkerWrap}>
-                  <View style={styles.clientPulse} />
-
-                  <View style={styles.clientOuter}>
-                    <View style={styles.clientInner} />
-                  </View>
-                </View>
-              </Marker>
+              />
 
               {/* RESPONDER VEHICLE */}
 
               {vehicleCoordinates && !arrived && responder && (
-                <Marker
+                <TomTomMarker
+                  id="responder"
+                  kind={isFire ? "fire" : "ambulance"}
                   coordinate={vehicleCoordinates}
                   title={responder.name || "Responder"}
-                  description={
-                    responder.vehicle_registration ?? undefined
-                  }
-                  anchor={{ x: 0.5, y: 0.5 }}
-                >
-                  <View style={styles.responderMarkerWrap}>
-                    <View style={styles.vehiclePulse} />
-
-                    <View style={styles.vehicleCircle}>
-                      <MaterialCommunityIcons
-                        name={vehicleIcon}
-                        size={18}
-                        color={COLORS.white}
-                      />
-                    </View>
-                  </View>
-                </Marker>
+                  description={responder.vehicle_registration ?? undefined}
+                />
               )}
-            </MapView>
+            </TomTomMap>
           ) : (
             <View style={styles.mapUnavailable}>
               <Ionicons

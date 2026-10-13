@@ -11,6 +11,7 @@ import {
   Alert,
   Linking,
   Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -27,17 +28,18 @@ import {
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
 
-import MapView, {
-  Marker,
-  Polyline,
-  PROVIDER_GOOGLE,
-} from "react-native-maps";
-
 import * as Location from "expo-location";
 
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { DebugLogButton } from "@/components/debug-log-panel";
 import { log } from "@/lib/debug-log";
+import { fetchTomTomRoute, geocodeTomTom } from "@/lib/tomtom";
+import {
+  TomTomMap,
+  TomTomMarker,
+  TomTomPolyline,
+  type TomTomMapHandle,
+} from "@/components/tomtom-map";
 import { startSirenLoop, stopSiren } from "@/lib/sounds";
 import {
   ensureLocationAccess,
@@ -225,11 +227,13 @@ export default function ResponderConsole() {
   const [locationReason, setLocationReason] =
     useState<LocationDeniedReason | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [mapTouching, setMapTouching] = useState(false);
   const [route, setRoute] = useState<RouteInfo | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
-  const mapRef = useRef<MapView | null>(null);
+  const mapRef = useRef<TomTomMapHandle | null>(null);
   const currentLocationRef = useRef<Coordinates | null>(null);
   const dispatchRef = useRef<Dispatch | null>(null);
+  const emergencyLocationRef = useRef<Coordinates | null>(null);
   // Dispatch ids completed or cancelled on this device. A poll that was
   // already in flight when "Arrived" / "Cancel" was confirmed can return the
   // old assignment; ignore it.
@@ -295,6 +299,8 @@ export default function ResponderConsole() {
     }
     return geocodedEmergency;
   }, [dispatchLat, dispatchLng, geocodedEmergency]);
+
+  emergencyLocationRef.current = emergencyLocation;
 
   // An offer waiting for an answer (not yet accepted).
   const incomingId =
@@ -684,14 +690,10 @@ export default function ResponderConsole() {
 
     let cancelled = false;
 
-    Location.geocodeAsync(dispatch.address)
-      .then((results) => {
-        const first = results[0];
+    geocodeTomTom(dispatch.address)
+      .then((first) => {
         if (!cancelled && first) {
-          setGeocodedEmergency({
-            latitude: first.latitude,
-            longitude: first.longitude,
-          });
+          setGeocodedEmergency(first);
         }
       })
       .catch(() => {
@@ -732,8 +734,15 @@ export default function ResponderConsole() {
 
     const load = async () => {
       try {
-        const next = await apiFetch<RouteInfo | null>(API.route);
-        if (!cancelled) setRoute(next && next.polyline?.length ? next : null);
+        // This unit -> the emergency: fastest route with live traffic
+        // (TomTom). This is the route drawn on the map at the top.
+        const from = currentLocationRef.current;
+        const to = emergencyLocationRef.current;
+
+        if (!from || !to) return;
+
+        const next = await fetchTomTomRoute(from, to);
+        if (!cancelled) setRoute(next && next.polyline.length ? next : null);
       } catch {
         /* keep the previous line */
       }
@@ -746,7 +755,13 @@ export default function ResponderConsole() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [online, dispatch?.id, hasFix]);
+  }, [
+    online,
+    dispatch?.id,
+    hasFix,
+    emergencyLocation?.latitude,
+    emergencyLocation?.longitude,
+  ]);
 
   const hasRoute = route !== null;
   const etaMinutes = route
@@ -1266,8 +1281,12 @@ export default function ResponderConsole() {
 
     const { latitude, longitude } = emergencyLocation;
 
+    // Opens the device's own maps/navigation app (Apple Maps on iOS, the
+    // user's default navigation app on Android).
     Linking.openURL(
-      `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}&travelmode=driving`
+      Platform.OS === "ios"
+        ? `maps://?daddr=${latitude},${longitude}&dirflg=d`
+        : `geo:${latitude},${longitude}?q=${latitude},${longitude}(Emergency)`
     ).catch(() =>
       Alert.alert("Couldn't open maps", "No maps app is available.")
     );
@@ -1346,6 +1365,7 @@ export default function ResponderConsole() {
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
         <ScrollView
+          scrollEnabled={!mapTouching}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
@@ -1422,21 +1442,15 @@ export default function ResponderConsole() {
                   </Pressable>
                 </View>
               ) : (
-                <MapView
+                                <TomTomMap
                   ref={mapRef}
-                  provider={PROVIDER_GOOGLE}
                   style={styles.googleMap}
+                  showTraffic
                   onMapReady={() => {
                     mapReadyRef.current = true;
                     setMapReady(true);
                   }}
-                  showsUserLocation={true}
-                  showsMyLocationButton={false}
-                  showsCompass={true}
-                  showsBuildings={true}
-                  showsPointsOfInterest={true}
-                  loadingEnabled={true}
-                  mapType="standard"
+                  onInteractionChange={setMapTouching}
                   initialRegion={{
                     latitude: currentLocation.latitude,
                     longitude: currentLocation.longitude,
@@ -1445,13 +1459,16 @@ export default function ResponderConsole() {
                   }}
                 >
                   {route && (
-                    <Polyline
+                    <TomTomPolyline
+                      id="route"
                       coordinates={route.polyline}
-                      strokeColor="#2563EB"
-                      strokeWidth={5}
+                      color="#2563EB"
+                      width={5}
                     />
                   )}
-                  <Marker
+                  <TomTomMarker
+                    id="me"
+                    kind={isFireEngine(activeVehicle) ? "fire" : "ambulance"}
                     coordinate={currentLocation}
                     title="Your location"
                     description={
@@ -1459,33 +1476,18 @@ export default function ResponderConsole() {
                         ? `Unit ${activeVehicle.registration_number}`
                         : driverName
                     }
-                    anchor={{ x: 0.5, y: 0.5 }}
-                  >
-                    <View style={styles.responderMarker}>
-                      <MaterialCommunityIcons
-                        name={
-                          isFireEngine(activeVehicle)
-                            ? "fire-truck"
-                            : "ambulance"
-                        }
-                        size={23}
-                        color="#FFFFFF"
-                      />
-                    </View>
-                  </Marker>
+                  />
 
                   {emergencyLocation && (
-                    <Marker
+                    <TomTomMarker
+                      id="emergency"
+                      kind="emergency"
                       coordinate={emergencyLocation}
                       title="Emergency location"
                       description={shown?.address ?? undefined}
-                    >
-                      <View style={styles.emergencyMarker}>
-                        <Ionicons name="location" size={34} color="#DC2626" />
-                      </View>
-                    </Marker>
+                    />
                   )}
-                </MapView>
+                </TomTomMap>
               )}
 
               {currentLocation && (
