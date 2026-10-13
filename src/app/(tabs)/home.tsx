@@ -13,13 +13,18 @@ import {
   Text,
   View,
 } from "react-native";
-import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import * as Location from "expo-location";
 import { Ionicons, FontAwesome5 } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { log } from "@/lib/debug-log";
+import { reverseGeocodeTomTom } from "@/lib/tomtom";
+import {
+  TomTomMap,
+  TomTomMarker,
+  type TomTomMapHandle,
+} from "@/components/tomtom-map";
 import {
   ensureLocationAccess,
   promptLocationSettings,
@@ -122,16 +127,6 @@ function distanceMeters(a: Coordinates, b: Coordinates): number {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-function formatPlace(address: Location.LocationGeocodedAddress): string {
-  const parts = [
-    address.name ?? address.street,
-    address.district ?? address.subregion,
-    address.city ?? address.region,
-  ].filter((p): p is string => !!p && p.trim().length > 0);
-
-  return Array.from(new Set(parts)).join(", ");
-}
-
 const formatBalance = (value: number, currency: string) => {
   const amount = value.toLocaleString("en-KE", {
     minimumFractionDigits: 2,
@@ -152,7 +147,7 @@ const isAmbulance = (unit: NearbyUnit) =>
    ============================================================ */
 
 export default function Home() {
-  const mapRef = useRef<MapView | null>(null);
+  const mapRef = useRef<TomTomMapHandle | null>(null);
   const { profile } = useAuth();
 
   const firstName = profile?.first_name?.trim() || "there";
@@ -170,6 +165,7 @@ export default function Home() {
     useState<LocationDeniedReason | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [mapReady, setMapReady] = useState(false);
+  const [mapTouching, setMapTouching] = useState(false);
 
   /* ---------------- backend data ---------------- */
 
@@ -286,15 +282,11 @@ export default function Home() {
 
   const resolvePlaceName = useCallback(async (coords: Coordinates) => {
     try {
-      const results = await Location.reverseGeocodeAsync(coords);
-      const first = results[0];
+      const name = await reverseGeocodeTomTom(coords);
 
-      if (first) {
-        const name = formatPlace(first);
-        if (name) {
-          setPlaceName(name);
-          lastGeocodeRef.current = coords;
-        }
+      if (name) {
+        setPlaceName(name);
+        lastGeocodeRef.current = coords;
       }
     } catch {
       // Keep the previous name; it is retried on the next position change.
@@ -554,6 +546,7 @@ export default function Home() {
   return (
     <View style={styles.container}>
       <ScrollView
+        scrollEnabled={!mapTouching}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
@@ -571,54 +564,40 @@ export default function Home() {
           <View style={styles.mapWrapper}>
             {currentLocation ? (
               <>
-                <MapView
+                                <TomTomMap
                   ref={mapRef}
-                  provider={PROVIDER_GOOGLE}
                   style={styles.map}
                   onMapReady={() => setMapReady(true)}
+                  onInteractionChange={setMapTouching}
                   initialRegion={{
                     latitude: currentLocation.latitude,
                     longitude: currentLocation.longitude,
                     latitudeDelta: 0.04,
                     longitudeDelta: 0.04,
                   }}
-                  showsMyLocationButton={false}
-                  mapType="standard"
                 >
-                  <Marker
+                  <TomTomMarker
+                    id="me"
+                    kind="me"
                     coordinate={currentLocation}
                     title="Your location"
                     description={placeName ?? undefined}
-                  >
-                    <View style={styles.userMarker}>
-                      <View style={styles.userMarkerInner} />
-                    </View>
-                  </Marker>
+                  />
 
                   {units.map((unit) => (
-                    <Marker
+                    <TomTomMarker
                       key={unit.vehicle_id}
+                      id={unit.vehicle_id}
+                      kind={isAmbulance(unit) ? "ambulance" : "fire"}
                       coordinate={{
                         latitude: unit.latitude,
                         longitude: unit.longitude,
                       }}
                       title={`${unit.vehicle_type_name} · ${unit.registration_number}`}
                       description={`${formatEta(unit.eta_minutes, unit.estimated)} · ${unit.distance_km.toFixed(1)} km`}
-                    >
-                      <View style={styles.responderMarker}>
-                        {isAmbulance(unit) ? (
-                          <FontAwesome5
-                            name="ambulance"
-                            size={16}
-                            color="#FFFFFF"
-                          />
-                        ) : (
-                          <Ionicons name="flame" size={18} color="#FFFFFF" />
-                        )}
-                      </View>
-                    </Marker>
+                    />
                   ))}
-                </MapView>
+                </TomTomMap>
 
                 <Pressable
                   style={styles.locateButton}
