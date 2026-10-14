@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
@@ -19,6 +20,11 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { WebView } from "react-native-webview";
+import * as Sharing from "expo-sharing";
+// SDK 54+: the callback API (downloadAsync, cacheDirectory) lives in /legacy.
+// On SDK 53 or older, change this to: import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { supabase } from "@/lib/supabase";
 
 const API_BASE = (
@@ -27,11 +33,12 @@ const API_BASE = (
 
 const PAYMENTS_URL = `${API_BASE}/payments`;
 
-// An STK prompt is answered in seconds. A bank transfer can take minutes.
-const POLLING = {
-  mpesa: { intervalMs: 3000, maxAttempts: 20 }, // ~1 minute
-  bank: { intervalMs: 6000, maxAttempts: 50 }, // ~5 minutes
-} as const;
+// M-Pesa prompts and card confirmations usually land within seconds.
+const POLLING = { intervalMs: 3000, maxAttempts: 40 } as const; // ~2 minutes
+
+const COLLAPSED_ROWS = 5; // rows shown before "View all"
+const FIRST_PAGE = 10;
+const PAGE_SIZE = 20;
 
 // The tab bar and the global emergency button float over the screen.
 const BOTTOM_CLEARANCE = 170;
@@ -42,20 +49,28 @@ const BOTTOM_CLEARANCE = 170;
 |--------------------------------------------------------------------------
 */
 
-type PaymentMethod = "mpesa" | "bank";
 type PaymentKind = "deposit" | "subscription";
+type AccountKind = "public" | "organisation";
+type Method = "mpesa" | "card";
+type NextAction =
+  | "send_pin"
+  | "send_otp"
+  | "send_phone"
+  | "send_birthday"
+  | "open_url"
+  | "pay_offline";
 
-type Transaction = {
+type Row = {
   id: string;
   label: string;
   date: string;
   amount: string;
-  kind: "credit" | "debit";
-  reference?: string | null;
+  kind: "credit" | "debit" | "payment";
+  reference?: string | null; // set => a receipt can be downloaded
 };
 
 type PaymentProfile = {
-  account_kind: "public" | "organisation";
+  account_kind: AccountKind;
   organization_id?: string | null;
   organization_type?: "client" | "service_provider" | null;
   is_super_admin: boolean;
@@ -63,8 +78,7 @@ type PaymentProfile = {
   first_deposit_amount: number;
   min_topup: number;
   max_deposit: number;
-  mpesa_max_amount: number;
-  bank_transfer_enabled: boolean;
+  methods?: Method[];
 };
 
 type WalletOut = { balance: number; reserved: number; currency: string };
@@ -79,6 +93,14 @@ type WalletTransactionOut = {
   created_at: string;
 };
 
+type PaymentHistoryItem = {
+  reference: string;
+  label: string;
+  amount: number;
+  purpose: string;
+  paid_at: string;
+};
+
 type Plan = {
   code: string;
   name: string;
@@ -87,7 +109,7 @@ type Plan = {
   duration_months: number;
   branch_count: number;
   total: number; // unit_price x branch_count
-  summary: string; // "Total KSh 48,000 for 4 branches for 1 year (KSh 12,000 per branch)"
+  summary: string;
 };
 
 type Subscription = {
@@ -100,37 +122,35 @@ type Subscription = {
   branch_count?: number | null;
 };
 
-type BankInstructions = {
-  bank_name?: string | null;
-  paybill_number?: string | null;
-  account_number: string;
-  account_name?: string | null;
-  amount: number;
-  expires_at: string;
-  note?: string | null;
-};
-
-type DepositCreated = {
+type ChargeResponse = {
   reference: string;
-  status: string;
-  method: PaymentMethod;
+  status: string; // "PENDING" | "SUCCESS" | "FAILED"
+  method: Method;
+  next_action?: NextAction | null;
+  display_text?: string | null;
+  url?: string | null;
   expires_at?: string | null;
-  bank?: BankInstructions | null;
+  receipt?: string | null;
+  reason?: string | null;
 };
 
 type DepositStatus = {
   status: string; // "PENDING" | "SUCCESS" | "FAILED"
   receipt?: string | null;
   reason?: string | null;
-  method?: PaymentMethod | null;
-  expires_at?: string | null;
 };
 
-type PendingBank = {
+type PendingPayment = {
   reference: string;
   kind: PaymentKind;
-  bank: BankInstructions;
+  amount: number;
+  method: Method;
+  nextAction: NextAction | null;
+  displayText: string | null;
+  url: string | null;
 };
+
+type CardInput = { number: string; expiry: string; cvv: string };
 
 // FastAPI: string for HTTPException, array for 422 validation errors.
 type ApiErrorResponse = { detail?: string | { msg: string }[] };
@@ -143,6 +163,13 @@ type ApiErrorResponse = { detail?: string | { msg: string }[] };
 
 const QUICK_AMOUNTS = [500, 1000, 2500, 5000, 10000];
 
+const STEP_FOR_ACTION = {
+  send_pin: "pin",
+  send_otp: "otp",
+  send_phone: "phone",
+  send_birthday: "birthday",
+} as const;
+
 // Alert.alert with a message does nothing on web.
 function notify(title: string, message: string) {
   if (Platform.OS === "web") {
@@ -150,21 +177,6 @@ function notify(title: string, message: string) {
     return;
   }
   Alert.alert(title, message);
-}
-
-function normalizeKenyanPhone(phone: string): string | null {
-  let value = phone.trim().replace(/[\s()-]/g, "");
-  if (!value) return null;
-
-  if (value.startsWith("+254")) value = value.substring(1);
-
-  if (value.startsWith("254")) return value.length === 12 ? value : null;
-
-  if (value.startsWith("07") || value.startsWith("01")) {
-    return value.length === 10 ? `254${value.substring(1)}` : null;
-  }
-
-  return null;
 }
 
 function formatCurrency(amount: number) {
@@ -186,15 +198,6 @@ function formatDate(iso: string) {
   });
 }
 
-function formatDateTime(iso: string) {
-  return new Date(iso).toLocaleString("en-KE", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 function durationLabel(months: number) {
   if (months % 12 === 0) {
     const years = months / 12;
@@ -206,9 +209,59 @@ function durationLabel(months: number) {
 function extractErrorMessage(detail: ApiErrorResponse["detail"], fallback: string) {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail) && detail.length > 0) {
-    return detail.map((item) => item.msg).join("\n");
+    return detail.map((item) => item.msg.replace(/^Value error, /, "")).join("\n");
   }
   return fallback;
+}
+
+/* ---- card / phone input helpers ---- */
+
+function luhnOk(digits: string) {
+  let total = 0;
+  for (let i = 0; i < digits.length; i += 1) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    total += d;
+  }
+  return total % 10 === 0;
+}
+
+function formatCardNumber(value: string) {
+  return value
+    .replace(/\D/g, "")
+    .slice(0, 19)
+    .replace(/(.{4})/g, "$1 ")
+    .trim();
+}
+
+function formatExpiry(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 4);
+  return digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
+}
+
+function parseExpiry(expiry: string): { month: number; year: number } | null {
+  const match = /^(\d{2})\/(\d{2})$/.exec(expiry);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const year = 2000 + Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  return { month, year };
+}
+
+function expiryInPast(month: number, year: number) {
+  const now = new Date();
+  return year < now.getFullYear() || (year === now.getFullYear() && month < now.getMonth() + 1);
+}
+
+// "0712 345 678" / "712345678" / "+254712345678" -> "+254712345678", or null if invalid.
+function normalisePhone(raw: string): string | null {
+  let digits = raw.replace(/[\s\-()]/g, "").replace(/^\+/, "");
+  if (/^0[17]\d{8}$/.test(digits)) digits = `254${digits.slice(1)}`;
+  else if (/^[17]\d{8}$/.test(digits)) digits = `254${digits}`;
+  return /^254[17]\d{8}$/.test(digits) ? `+${digits}` : null;
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -254,18 +307,43 @@ async function apiRequest<T>(
   return response.json();
 }
 
-function DetailRow({ label, value }: { label: string; value?: string | null }) {
-  if (!value) return null;
+// One page of rows: the wallet ledger for public users, successful payments for organisations.
+async function fetchRows(
+  token: string,
+  kind: AccountKind,
+  offset: number,
+  limit: number
+): Promise<Row[]> {
+  if (kind === "public") {
+    const txns = await apiRequest<WalletTransactionOut[]>(
+      `${PAYMENTS_URL}/wallet/transactions?limit=${limit}&offset=${offset}`,
+      token
+    );
+    return txns.map((item) => ({
+      id: item.id,
+      label: item.label,
+      kind: item.kind,
+      reference: item.kind === "credit" ? item.reference : null, // receipts are for money paid in
+      date: formatDate(item.created_at),
+      amount: formatCurrency(item.amount),
+    }));
+  }
 
-  return (
-    <View style={styles.bankRow}>
-      <Text style={styles.bankLabel}>{label}</Text>
-      <Text style={styles.bankValue} selectable>
-        {value}
-      </Text>
-    </View>
+  const items = await apiRequest<PaymentHistoryItem[]>(
+    `${PAYMENTS_URL}/history?limit=${limit}&offset=${offset}`,
+    token
   );
+  return items.map((item) => ({
+    id: item.reference,
+    label: item.label,
+    kind: "payment" as const,
+    reference: item.reference,
+    date: formatDate(item.paid_at),
+    amount: formatCurrency(item.amount),
+  }));
 }
+
+const EMPTY_CARD: CardInput = { number: "", expiry: "", cvv: "" };
 
 export default function Wallet() {
   /*
@@ -278,30 +356,42 @@ export default function Wallet() {
 
   // Public user
   const [balance, setBalance] = useState(0);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   // Organisation (client or service provider)
   const [plans, setPlans] = useState<Plan[]>([]);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null);
 
+  // Transactions (public) / payment history (organisation)
+  const [rows, setRows] = useState<Row[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [downloadingRef, setDownloadingRef] = useState<string | null>(null);
+
   /*
    * PAYMENT STATE
    */
 
-  const [method, setMethod] = useState<PaymentMethod>("mpesa");
-  const [phoneNumber, setPhoneNumber] = useState("");
   const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState<Method>("mpesa");
+  const [phone, setPhone] = useState("");
+  const [card, setCard] = useState<CardInput>(EMPTY_CARD);
 
-  const [pendingBank, setPendingBank] = useState<PendingBank | null>(null);
+  const [pending, setPending] = useState<PendingPayment | null>(null);
+  const [challengeValue, setChallengeValue] = useState("");
+  const [webUrl, setWebUrl] = useState<string | null>(null);
 
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isConfirming, setIsConfirming] = useState(false); // waiting on an STK prompt
-  const [isChecking, setIsChecking] = useState(false); // manual bank status check
+  const [isConfirming, setIsConfirming] = useState(false); // polling for the result
+  const [isChecking, setIsChecking] = useState(false); // manual status check
+  const [isStepBusy, setIsStepBusy] = useState(false); // submitting PIN / OTP
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const mounted = useRef(true);
   const pollId = useRef(0); // lets a new payment cancel an older poll
+  const scrollRef = useRef<ScrollView>(null);
+  const historyY = useRef(0);
 
   useEffect(() => {
     mounted.current = true;
@@ -321,10 +411,8 @@ export default function Wallet() {
   const canPaySubscription = isOrganisation && !!profile?.is_super_admin;
   const firstDeposit = !!profile?.first_deposit_required;
 
-  const bankEnabled = !!profile?.bank_transfer_enabled;
-  const activeMethod: PaymentMethod = bankEnabled ? method : "mpesa";
-
-  const normalizedPhone = useMemo(() => normalizeKenyanPhone(phoneNumber), [phoneNumber]);
+  // Organisations pay by bank card only; public users choose.
+  const activeMethod: Method = isOrganisation ? "card" : method;
 
   const parsedAmount = useMemo(() => {
     const cleaned = amount.replace(/,/g, "").trim();
@@ -345,41 +433,59 @@ export default function Wallet() {
     if (parsedAmount > profile.max_deposit) {
       return `Maximum deposit is KSh ${profile.max_deposit.toLocaleString("en-KE")}.`;
     }
-    if (activeMethod === "mpesa" && parsedAmount > profile.mpesa_max_amount) {
-      return `M-Pesa limits a single payment to KSh ${profile.mpesa_max_amount.toLocaleString("en-KE")}.`;
-    }
     return null;
-  }, [parsedAmount, firstDeposit, profile, activeMethod]);
+  }, [parsedAmount, firstDeposit, profile]);
 
   const selectedPlan = useMemo(
     () => plans.find((plan) => plan.code === selectedPlanCode) || null,
     [plans, selectedPlanCode]
   );
 
-  // M-Pesa caps a single payment. A big multi-branch subscription may exceed it.
-  const subscriptionTooLargeForMpesa =
-    !!selectedPlan &&
-    !!profile &&
-    activeMethod === "mpesa" &&
-    selectedPlan.total > profile.mpesa_max_amount;
+  /* ---- card validation ---- */
 
-  const busy = isProcessing || isConfirming;
-  const phoneReady = activeMethod === "bank" || !!normalizedPhone;
+  const cardDigits = card.number.replace(/\D/g, "");
+  const cardNumberError =
+    cardDigits.length >= 13 && (cardDigits.length < 13 || !luhnOk(cardDigits))
+      ? "That card number doesn't look right."
+      : null;
+
+  const parsedExpiry = parseExpiry(card.expiry);
+  const expiryError =
+    card.expiry.length === 5 && (!parsedExpiry || expiryInPast(parsedExpiry.month, parsedExpiry.year))
+      ? "Check the expiry date."
+      : null;
+
+  const cardValid =
+    cardDigits.length >= 13 &&
+    luhnOk(cardDigits) &&
+    !!parsedExpiry &&
+    !expiryInPast(parsedExpiry.month, parsedExpiry.year) &&
+    /^\d{3,4}$/.test(card.cvv);
+
+  const normalisedPhone = normalisePhone(phone);
+  const phoneError =
+    phone.replace(/\D/g, "").length >= 10 && !normalisedPhone
+      ? "Enter a valid M-Pesa number, e.g. 0712 345 678."
+      : null;
+
+  const methodReady = activeMethod === "mpesa" ? !!normalisedPhone : cardValid;
+
+  const busy = isProcessing || isConfirming || isStepBusy;
 
   const canSubmitDeposit =
     isPublic &&
-    phoneReady &&
     parsedAmount >= 1 &&
     Number.isInteger(parsedAmount) &&
     !amountError &&
-    !busy;
+    methodReady &&
+    !busy &&
+    !pending;
 
   const canSubmitSubscription =
-    canPaySubscription &&
-    phoneReady &&
-    !!selectedPlan &&
-    !subscriptionTooLargeForMpesa &&
-    !busy;
+    canPaySubscription && !!selectedPlan && cardValid && !busy && !pending;
+
+  const visibleRows = showAll ? rows : rows.slice(0, COLLAPSED_ROWS);
+  const canExpand = rows.length > COLLAPSED_ROWS || hasMore;
 
   /*
    * LOAD DATA
@@ -396,28 +502,12 @@ export default function Wallet() {
 
       const profileData = await apiRequest<PaymentProfile>(`${PAYMENTS_URL}/profile`, token);
 
+      const firstRows = await fetchRows(token, profileData.account_kind, 0, FIRST_PAGE);
+
       if (profileData.account_kind === "public") {
-        const [wallet, txns] = await Promise.all([
-          apiRequest<WalletOut>(`${PAYMENTS_URL}/wallet`, token),
-          apiRequest<WalletTransactionOut[]>(
-            `${PAYMENTS_URL}/wallet/transactions?limit=10`,
-            token
-          ),
-        ]);
-
+        const wallet = await apiRequest<WalletOut>(`${PAYMENTS_URL}/wallet`, token);
         if (!mounted.current) return;
-
         setBalance(wallet.balance);
-        setTransactions(
-          txns.map((item) => ({
-            id: item.id,
-            label: item.label,
-            kind: item.kind,
-            reference: item.reference,
-            date: formatDate(item.created_at),
-            amount: formatCurrency(item.amount),
-          }))
-        );
       } else {
         // Client and service provider organisations both subscribe to a plan.
         const [planList, currentSubscription] = await Promise.all([
@@ -438,6 +528,8 @@ export default function Wallet() {
 
       if (!mounted.current) return;
 
+      setRows(firstRows);
+      setHasMore(firstRows.length === FIRST_PAGE);
       setProfile(profileData);
       setProfileLoaded(true);
       setLoadError(null);
@@ -472,19 +564,122 @@ export default function Wallet() {
   };
 
   /*
+   * TRANSACTIONS: VIEW ALL / LOAD MORE
+   */
+
+  const loadMore = async () => {
+    if (!profile || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+      const next = await fetchRows(token, profile.account_kind, rows.length, PAGE_SIZE);
+      if (!mounted.current) return;
+      setRows((current) => [...current, ...next]);
+      setHasMore(next.length === PAGE_SIZE);
+    } catch (error) {
+      notify(
+        "Couldn't load more",
+        error instanceof Error ? error.message : "Please try again."
+      );
+    } finally {
+      if (mounted.current) setIsLoadingMore(false);
+    }
+  };
+
+  const handleToggleViewAll = () => {
+    if (showAll) {
+      setShowAll(false);
+      return;
+    }
+    setShowAll(true);
+    if (hasMore && rows.length <= FIRST_PAGE) void loadMore();
+  };
+
+  // The "Receipts" button in the header card jumps to the list.
+  const handleOpenReceipts = () => {
+    setShowAll(true);
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: Math.max(historyY.current - 12, 0), animated: true });
+    }, 50);
+  };
+
+  /*
+   * RECEIPT DOWNLOAD
+   */
+
+  const handleDownloadReceipt = async (reference: string) => {
+    if (downloadingRef) return;
+    setDownloadingRef(reference);
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        notify("Session expired", "Please sign in again to download your receipt.");
+        return;
+      }
+
+      const url = `${PAYMENTS_URL}/receipts/${encodeURIComponent(reference)}`;
+
+      if (Platform.OS === "web") {
+        const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!response.ok) throw new Error("Receipt not available.");
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = `SafeSync-receipt-${reference}.pdf`;
+        link.click();
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+
+      const fileUri = `${FileSystem.cacheDirectory}SafeSync-receipt-${reference}.pdf`;
+      const result = await FileSystem.downloadAsync(url, fileUri, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (result.status !== 200) {
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        throw new Error(
+          result.status === 404 ? "Receipt not available." : "Could not download the receipt."
+        );
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(result.uri, {
+          mimeType: "application/pdf",
+          dialogTitle: "SafeSync receipt",
+          UTI: "com.adobe.pdf",
+        });
+      } else {
+        notify("Receipt saved", `Saved to ${result.uri}`);
+      }
+    } catch (error) {
+      console.error("Receipt download error:", error);
+      notify(
+        "Receipt unavailable",
+        error instanceof Error ? error.message : "Could not download the receipt."
+      );
+    } finally {
+      if (mounted.current) setDownloadingRef(null);
+    }
+  };
+
+  /*
    * PAYMENT STATUS
    */
 
   const fetchStatus = async (reference: string): Promise<DepositStatus | null> => {
     try {
-      const token = await getAccessToken(); // fresh each time: bank polls run for minutes
+      const token = await getAccessToken(); // fresh each time: polls can run for minutes
       if (!token) return null;
       return await apiRequest<DepositStatus>(
         `${PAYMENTS_URL}/deposit/${encodeURIComponent(reference)}`,
         token
       );
     } catch {
-      return null; // transient error or not visible yet: keep waiting
+      return null; // transient error: keep waiting
     }
   };
 
@@ -494,19 +689,21 @@ export default function Wallet() {
 
     if (status === "SUCCESS") {
       const receiptText = result.receipt ? ` (receipt ${result.receipt})` : "";
-      setPendingBank(null);
+      setPending(null);
+      setWebUrl(null);
       notify(
         "Payment confirmed",
         kind === "subscription"
-          ? `Your payment was confirmed${receiptText} and your subscription is now active.`
-          : `Your payment was confirmed${receiptText} and your wallet has been credited.`
+          ? `Your payment was confirmed${receiptText} and your subscription is now active. You can download the receipt below.`
+          : `Your payment was confirmed${receiptText} and your wallet has been credited. You can download the receipt below.`
       );
       loadData();
       return true;
     }
 
     if (status === "FAILED") {
-      setPendingBank(null);
+      setPending(null);
+      setWebUrl(null);
       notify("Payment not completed", result.reason || "The payment was not completed.");
       return true;
     }
@@ -514,19 +711,13 @@ export default function Wallet() {
     return false; // PENDING
   };
 
-  const pollPaymentStatus = async (
-    reference: string,
-    kind: PaymentKind,
-    via: PaymentMethod
-  ) => {
+  const pollPaymentStatus = async (reference: string, kind: PaymentKind) => {
     const myId = ++pollId.current;
-    const { intervalMs, maxAttempts } = POLLING[via];
-
-    if (via === "mpesa") setIsConfirming(true);
+    setIsConfirming(true);
 
     try {
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      for (let attempt = 0; attempt < POLLING.maxAttempts; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, POLLING.intervalMs));
 
         if (!mounted.current || pollId.current !== myId) return;
 
@@ -536,51 +727,138 @@ export default function Wallet() {
 
       if (mounted.current && pollId.current === myId) {
         notify(
-          via === "bank" ? "Waiting for your bank" : "Still waiting for confirmation",
-          via === "bank"
-            ? "We haven't received the transfer yet. Keep the details on screen: it updates once your bank confirms, or tap “Check payment status”."
-            : "We haven't heard back yet. Pull down to refresh shortly. SafeSync updates as soon as the payment is confirmed."
+          "Still waiting for confirmation",
+          "We haven't received the confirmation yet. If you completed the payment, it will appear shortly: pull down to refresh, or tap “Check payment status”."
         );
       }
     } finally {
-      if (mounted.current && pollId.current === myId && via === "mpesa") {
-        setIsConfirming(false);
-      }
+      if (mounted.current && pollId.current === myId) setIsConfirming(false);
     }
   };
 
-  const handleCheckBankStatus = async () => {
-    if (!pendingBank || isChecking) return;
+  const handleCheckStatus = async () => {
+    if (!pending || isChecking) return;
 
     setIsChecking(true);
     try {
-      const result = await fetchStatus(pendingBank.reference);
+      const result = await fetchStatus(pending.reference);
 
       if (!result) {
         notify("Couldn't check", "Please check your connection and try again.");
-      } else if (!applyStatus(result, pendingBank.kind)) {
-        notify(
-          "Not received yet",
-          "Your bank hasn't confirmed the transfer yet. This can take a few minutes."
-        );
+      } else if (!applyStatus(result, pending.kind)) {
+        notify("Not confirmed yet", "The payment hasn't been confirmed yet.");
       }
     } finally {
       if (mounted.current) setIsChecking(false);
     }
   };
 
+  // Stops waiting. The server expires the payment on its own.
+  const handleCancelPending = () => {
+    pollId.current += 1;
+    setIsConfirming(false);
+    setPending(null);
+    setWebUrl(null);
+    setChallengeValue("");
+  };
+
+  /*
+   * CHARGE RESPONSES (shared by deposits, subscriptions and card challenges)
+   */
+
+  const handleCharge = (resp: ChargeResponse, kind: PaymentKind, chargedAmount: number) => {
+    const status = String(resp.status || "").toUpperCase();
+
+    if (status !== "PENDING") {
+      applyStatus({ status, receipt: resp.receipt, reason: resp.reason }, kind);
+      return;
+    }
+
+    const next = resp.next_action ?? null;
+
+    setPending({
+      reference: resp.reference,
+      kind,
+      amount: chargedAmount,
+      method: resp.method,
+      nextAction: next,
+      displayText: resp.display_text ?? null,
+      url: resp.url ?? null,
+    });
+    setChallengeValue("");
+
+    // Bank 3-D Secure page: shown inside the app.
+    if (next === "open_url" && resp.url) {
+      if (Platform.OS === "web") window.open(resp.url, "_blank");
+      else setWebUrl(resp.url);
+    }
+
+    // Nothing for the customer to type: wait for the result.
+    if (next === null || next === "pay_offline" || next === "open_url") {
+      void pollPaymentStatus(resp.reference, kind);
+    }
+  };
+
+  const handleSubmitStep = async () => {
+    if (!pending || isStepBusy || !pending.nextAction) return;
+
+    const step = STEP_FOR_ACTION[pending.nextAction as keyof typeof STEP_FOR_ACTION];
+    const value = challengeValue.trim();
+
+    if (!step) return;
+    if (!value) {
+      notify("Missing details", "Please fill in the field to continue.");
+      return;
+    }
+
+    setIsStepBusy(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        notify("Session expired", "Please sign in again to continue.");
+        return;
+      }
+
+      const resp = await apiRequest<ChargeResponse>(
+        `${PAYMENTS_URL}/charge/${encodeURIComponent(pending.reference)}/step`,
+        token,
+        { method: "POST", body: { step, value } }
+      );
+
+      setChallengeValue("");
+      handleCharge(resp, pending.kind, pending.amount);
+    } catch (error) {
+      notify(
+        "Couldn't continue",
+        error instanceof Error ? error.message : "Please check the details and try again."
+      );
+    } finally {
+      if (mounted.current) setIsStepBusy(false);
+    }
+  };
+
   /*
    * SUBMIT A PAYMENT (shared by deposits and subscriptions)
    *
-   * Returns true when the request was accepted. For M-Pesa that only means
-   * PayHero accepted the STK push. For a bank transfer it means we now have
-   * details for the customer to pay to. Neither means money has arrived.
+   * Card details go to SafeSync's server over HTTPS, are forwarded to Paystack
+   * and are never stored. M-Pesa sends a prompt to the customer's phone.
    */
+
+  const cardBody = () => {
+    const expiry = parseExpiry(card.expiry);
+    return {
+      number: cardDigits,
+      cvv: card.cvv,
+      expiry_month: expiry?.month ?? 0,
+      expiry_year: expiry?.year ?? 0,
+    };
+  };
 
   const submitPayment = async (
     path: string,
     body: Record<string, unknown>,
-    kind: PaymentKind
+    kind: PaymentKind,
+    chargedAmount: number
   ): Promise<boolean> => {
     if (isProcessing) return false;
 
@@ -594,30 +872,15 @@ export default function Wallet() {
         return false;
       }
 
-      const data = await apiRequest<DepositCreated>(`${PAYMENTS_URL}${path}`, token, {
+      const resp = await apiRequest<ChargeResponse>(`${PAYMENTS_URL}${path}`, token, {
         method: "POST",
-        body: {
-          ...body,
-          method: activeMethod,
-          ...(activeMethod === "mpesa" ? { phone_number: normalizedPhone } : {}),
-        },
+        body,
       });
 
-      if (data.method === "bank" && data.bank) {
-        setPendingBank({ reference: data.reference, kind, bank: data.bank });
-        void pollPaymentStatus(data.reference, kind, "bank");
-      } else {
-        setPendingBank(null);
-        notify(
-          "M-Pesa request sent",
-          `An M-Pesa prompt has been sent to +${normalizedPhone}.\n\nEnter your M-Pesa PIN to complete the payment.\n\nReference: ${data.reference}`
-        );
-        void pollPaymentStatus(data.reference, kind, "mpesa");
-      }
-
+      handleCharge(resp, kind, chargedAmount);
       return true;
     } catch (error) {
-      console.error("SafeSync payment error:", error);
+      console.error("SafeSync payment error:", error instanceof Error ? error.message : error);
 
       notify(
         "Payment failed",
@@ -626,30 +889,23 @@ export default function Wallet() {
 
       return false;
     } finally {
+      setCard(EMPTY_CARD); // never keep card details around after sending them
       if (mounted.current) setIsProcessing(false);
     }
   };
 
-  const requirePhoneIfMpesa = (): boolean => {
-    if (activeMethod === "mpesa" && !normalizedPhone) {
-      notify(
-        "Invalid phone number",
-        "Enter a valid Kenyan M-Pesa number, for example 0712345678 or +254712345678."
-      );
-      return false;
-    }
-    return true;
-  };
-
   const handleDeposit = async () => {
-    if (!requirePhoneIfMpesa()) return;
-
     if (amountError || parsedAmount < 1 || !Number.isInteger(parsedAmount)) {
       notify("Invalid amount", amountError || "Enter a whole amount of at least KSh 1.");
       return;
     }
 
-    const started = await submitPayment("/deposit", { amount: parsedAmount }, "deposit");
+    const body: Record<string, unknown> =
+      activeMethod === "mpesa"
+        ? { amount: parsedAmount, method: "mpesa", phone: normalisedPhone }
+        : { amount: parsedAmount, method: "card", card: cardBody() };
+
+    const started = await submitPayment("/deposit", body, "deposit", parsedAmount);
 
     if (started && !firstDeposit) setAmount("");
   };
@@ -660,32 +916,11 @@ export default function Wallet() {
       return;
     }
 
-    if (subscriptionTooLargeForMpesa && profile) {
-      notify(
-        "Amount too large for M-Pesa",
-        `M-Pesa limits a single payment to KSh ${profile.mpesa_max_amount.toLocaleString(
-          "en-KE"
-        )}. Please pay by bank transfer.`
-      );
-      return;
-    }
-
-    if (!requirePhoneIfMpesa()) return;
-
-    await submitPayment("/subscribe", { plan_code: selectedPlan.code }, "subscription");
-  };
-
-  const handleDownloadReceipts = () => {
-    notify(
-      "Receipts",
-      "Receipt history will be available once receipts are connected to the SafeSync finance API."
-    );
-  };
-
-  const handleViewAllTransactions = () => {
-    notify(
-      "Transaction history",
-      "Full transaction history will be connected to the SafeSync finance API."
+    await submitPayment(
+      "/subscribe",
+      { plan_code: selectedPlan.code, card: cardBody() },
+      "subscription",
+      selectedPlan.total
     );
   };
 
@@ -693,92 +928,150 @@ export default function Wallet() {
    * SHARED UI PIECES
    */
 
-  // Always shown, so the customer can see both ways to pay. Bank transfer is
-  // greyed out until the backend switches it on (bank_transfer_enabled).
-  const methodSelector = (
-    <View style={styles.inputGroup}>
-      <Text style={styles.inputLabel}>Payment method</Text>
-
-      <View style={styles.methodRow}>
-        {(
-          [
-            { key: "mpesa", label: "M-Pesa", icon: "phone-portrait-outline" },
-            { key: "bank", label: "Bank transfer", icon: "business-outline" },
-          ] as const
-        ).map((option) => {
-          const active = activeMethod === option.key;
-          const unavailable = option.key === "bank" && !bankEnabled;
-
-          return (
-            <TouchableOpacity
-              key={option.key}
-              activeOpacity={0.8}
-              disabled={busy || unavailable}
-              style={[
-                styles.methodOption,
-                active && styles.methodOptionActive,
-                unavailable && { opacity: 0.5 },
-              ]}
-              onPress={() => setMethod(option.key)}
-            >
-              <Ionicons
-                name={option.icon}
-                size={17}
-                color={active ? "#DC2626" : "#64748B"}
-              />
-              <Text
-                style={[styles.methodOptionText, active && styles.methodOptionTextActive]}
-              >
-                {option.label}
-                {unavailable ? " (soon)" : ""}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
-  );
-
-  const phoneField =
-    activeMethod === "mpesa" ? (
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>M-Pesa phone number</Text>
-
-        <View style={styles.inputWrapper}>
-          <View style={styles.inputPrefix}>
-            <Ionicons name="phone-portrait-outline" size={18} color="#64748B" />
-          </View>
-
-          <TextInput
-            style={styles.input}
-            value={phoneNumber}
-            onChangeText={setPhoneNumber}
-            placeholder="0712 345 678"
-            placeholderTextColor="#94A3B8"
-            keyboardType="phone-pad"
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!busy}
-          />
-        </View>
-
-        {phoneNumber.length > 0 && !normalizedPhone && (
-          <Text style={styles.inputError}>Enter a valid Kenyan M-Pesa number.</Text>
-        )}
-      </View>
-    ) : null;
-
   const securityNote = (
     <View style={styles.securityNote}>
       <Ionicons name="shield-checkmark-outline" size={15} color="#64748B" />
 
       <Text style={styles.securityText}>
         {activeMethod === "mpesa"
-          ? "Your M-Pesa PIN is entered only on the official M-Pesa prompt. SafeSync does not collect your PIN."
-          : "You pay from your own banking app. SafeSync never asks for your banking login or PIN."}
+          ? "You'll get an M-Pesa prompt on your phone. Enter your M-Pesa PIN there; SafeSync never sees it."
+          : "Your card details are sent securely to Paystack to process the payment. SafeSync never stores your card number, CVV or PIN."}
       </Text>
     </View>
   );
+
+  const methodPicker =
+    isPublic && (profile?.methods?.length ?? 2) > 1 ? (
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Pay with</Text>
+
+        <View style={styles.methodRow}>
+          {(
+            [
+              { key: "mpesa", label: "M-Pesa", icon: "phone-portrait-outline" },
+              { key: "card", label: "Bank card", icon: "card-outline" },
+            ] as const
+          ).map((option) => {
+            const active = method === option.key;
+
+            return (
+              <TouchableOpacity
+                key={option.key}
+                activeOpacity={0.8}
+                disabled={busy || !!pending}
+                style={[styles.methodTile, active && styles.methodTileActive]}
+                onPress={() => setMethod(option.key)}
+              >
+                <Ionicons name={option.icon} size={18} color={active ? "#DC2626" : "#64748B"} />
+                <Text style={[styles.methodText, active && styles.methodTextActive]}>
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+    ) : null;
+
+  const mpesaForm = (
+    <View style={styles.inputGroup}>
+      <Text style={styles.inputLabel}>M-Pesa phone number</Text>
+
+      <View style={styles.inputWrapper}>
+        <View style={styles.currencyPrefix}>
+          <Ionicons name="phone-portrait-outline" size={17} color="#64748B" />
+        </View>
+
+        <TextInput
+          style={styles.input}
+          value={phone}
+          onChangeText={(value) => setPhone(value.replace(/[^0-9+\s]/g, "").slice(0, 16))}
+          placeholder="+254"
+          placeholderTextColor="#94A3B8"
+          keyboardType="phone-pad"
+          autoComplete="tel"
+          textContentType="telephoneNumber"
+          editable={!busy && !pending}
+        />
+      </View>
+
+      {!!phoneError && <Text style={styles.inputError}>{phoneError}</Text>}
+    </View>
+  );
+
+  const cardForm = (
+    <View style={{ gap: 12 }}>
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Card number</Text>
+
+        <View style={styles.inputWrapper}>
+          <View style={styles.currencyPrefix}>
+            <Ionicons name="card-outline" size={18} color="#64748B" />
+          </View>
+
+          <TextInput
+            style={styles.input}
+            value={card.number}
+            onChangeText={(value) => setCard((c) => ({ ...c, number: formatCardNumber(value) }))}
+            placeholder="1234 5678 9012 3456"
+            placeholderTextColor="#94A3B8"
+            keyboardType="number-pad"
+            maxLength={23}
+            autoComplete="cc-number"
+            textContentType="creditCardNumber"
+            editable={!busy && !pending}
+          />
+        </View>
+
+        {!!cardNumberError && <Text style={styles.inputError}>{cardNumberError}</Text>}
+      </View>
+
+      <View style={styles.cardRow}>
+        <View style={[styles.inputGroup, { flex: 1 }]}>
+          <Text style={styles.inputLabel}>Expiry</Text>
+
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={[styles.input, { paddingHorizontal: 13 }]}
+              value={card.expiry}
+              onChangeText={(value) => setCard((c) => ({ ...c, expiry: formatExpiry(value) }))}
+              placeholder="MM/YY"
+              placeholderTextColor="#94A3B8"
+              keyboardType="number-pad"
+              maxLength={5}
+              autoComplete="cc-exp"
+              editable={!busy && !pending}
+            />
+          </View>
+
+          {!!expiryError && <Text style={styles.inputError}>{expiryError}</Text>}
+        </View>
+
+        <View style={[styles.inputGroup, { flex: 1 }]}>
+          <Text style={styles.inputLabel}>CVV</Text>
+
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={[styles.input, { paddingHorizontal: 13 }]}
+              value={card.cvv}
+              onChangeText={(value) =>
+                setCard((c) => ({ ...c, cvv: value.replace(/\D/g, "").slice(0, 4) }))
+              }
+              placeholder="123"
+              placeholderTextColor="#94A3B8"
+              keyboardType="number-pad"
+              secureTextEntry
+              maxLength={4}
+              autoComplete="cc-csc"
+              editable={!busy && !pending}
+            />
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+
+  const paymentFields = activeMethod === "mpesa" ? mpesaForm : cardForm;
 
   const renderPayButton = (label: string, onPress: () => void, enabled: boolean) => (
     <TouchableOpacity
@@ -793,65 +1086,258 @@ export default function Wallet() {
 
           <Text style={styles.payButtonText}>
             {isProcessing
-              ? activeMethod === "bank"
-                ? "Getting transfer details..."
-                : "Sending STK Push..."
+              ? "Processing..."
+              : isStepBusy
+              ? "Verifying..."
               : "Waiting for confirmation..."}
           </Text>
         </>
       ) : (
         <>
           <Ionicons
-            name={activeMethod === "bank" ? "business-outline" : "phone-portrait-outline"}
+            name={activeMethod === "mpesa" ? "phone-portrait-outline" : "card-outline"}
             size={19}
             color="#FFFFFF"
           />
-
           <Text style={styles.payButtonText}>{label}</Text>
         </>
       )}
     </TouchableOpacity>
   );
 
-  const payLabel = activeMethod === "bank" ? "Get bank transfer details" : "Pay with M-Pesa";
+  // What the customer still has to do for the payment in progress.
+  const challengeConfig = (() => {
+    switch (pending?.nextAction) {
+      case "send_pin":
+        return { label: "Card PIN", placeholder: "Enter your card PIN", secure: true, keyboard: "number-pad" as const, hint: "Enter the PIN for this card." };
+      case "send_otp":
+        return { label: "One-time code (OTP)", placeholder: "Enter the OTP", secure: false, keyboard: "number-pad" as const, hint: "Enter the code your bank sent you." };
+      case "send_phone":
+        return { label: "Phone number", placeholder: "Phone number linked to the card", secure: false, keyboard: "phone-pad" as const, hint: "Enter the phone number linked to this card." };
+      case "send_birthday":
+        return { label: "Date of birth", placeholder: "YYYY-MM-DD", secure: false, keyboard: "numbers-and-punctuation" as const, hint: "Enter the card owner's date of birth." };
+      default:
+        return null;
+    }
+  })();
 
-  const bankCard = pendingBank ? (
-    <View style={styles.bankCard}>
-      <Text style={styles.bankTitle}>Pay by bank transfer</Text>
+  const pendingCard = pending ? (
+    <View style={styles.checkoutCard}>
+      <Text style={styles.checkoutTitle}>
+        {pending.method === "mpesa" ? "Check your phone" : "Confirm your card payment"}
+      </Text>
 
-      <DetailRow label="Bank" value={pendingBank.bank.bank_name} />
-      <DetailRow label="Paybill / business number" value={pendingBank.bank.paybill_number} />
-      <DetailRow label="Account number" value={pendingBank.bank.account_number} />
-      <DetailRow label="Account name" value={pendingBank.bank.account_name} />
-      <DetailRow label="Amount" value={formatWholeCurrency(pendingBank.bank.amount)} />
-      <DetailRow
-        label="Valid until"
-        value={formatDateTime(pendingBank.bank.expires_at)}
-      />
+      <Text style={styles.checkoutText}>
+        {formatWholeCurrency(pending.amount)}
+        {pending.displayText
+          ? ` — ${pending.displayText}`
+          : pending.method === "mpesa"
+          ? " — enter your M-Pesa PIN on the prompt we just sent you."
+          : " — we're waiting for your bank to confirm."}
+      </Text>
 
-      {!!pendingBank.bank.note && (
-        <Text style={styles.bankNote}>{pendingBank.bank.note}</Text>
+      {challengeConfig && (
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>{challengeConfig.label}</Text>
+
+          <View style={styles.inputWrapper}>
+            <TextInput
+              style={[styles.input, { paddingHorizontal: 13 }]}
+              value={challengeValue}
+              onChangeText={setChallengeValue}
+              placeholder={challengeConfig.placeholder}
+              placeholderTextColor="#94A3B8"
+              secureTextEntry={challengeConfig.secure}
+              keyboardType={challengeConfig.keyboard}
+              editable={!isStepBusy}
+            />
+          </View>
+
+          <Text style={styles.hintText}>{challengeConfig.hint}</Text>
+        </View>
       )}
 
-      <View style={styles.waitingRow}>
-        <ActivityIndicator size="small" color="#DC2626" />
-        <Text style={styles.waitingText}>Waiting for your bank to confirm the transfer…</Text>
-      </View>
+      {pending.nextAction === "open_url" && pending.url && Platform.OS !== "web" && !webUrl && (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          style={styles.checkButton}
+          onPress={() => setWebUrl(pending.url)}
+        >
+          <Text style={styles.checkButtonText}>Reopen bank verification</Text>
+        </TouchableOpacity>
+      )}
 
-      <TouchableOpacity
-        activeOpacity={0.85}
-        disabled={isChecking}
-        style={[styles.checkButton, isChecking && styles.payButtonDisabled]}
-        onPress={handleCheckBankStatus}
-      >
-        {isChecking ? (
+      {isConfirming && (
+        <View style={styles.waitingRow}>
           <ActivityIndicator size="small" color="#DC2626" />
-        ) : (
-          <Text style={styles.checkButtonText}>Check payment status</Text>
-        )}
+          <Text style={styles.waitingText}>Waiting for the payment to be confirmed…</Text>
+        </View>
+      )}
+
+      {challengeConfig ? (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          disabled={isStepBusy || !challengeValue.trim()}
+          style={[
+            styles.payButton,
+            (isStepBusy || !challengeValue.trim()) && styles.payButtonDisabled,
+          ]}
+          onPress={handleSubmitStep}
+        >
+          {isStepBusy ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <Text style={styles.payButtonText}>Continue</Text>
+          )}
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          disabled={isChecking}
+          style={[styles.checkButton, isChecking && styles.payButtonDisabled]}
+          onPress={handleCheckStatus}
+        >
+          {isChecking ? (
+            <ActivityIndicator size="small" color="#DC2626" />
+          ) : (
+            <Text style={styles.checkButtonText}>Check payment status</Text>
+          )}
+        </TouchableOpacity>
+      )}
+
+      <TouchableOpacity activeOpacity={0.7} onPress={handleCancelPending} style={styles.cancelLink}>
+        <Text style={styles.cancelLinkText}>Cancel</Text>
       </TouchableOpacity>
     </View>
   ) : null;
+
+  const receiptsPanel = (
+    <View
+      style={styles.panel}
+      onLayout={(event) => {
+        historyY.current = event.nativeEvent.layout.y;
+      }}
+    >
+      <View style={styles.sectionHeader}>
+        <View style={{ flex: 1, paddingRight: 10 }}>
+          <Text style={styles.panelTitle}>
+            {isOrganisation ? "Payment history" : "Recent transactions"}
+          </Text>
+          <Text style={styles.panelSubtitle}>
+            {isOrganisation
+              ? "Your subscription payments. Tap the download icon for a receipt."
+              : "Your latest wallet activity. Tap the download icon for a receipt."}
+          </Text>
+        </View>
+
+        {canExpand && (
+          <TouchableOpacity activeOpacity={0.7} onPress={handleToggleViewAll}>
+            <Text style={styles.viewAllText}>{showAll ? "Show less" : "View all"}</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {rows.length === 0 ? (
+        <View style={styles.emptyTransactions}>
+          <View style={styles.emptyIcon}>
+            <Ionicons name="receipt-outline" size={26} color="#94A3B8" />
+          </View>
+
+          <Text style={styles.emptyTitle}>
+            {isOrganisation ? "No payments yet" : "No transactions yet"}
+          </Text>
+
+          <Text style={styles.emptyText}>
+            {isOrganisation
+              ? "Your subscription payments and receipts will appear here."
+              : "Your wallet deposits and emergency charges will appear here."}
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.transactionList}>
+          {visibleRows.map((row) => {
+            const isCredit = row.kind === "credit";
+            const isPayment = row.kind === "payment";
+            const downloading = downloadingRef === row.reference;
+
+            return (
+              <View key={row.id} style={styles.transactionRow}>
+                <View
+                  style={[
+                    styles.transactionIcon,
+                    isCredit ? styles.creditIcon : isPayment ? styles.paymentIcon : styles.debitIcon,
+                  ]}
+                >
+                  <Ionicons
+                    name={isPayment ? "card-outline" : isCredit ? "arrow-down" : "arrow-up"}
+                    size={17}
+                    color={isPayment ? "#7C3AED" : isCredit ? "#059669" : "#DC2626"}
+                  />
+                </View>
+
+                <View style={styles.transactionDetails}>
+                  <Text style={styles.transactionLabel} numberOfLines={1}>
+                    {row.label}
+                  </Text>
+
+                  <Text style={styles.transactionDate} numberOfLines={1}>
+                    {row.date}
+                    {row.reference ? ` · ${row.reference}` : ""}
+                  </Text>
+                </View>
+
+                <View style={styles.transactionAmountContainer}>
+                  <Text
+                    style={[
+                      styles.transactionAmount,
+                      isCredit && styles.creditAmount,
+                      isPayment && styles.paymentAmount,
+                    ]}
+                  >
+                    {isCredit ? "+" : isPayment ? "" : "-"}
+                    {row.amount}
+                  </Text>
+                </View>
+
+                {row.reference ? (
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    disabled={!!downloadingRef}
+                    onPress={() => handleDownloadReceipt(row.reference as string)}
+                    style={styles.downloadButton}
+                    accessibilityLabel={`Download receipt ${row.reference}`}
+                  >
+                    {downloading ? (
+                      <ActivityIndicator size="small" color="#DC2626" />
+                    ) : (
+                      <Ionicons name="download-outline" size={18} color="#DC2626" />
+                    )}
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.downloadButton} />
+                )}
+              </View>
+            );
+          })}
+
+          {showAll && hasMore && (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              disabled={isLoadingMore}
+              style={styles.loadMoreButton}
+              onPress={loadMore}
+            >
+              {isLoadingMore ? (
+                <ActivityIndicator size="small" color="#DC2626" />
+              ) : (
+                <Text style={styles.checkButtonText}>Load more</Text>
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+    </View>
+  );
 
   /*
    * RENDER
@@ -864,6 +1350,7 @@ export default function Wallet() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView
+          ref={scrollRef}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
@@ -879,8 +1366,6 @@ export default function Wallet() {
 
           <View style={styles.header}>
             <View style={styles.headerTextContainer}>
-              <Text style={styles.eyebrow}>SAFESYNC FINANCE</Text>
-
               <Text style={styles.pageTitle}>{isOrganisation ? "Subscription" : "Wallet"}</Text>
 
               <Text style={styles.pageSubtitle}>
@@ -924,7 +1409,7 @@ export default function Wallet() {
           )}
 
           {/* ==========================================================
-              PUBLIC USER: WALLET
+              PUBLIC USER: WALLET (M-Pesa or bank card)
           ========================================================== */}
 
           {profileLoaded && isPublic && (
@@ -952,7 +1437,7 @@ export default function Wallet() {
                   <TouchableOpacity
                     activeOpacity={0.8}
                     style={styles.receiptButton}
-                    onPress={handleDownloadReceipts}
+                    onPress={handleOpenReceipts}
                   >
                     <Ionicons name="receipt-outline" size={16} color="#FFFFFF" />
                     <Text style={styles.receiptButtonText}>Receipts</Text>
@@ -974,15 +1459,12 @@ export default function Wallet() {
                     <Text style={styles.panelSubtitle}>
                       {firstDeposit && profile
                         ? `Your first deposit is KSh ${profile.first_deposit_amount}.`
-                        : "Top up your wallet by M-Pesa or bank transfer."}
+                        : "Top up your wallet with M-Pesa or your bank card."}
                     </Text>
                   </View>
                 </View>
 
                 <View style={styles.formContainer}>
-                  {methodSelector}
-                  {phoneField}
-
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Deposit amount</Text>
 
@@ -998,7 +1480,7 @@ export default function Wallet() {
                         placeholder="Enter amount"
                         placeholderTextColor="#94A3B8"
                         keyboardType="number-pad"
-                        editable={!busy && !(firstDeposit && !!amount)}
+                        editable={!busy && !pending && !(firstDeposit && !!amount)}
                       />
                     </View>
 
@@ -1017,7 +1499,7 @@ export default function Wallet() {
                             <TouchableOpacity
                               key={value}
                               activeOpacity={0.8}
-                              disabled={busy}
+                              disabled={busy || !!pending}
                               style={[styles.quickAmount, selected && styles.quickAmountSelected]}
                               onPress={() => setAmount(String(value))}
                             >
@@ -1036,6 +1518,9 @@ export default function Wallet() {
                     </View>
                   )}
 
+                  {methodPicker}
+                  {paymentFields}
+
                   <View style={styles.paymentSummary}>
                     <View style={styles.summaryRow}>
                       <Text style={styles.summaryLabel}>Deposit</Text>
@@ -1045,88 +1530,25 @@ export default function Wallet() {
                     <View style={styles.summaryRow}>
                       <Text style={styles.summaryLabel}>Payment method</Text>
                       <Text style={styles.summaryMethodText}>
-                        {activeMethod === "bank" ? "Bank transfer" : "M-Pesa"}
+                        {activeMethod === "mpesa" ? "M-Pesa" : "Bank card"}
                       </Text>
                     </View>
                   </View>
 
-                  {renderPayButton(payLabel, handleDeposit, canSubmitDeposit)}
+                  {renderPayButton(
+                    activeMethod === "mpesa" ? "Send M-Pesa prompt" : "Pay with card",
+                    handleDeposit,
+                    canSubmitDeposit
+                  )}
 
-                  {bankCard}
+                  {pendingCard}
                   {securityNote}
                 </View>
               </View>
 
-              {/* TRANSACTION HISTORY */}
+              {/* TRANSACTION HISTORY + RECEIPTS */}
 
-              <View style={styles.panel}>
-                <View style={styles.sectionHeader}>
-                  <View>
-                    <Text style={styles.panelTitle}>Recent transactions</Text>
-                    <Text style={styles.panelSubtitle}>Your latest wallet activity.</Text>
-                  </View>
-
-                  <TouchableOpacity activeOpacity={0.7} onPress={handleViewAllTransactions}>
-                    <Text style={styles.viewAllText}>View all</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {transactions.length === 0 ? (
-                  <View style={styles.emptyTransactions}>
-                    <View style={styles.emptyIcon}>
-                      <Ionicons name="receipt-outline" size={26} color="#94A3B8" />
-                    </View>
-
-                    <Text style={styles.emptyTitle}>No transactions yet</Text>
-
-                    <Text style={styles.emptyText}>
-                      Your wallet deposits and emergency charges will appear here.
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.transactionList}>
-                    {transactions.map((transaction) => (
-                      <View key={transaction.id} style={styles.transactionRow}>
-                        <View
-                          style={[
-                            styles.transactionIcon,
-                            transaction.kind === "credit" ? styles.creditIcon : styles.debitIcon,
-                          ]}
-                        >
-                          <Ionicons
-                            name={transaction.kind === "credit" ? "arrow-down" : "arrow-up"}
-                            size={17}
-                            color={transaction.kind === "credit" ? "#059669" : "#DC2626"}
-                          />
-                        </View>
-
-                        <View style={styles.transactionDetails}>
-                          <Text style={styles.transactionLabel} numberOfLines={1}>
-                            {transaction.label}
-                          </Text>
-
-                          <Text style={styles.transactionDate} numberOfLines={1}>
-                            {transaction.date}
-                            {transaction.reference ? ` · ${transaction.reference}` : ""}
-                          </Text>
-                        </View>
-
-                        <View style={styles.transactionAmountContainer}>
-                          <Text
-                            style={[
-                              styles.transactionAmount,
-                              transaction.kind === "credit" && styles.creditAmount,
-                            ]}
-                          >
-                            {transaction.kind === "credit" ? "+" : "-"}
-                            {transaction.amount}
-                          </Text>
-                        </View>
-                      </View>
-                    ))}
-                  </View>
-                )}
-              </View>
+              {receiptsPanel}
 
               <View style={styles.infoCard}>
                 <View style={styles.infoIcon}>
@@ -1137,8 +1559,8 @@ export default function Wallet() {
                   <Text style={styles.infoTitle}>How wallet deposits work</Text>
 
                   <Text style={styles.infoText}>
-                    Pay with M-Pesa or by bank transfer. Your wallet is credited only after the
-                    payment has been confirmed, never before.
+                    Pay with an M-Pesa prompt or your bank card. Your wallet is credited only after
+                    the payment has been confirmed, never before.
                   </Text>
                 </View>
               </View>
@@ -1147,7 +1569,7 @@ export default function Wallet() {
 
           {/* ==========================================================
               ORGANISATION (CLIENT OR SERVICE PROVIDER): SUBSCRIPTION
-              No wallet, no deposit form. Priced per branch.
+              No wallet, no deposit form, no M-Pesa. Bank card only. Priced per branch.
           ========================================================== */}
 
           {profileLoaded && isOrganisation && (
@@ -1198,7 +1620,7 @@ export default function Wallet() {
                   <TouchableOpacity
                     activeOpacity={0.8}
                     style={styles.receiptButton}
-                    onPress={handleDownloadReceipts}
+                    onPress={handleOpenReceipts}
                   >
                     <Ionicons name="receipt-outline" size={16} color="#FFFFFF" />
                     <Text style={styles.receiptButtonText}>Receipts</Text>
@@ -1246,7 +1668,7 @@ export default function Wallet() {
                         <TouchableOpacity
                           key={plan.code}
                           activeOpacity={0.8}
-                          disabled={busy}
+                          disabled={busy || !!pending}
                           style={[styles.tierCard, active && styles.tierCardActive]}
                           onPress={() => setSelectedPlanCode(plan.code)}
                         >
@@ -1286,8 +1708,7 @@ export default function Wallet() {
                   )}
 
                   <View style={styles.formContainer}>
-                    {methodSelector}
-                    {phoneField}
+                    {cardForm}
 
                     <View style={styles.paymentSummary}>
                       <View style={styles.summaryRow}>
@@ -1311,6 +1732,11 @@ export default function Wallet() {
                       </View>
 
                       <View style={styles.summaryRow}>
+                        <Text style={styles.summaryLabel}>Payment method</Text>
+                        <Text style={styles.summaryMethodText}>Bank card</Text>
+                      </View>
+
+                      <View style={styles.summaryRow}>
                         <Text style={styles.summaryLabel}>Amount to pay</Text>
                         <Text style={styles.summaryValue}>
                           {selectedPlan ? formatWholeCurrency(selectedPlan.total) : "—"}
@@ -1318,25 +1744,17 @@ export default function Wallet() {
                       </View>
                     </View>
 
-                    {subscriptionTooLargeForMpesa && profile && (
-                      <View style={styles.warningBox}>
-                        <Text style={styles.warningText}>
-                          M-Pesa limits a single payment to KSh{" "}
-                          {profile.mpesa_max_amount.toLocaleString("en-KE")}.{" "}
-                          {bankEnabled
-                            ? "Choose bank transfer to pay this amount."
-                            : "Please contact SafeSync support to arrange payment."}
-                        </Text>
-                      </View>
-                    )}
+                    {renderPayButton("Pay with card", handleSubscribe, canSubmitSubscription)}
 
-                    {renderPayButton(payLabel, handleSubscribe, canSubmitSubscription)}
-
-                    {bankCard}
+                    {pendingCard}
                     {securityNote}
                   </View>
                 </View>
               )}
+
+              {/* PAYMENT HISTORY + RECEIPTS */}
+
+              {receiptsPanel}
 
               <View style={styles.infoCard}>
                 <View style={styles.infoIcon}>
@@ -1347,9 +1765,9 @@ export default function Wallet() {
                   <Text style={styles.infoTitle}>How subscription payments work</Text>
 
                   <Text style={styles.infoText}>
-                    Your super admin picks a plan and pays with M-Pesa or bank transfer. The price
-                    is per branch, so the total depends on how many branches you have. Your
-                    subscription is activated only after the payment is confirmed.
+                    Your super admin picks a plan and pays with a bank card. The price is per
+                    branch, so the total depends on how many branches you have. Your subscription
+                    is activated only after the payment is confirmed.
                   </Text>
                 </View>
               </View>
@@ -1359,6 +1777,37 @@ export default function Wallet() {
           <View style={{ height: BOTTOM_CLEARANCE }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Bank 3-D Secure page, shown inside the app */}
+      {Platform.OS !== "web" && (
+        <Modal
+          visible={!!webUrl}
+          animationType="slide"
+          onRequestClose={() => setWebUrl(null)}
+        >
+          <View style={styles.webRoot}>
+            <View style={styles.webHeader}>
+              <Text style={styles.webTitle}>Verify your card</Text>
+
+              <TouchableOpacity activeOpacity={0.7} onPress={() => setWebUrl(null)}>
+                <Ionicons name="close" size={24} color="#0F172A" />
+              </TouchableOpacity>
+            </View>
+
+            {webUrl && (
+              <WebView
+                source={{ uri: webUrl }}
+                startInLoadingState
+                renderLoading={() => (
+                  <View style={styles.webLoading}>
+                    <ActivityIndicator size="small" color="#DC2626" />
+                  </View>
+                )}
+              />
+            )}
+          </View>
+        </Modal>
+      )}
     </View>
   );
 }
@@ -1376,7 +1825,6 @@ const styles = StyleSheet.create({
 
   header: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 18 },
   headerTextContainer: { flex: 1, paddingRight: 16 },
-  eyebrow: { fontSize: 10, fontWeight: "900", letterSpacing: 1.6, color: "#DC2626", marginBottom: 5 },
   pageTitle: { fontSize: 30, lineHeight: 36, fontWeight: "900", color: "#0F172A" },
   pageSubtitle: { fontSize: 13, lineHeight: 19, color: "#64748B", marginTop: 5 },
   headerIcon: {
@@ -1427,20 +1875,21 @@ const styles = StyleSheet.create({
     height: 50, borderWidth: 1, borderColor: "#CBD5E1", borderRadius: 13,
     backgroundColor: "#F8FAFC", flexDirection: "row", alignItems: "center",
   },
-  inputPrefix: { width: 46, alignItems: "center", justifyContent: "center" },
   currencyPrefix: { width: 52, alignItems: "center", justifyContent: "center" },
   currencyPrefixText: { fontSize: 12, fontWeight: "900", color: "#64748B" },
   input: { flex: 1, height: "100%", paddingHorizontal: 4, paddingRight: 13, fontSize: 14, color: "#0F172A", fontWeight: "600" },
   inputError: { color: "#DC2626", fontSize: 10, fontWeight: "600" },
+  hintText: { color: "#64748B", fontSize: 10, lineHeight: 15 },
 
-  methodRow: { flexDirection: "row", gap: 9 },
-  methodOption: {
-    flex: 1, height: 46, borderRadius: 13, borderWidth: 1, borderColor: "#E2E8F0",
-    backgroundColor: "#F8FAFC", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7,
+  methodRow: { flexDirection: "row", gap: 10 },
+  methodTile: {
+    flex: 1, height: 48, borderRadius: 13, borderWidth: 1.5, borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
   },
-  methodOptionActive: { borderColor: "#DC2626", backgroundColor: "#FEF2F2" },
-  methodOptionText: { fontSize: 12, fontWeight: "800", color: "#64748B" },
-  methodOptionTextActive: { color: "#DC2626" },
+  methodTileActive: { borderColor: "#DC2626", backgroundColor: "#FEF2F2" },
+  methodText: { fontSize: 12, fontWeight: "800", color: "#64748B" },
+  methodTextActive: { color: "#DC2626" },
+  cardRow: { flexDirection: "row", gap: 12 },
 
   quickAmountLabel: { fontSize: 9, fontWeight: "900", letterSpacing: 1.2, color: "#94A3B8", marginBottom: 8 },
   quickAmountGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
@@ -1469,12 +1918,9 @@ const styles = StyleSheet.create({
   securityNote: { flexDirection: "row", alignItems: "flex-start", gap: 7, paddingHorizontal: 2 },
   securityText: { flex: 1, color: "#64748B", fontSize: 10, lineHeight: 15 },
 
-  bankCard: { borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#F8FAFC", padding: 14, gap: 10 },
-  bankTitle: { fontSize: 13, fontWeight: "900", color: "#0F172A" },
-  bankRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
-  bankLabel: { fontSize: 11, color: "#64748B", fontWeight: "600", flexShrink: 1 },
-  bankValue: { fontSize: 13, color: "#0F172A", fontWeight: "900", flexShrink: 1, textAlign: "right" },
-  bankNote: { fontSize: 10, lineHeight: 15, color: "#64748B" },
+  checkoutCard: { borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#F8FAFC", padding: 14, gap: 10 },
+  checkoutTitle: { fontSize: 13, fontWeight: "900", color: "#0F172A" },
+  checkoutText: { fontSize: 11, lineHeight: 16, color: "#64748B" },
   waitingRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   waitingText: { flex: 1, fontSize: 11, color: "#475569", fontWeight: "600" },
   checkButton: {
@@ -1482,6 +1928,12 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF",
   },
   checkButtonText: { color: "#DC2626", fontSize: 13, fontWeight: "800" },
+  cancelLink: { alignItems: "center", paddingVertical: 4 },
+  cancelLinkText: { color: "#64748B", fontSize: 12, fontWeight: "700" },
+  loadMoreButton: {
+    height: 42, borderRadius: 12, borderWidth: 1.5, borderColor: "#DC2626", marginTop: 14,
+    alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF",
+  },
 
   tierContainer: { flexDirection: "row", gap: 9, marginTop: 15 },
   tierCard: { flex: 1, minHeight: 126, padding: 13, borderRadius: 15, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#F8FAFC" },
@@ -1503,8 +1955,6 @@ const styles = StyleSheet.create({
     borderRadius: 12, backgroundColor: "#F5F3FF", borderWidth: 1, borderColor: "#DDD6FE",
   },
   totalNoteText: { flex: 1, fontSize: 11, lineHeight: 16, fontWeight: "700", color: "#5B21B6" },
-  warningBox: { padding: 11, borderRadius: 12, backgroundColor: "#FFFBEB", borderWidth: 1, borderColor: "#FDE68A" },
-  warningText: { fontSize: 11, lineHeight: 16, color: "#92400E", fontWeight: "600" },
 
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
   viewAllText: { color: "#DC2626", fontSize: 11, fontWeight: "800", marginTop: 2 },
@@ -1519,12 +1969,15 @@ const styles = StyleSheet.create({
   transactionIcon: { width: 39, height: 39, borderRadius: 12, alignItems: "center", justifyContent: "center", marginRight: 11 },
   creditIcon: { backgroundColor: "#ECFDF5" },
   debitIcon: { backgroundColor: "#FEF2F2" },
+  paymentIcon: { backgroundColor: "#F5F3FF" },
   transactionDetails: { flex: 1, minWidth: 0 },
   transactionLabel: { fontSize: 12, fontWeight: "800", color: "#0F172A" },
   transactionDate: { fontSize: 9, color: "#94A3B8", marginTop: 3 },
   transactionAmountContainer: { alignItems: "flex-end", marginLeft: 8 },
   transactionAmount: { fontSize: 12, fontWeight: "900", color: "#DC2626" },
   creditAmount: { color: "#059669" },
+  paymentAmount: { color: "#0F172A" },
+  downloadButton: { width: 34, height: 34, marginLeft: 4, alignItems: "center", justifyContent: "center" },
 
   infoCard: {
     flexDirection: "row", backgroundColor: "#FEF2F2", borderWidth: 1, borderColor: "#FECACA",
@@ -1534,4 +1987,13 @@ const styles = StyleSheet.create({
   infoContent: { flex: 1 },
   infoTitle: { fontSize: 11, fontWeight: "900", color: "#7F1D1D" },
   infoText: { fontSize: 10, lineHeight: 16, color: "#475569", marginTop: 4 },
+
+  webRoot: { flex: 1, backgroundColor: "#FFFFFF" },
+  webHeader: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 18, paddingTop: Platform.OS === "ios" ? 56 : 18, paddingBottom: 14,
+    borderBottomWidth: 1, borderBottomColor: "#E2E8F0",
+  },
+  webTitle: { fontSize: 16, fontWeight: "800", color: "#0F172A" },
+  webLoading: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF" },
 });
