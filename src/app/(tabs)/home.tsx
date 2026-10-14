@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -52,8 +53,9 @@ const SEARCH_RADIUS_METERS = 10_000;
 const REFETCH_DISTANCE_METERS = 100;
 // Re-run reverse geocoding when the client has moved this far.
 const GEOCODE_DISTANCE_METERS = 150;
-// Responders move, so refresh the list even when the client is still.
-const UNITS_POLL_MS = 15_000;
+// Responders report their position about every 10 s, so poll often enough
+// that their marker on this map follows them closely.
+const UNITS_POLL_MS = 5_000;
 
 /* ============================================================
    TYPES
@@ -70,6 +72,7 @@ type NearbyUnit = {
   vehicle_type_code: string; // "AMBULANCE" | "FIRE_ENGINE"
   vehicle_type_name: string;
   station: string;
+  // The responder's last reported position.
   latitude: number;
   longitude: number;
   distance_km: number;
@@ -180,6 +183,8 @@ export default function Home() {
   const lastFetchRef = useRef<Coordinates | null>(null);
   const lastGeocodeRef = useRef<Coordinates | null>(null);
   const hasCenteredRef = useRef(false);
+  // The map is framed around "you + nearest responder" once per locate.
+  const hasFittedUnitsRef = useRef(false);
 
   // Newest-request-wins bookkeeping for the units list.
   const unitsSeqRef = useRef(0);
@@ -194,7 +199,7 @@ export default function Home() {
      BACKEND: nearby units (ETA computed server-side)
      ============================================================ */
 
-  // Requests can overlap (position change + 15 s poll) and the server may
+  // Requests can overlap (position change + poll) and the server may
   // answer them out of order. Only the newest request may update the screen,
   // otherwise a slow old answer overwrites a newer one and a responder who
   // just went off shift reappears (or vice versa).
@@ -406,7 +411,8 @@ export default function Home() {
     };
   }, [applyPosition, locationRetry]);
 
-  // Keep the unit list fresh while the client is standing still.
+  // Keep the unit list (and so the responders' positions on the map) fresh
+  // while the client is standing still.
   useEffect(() => {
     const timer = setInterval(() => {
       const here = currentRef.current;
@@ -437,6 +443,43 @@ export default function Home() {
   }, [mapReady, currentLocation]);
 
   /* ============================================================
+     DERIVED
+     ============================================================ */
+
+  // Closest first, whatever order the server answered in.
+  const sortedUnits = useMemo(
+    () => [...units].sort((a, b) => a.distance_km - b.distance_km),
+    [units]
+  );
+
+  const nearestUnit = sortedUnits[0] ?? null;
+
+  // Once a responder is known, frame the client and the nearest responder so
+  // both are visible. Done once, so it never fights the client's own panning.
+  useEffect(() => {
+    if (
+      !mapReady ||
+      !currentLocation ||
+      !nearestUnit ||
+      hasFittedUnitsRef.current
+    ) {
+      return;
+    }
+    hasFittedUnitsRef.current = true;
+
+    mapRef.current?.fitToCoordinates(
+      [
+        currentLocation,
+        { latitude: nearestUnit.latitude, longitude: nearestUnit.longitude },
+      ],
+      {
+        edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
+        animated: true,
+      }
+    );
+  }, [mapReady, currentLocation, nearestUnit]);
+
+  /* ============================================================
      MANUAL REFRESH (locate button)
      ============================================================ */
 
@@ -462,9 +505,11 @@ export default function Home() {
         accuracy: Location.Accuracy.High,
       });
 
-      // Force a fresh units query and place-name lookup.
+      // Force a fresh units query and place-name lookup, and let the map
+      // frame the nearest responder again.
       lastFetchRef.current = null;
       lastGeocodeRef.current = null;
+      hasFittedUnitsRef.current = false;
       applyPosition(position);
 
       mapRef.current?.animateToRegion(
@@ -485,12 +530,6 @@ export default function Home() {
       setRefreshing(false);
     }
   }, [applyPosition, refreshing]);
-
-  /* ============================================================
-     DERIVED
-     ============================================================ */
-
-  const nearestUnit = units[0] ?? null;
 
   // Replaces the old "Estimated cost" tile:
   //   organisation account -> subscription state ("Subscribed" when active)
@@ -537,7 +576,7 @@ export default function Home() {
     ? "Looking for responders…"
     : units.length === 0
     ? "No responders are on shift near you right now"
-    : "Live responder availability";
+    : "Live responder locations";
 
   /* ============================================================
      RENDER
@@ -564,7 +603,7 @@ export default function Home() {
           <View style={styles.mapWrapper}>
             {currentLocation ? (
               <>
-                                <TomTomMap
+                <TomTomMap
                   ref={mapRef}
                   style={styles.map}
                   onMapReady={() => setMapReady(true)}
@@ -584,7 +623,8 @@ export default function Home() {
                     description={placeName ?? undefined}
                   />
 
-                  {units.map((unit) => (
+                  {/* Each responder is drawn at the position it last reported. */}
+                  {sortedUnits.map((unit, index) => (
                     <TomTomMarker
                       key={unit.vehicle_id}
                       id={unit.vehicle_id}
@@ -595,6 +635,11 @@ export default function Home() {
                       }}
                       title={`${unit.vehicle_type_name} · ${unit.registration_number}`}
                       description={`${formatEta(unit.eta_minutes, unit.estimated)} · ${unit.distance_km.toFixed(1)} km`}
+                      label={
+                        index === 0
+                          ? `Nearest · ${formatEta(unit.eta_minutes, unit.estimated)}`
+                          : undefined
+                      }
                     />
                   ))}
                 </TomTomMap>
@@ -695,7 +740,7 @@ export default function Home() {
             <View style={styles.emptyCard}>
               <ActivityIndicator color="#DC2626" />
             </View>
-          ) : units.length === 0 ? (
+          ) : sortedUnits.length === 0 ? (
             <View style={styles.emptyCard}>
               <Ionicons name="moon-outline" size={28} color="#64748B" />
               <Text style={styles.emptyText}>
@@ -704,7 +749,7 @@ export default function Home() {
               </Text>
             </View>
           ) : (
-            units.map((unit) => (
+            sortedUnits.map((unit) => (
               <View key={unit.vehicle_id} style={styles.responderCard}>
                 <View style={styles.cardHeader}>
                   <View style={styles.cardHeaderLeft}>
@@ -834,8 +879,8 @@ const styles = StyleSheet.create({
   },
 
   mapWrapper: {
-    height: 230,
-    width: "100%"
+    height: 270,
+    width: "100%",
   },
 
   map: {

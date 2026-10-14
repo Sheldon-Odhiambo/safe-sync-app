@@ -1,16 +1,3 @@
-// components/tomtom-map.tsx
-//
-// A TomTom-only map for React Native / Expo. It renders TomTom Map Display
-// tiles (and optional live traffic) inside a WebView, so no Google (or Apple)
-// map engine and no Google Maps key is needed.
-//
-// The API is deliberately close to react-native-maps so screens change little:
-//   <TomTomMap ref initialRegion onMapReady onPanDrag>
-//     <TomTomMarker id kind coordinate title description />
-//     <TomTomPolyline id coordinates color width />
-//   </TomTomMap>
-//   ref.fitToCoordinates(...), ref.animateToRegion(...)
-
 import React, {
   createContext,
   forwardRef,
@@ -20,6 +7,7 @@ import React, {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import {
   StyleSheet,
@@ -28,6 +16,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
 import { TOMTOM_KEY, type LatLng } from "@/lib/tomtom";
@@ -41,7 +30,10 @@ export type MarkerKind =
   | "client" // green pulsing dot (the person needing help)
   | "ambulance"
   | "fire"
-  | "emergency"; // red pin
+  | "emergency" // red pin
+  | "hospital"; // white circle with a red cross
+
+export type TomTomMapStyle = "day" | "night" | "satellite";
 
 type MarkerSpec = {
   id: string;
@@ -50,6 +42,8 @@ type MarkerSpec = {
   longitude: number;
   title?: string;
   description?: string;
+  /** Short name drawn under the marker (hidden when zoomed far out). */
+  label?: string;
 };
 
 type LineSpec = {
@@ -80,6 +74,17 @@ type Props = {
   style?: StyleProp<ViewStyle>;
   initialRegion: Region;
   showTraffic?: boolean;
+  /** day (default), night or satellite. Can change at any time. */
+  mapStyle?: TomTomMapStyle;
+  /**
+   * Extra zoom levels added to the region's zoom. Default 1 (about twice as close).
+   * Applies to the initial view and animateToRegion, not fitToCoordinates.
+   */
+  zoomBoost?: number;
+  /** Show hospitals near the map centre, with names. Default true. */
+  showHospitals?: boolean;
+  /** Show the road name at the map centre. Default true. */
+  showStreetName?: boolean;
   onMapReady?: () => void;
   /** The user dragged the map by hand. */
   onPanDrag?: () => void;
@@ -97,6 +102,9 @@ type MapContextValue = {
 
 const MapContext = createContext<MapContextValue | null>(null);
 
+const DEFAULT_ZOOM_BOOST = 1;
+const MAX_ZOOM = 19;
+
 /* ============================================================
    THE PAGE THAT RUNS INSIDE THE WEBVIEW
    (Leaflet draws the map; every tile and byte of map data is TomTom's.)
@@ -110,13 +118,32 @@ const PAGE = `<!doctype html>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html, body, #map { height: 100%; margin: 0; padding: 0; background: #E2E8F0; }
+  #map.dark { background: #1E293B; }
   .leaflet-container { font-family: -apple-system, Roboto, sans-serif; }
   .leaflet-control-attribution { font-size: 9px; }
   .mk { position: relative; display: flex; align-items: center; justify-content: center; }
-  .circle { box-sizing: border-box; border-radius: 50%; border: 3px solid #fff; background: #DC2626;
+  .circle { position: relative; z-index: 1; box-sizing: border-box; border-radius: 50%; border: 3px solid #fff; background: #DC2626;
             box-shadow: 0 2px 5px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; }
-  .pulse { position: absolute; border-radius: 50%; animation: p 1.8s ease-out infinite; }
-  @keyframes p { 0% { transform: scale(.6); opacity: .9; } 100% { transform: scale(1.5); opacity: 0; } }
+
+  /* Signal rings: the element's width/height is the FINAL ring diameter.
+     Two rings run staggered so the signal keeps spreading outward. */
+  .pulse { position: absolute; left: 50%; top: 50%; border-radius: 50%; pointer-events: none;
+           transform: translate(-50%, -50%) scale(.15); opacity: 0;
+           animation: p 2.6s ease-out infinite; }
+  .pulse.b { animation-delay: 1.3s; }
+  @keyframes p {
+    0%   { transform: translate(-50%, -50%) scale(.15); opacity: .85; }
+    100% { transform: translate(-50%, -50%) scale(1);   opacity: 0; }
+  }
+
+  .leaflet-popup-content-wrapper { border-radius: 12px; box-shadow: 0 4px 14px rgba(15,23,42,.25); }
+  .leaflet-popup-content { margin: 10px 12px; font-size: 12px; line-height: 17px; color: #0F172A; }
+
+  .leaflet-tooltip.lbl { background: rgba(255,255,255,.96); border: 0; border-radius: 8px; color: #0F172A;
+            box-shadow: 0 1px 4px rgba(15,23,42,.3); font-size: 10px; font-weight: 700; padding: 2px 7px;
+            max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .leaflet-tooltip.lbl:before { display: none; }
+  .zlow .leaflet-tooltip.lbl { display: none; }
 </style>
 </head>
 <body>
@@ -131,6 +158,8 @@ const PAGE = `<!doctype html>
     try { window.ReactNativeWebView.postMessage(JSON.stringify(o)); } catch (e) {}
   }
 
+  var mapEl = document.getElementById('map');
+
   var map = L.map('map', {
     zoomControl: false,
     zoomSnap: 0.25,
@@ -139,10 +168,37 @@ const PAGE = `<!doctype html>
 
   map.attributionControl.setPrefix(false);
 
-  L.tileLayer(
-    'https://api.tomtom.com/map/1/tile/basic/main/{z}/{x}/{y}.png?key=' + KEY + '&tileSize=512',
-    { tileSize: 512, zoomOffset: -1, minZoom: 3, maxZoom: 20, attribution: '&copy; TomTom' }
-  ).addTo(map);
+  /* ---------- base map style ---------- */
+
+  var STYLES = {
+    day:       { layer: 'basic',  style: 'main',  ext: 'png' },
+    night:     { layer: 'basic',  style: 'night', ext: 'png' },
+    satellite: { layer: 'hybrid', style: 'main',  ext: 'jpg' }
+  };
+  var base = null;
+  var baseName = null;
+
+  function setStyle(name) {
+    if (!STYLES[name]) name = 'day';
+    if (name === baseName) return;
+
+    var s = STYLES[name];
+    var next = L.tileLayer(
+      'https://api.tomtom.com/map/1/tile/' + s.layer + '/' + s.style + '/{z}/{x}/{y}.' + s.ext +
+        '?key=' + KEY + '&tileSize=512',
+      { tileSize: 512, zoomOffset: -1, minZoom: 3, maxZoom: 20, attribution: '&copy; TomTom' }
+    );
+    next.addTo(map);
+    next.bringToBack();               // stays under the traffic layer
+    if (base) map.removeLayer(base);
+
+    base = next;
+    baseName = name;
+    mapEl.classList.toggle('dark', name === 'night');
+  }
+  setStyle(INIT.style);
+
+  /* ---------- traffic ---------- */
 
   var traffic = null;
   function setTraffic(on) {
@@ -164,29 +220,47 @@ const PAGE = `<!doctype html>
     });
   }
 
+  /* ---------- marker icons ---------- */
+
+  // Two staggered rings; "d" is the final ring diameter in px.
+  function rings(d, rgba) {
+    var st = 'width:' + d + 'px;height:' + d + 'px;background:' + rgba;
+    return '<div class="pulse" style="' + st + '"></div>' +
+           '<div class="pulse b" style="' + st + '"></div>';
+  }
+
   function iconFor(kind) {
     var html, size = 46, ax = 23, ay = 23;
 
     if (kind === 'client') {
       size = 42; ax = 21; ay = 21;
       html = '<div class="mk" style="width:42px;height:42px">' +
-        '<div class="pulse" style="width:42px;height:42px;background:rgba(22,163,74,.22)"></div>' +
+        rings(180, 'rgba(22,163,74,.28)') +
         '<div class="circle" style="width:25px;height:25px;border:2px solid #16A34A;background:#fff">' +
         '<div style="width:11px;height:11px;border-radius:50%;background:#16A34A"></div></div></div>';
     } else if (kind === 'me') {
       size = 24; ax = 12; ay = 12;
-      html = '<div class="circle" style="width:24px;height:24px">' +
-        '<div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div>';
+      html = '<div class="mk" style="width:24px;height:24px">' +
+        rings(170, 'rgba(220,38,38,.25)') +
+        '<div class="circle" style="width:24px;height:24px">' +
+        '<div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div></div>';
     } else if (kind === 'emergency') {
       size = 36; ax = 18; ay = 34;
       html = '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;' +
         'border:3px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);' +
         'box-shadow:0 2px 5px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center">' +
         '<div style="width:10px;height:10px;border-radius:50%;background:#fff"></div></div>';
+    } else if (kind === 'hospital') {
+      size = 28; ax = 14; ay = 14;
+      html = '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626">' +
+        '<div style="position:relative;width:14px;height:14px">' +
+        '<div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:1px"></div>' +
+        '<div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:1px"></div>' +
+        '</div></div>';
     } else {
       var glyph = kind === 'fire' ? '&#128658;' : '&#128657;';
       html = '<div class="mk" style="width:46px;height:46px">' +
-        '<div class="pulse" style="width:46px;height:46px;background:rgba(220,38,38,.2)"></div>' +
+        rings(150, 'rgba(220,38,38,.25)') +
         '<div class="circle" style="width:34px;height:34px;font-size:17px">' + glyph + '</div></div>';
     }
 
@@ -197,6 +271,19 @@ const PAGE = `<!doctype html>
       iconAnchor: [ax, ay]
     });
   }
+
+  function labelOffset(kind) {
+    if (kind === 'emergency') return [0, 4];
+    if (kind === 'hospital') return [0, 12];
+    if (kind === 'me') return [0, 10];
+    return [0, 20];
+  }
+
+  function tip(kind) {
+    return { permanent: true, direction: 'bottom', offset: labelOffset(kind), className: 'lbl', opacity: 1 };
+  }
+
+  /* ---------- markers and lines driven by React ---------- */
 
   var markers = {};
   var lines = {};
@@ -230,6 +317,13 @@ const PAGE = `<!doctype html>
         mk._text = text;
         if (text) { mk.bindPopup(text); } else { mk.unbindPopup(); }
       }
+
+      var lk = m.kind + '|' + (m.label || '');
+      if (mk._lk !== lk) {
+        mk._lk = lk;
+        mk.unbindTooltip();
+        if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
+      }
     });
 
     Object.keys(markers).forEach(function (id) {
@@ -240,22 +334,123 @@ const PAGE = `<!doctype html>
 
     (state.lines || []).forEach(function (l) {
       seenLines[l.id] = true;
-      var pl = lines[l.id];
+      var pair = lines[l.id];
 
-      if (!pl) {
-        lines[l.id] = L.polyline(l.coordinates, {
-          color: l.color, weight: l.width, opacity: 0.9, lineJoin: 'round', lineCap: 'round'
+      if (!pair) {
+        // White outline underneath so the route stands out on any map style.
+        var casing = L.polyline(l.coordinates, {
+          color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
         }).addTo(map);
+        var main = L.polyline(l.coordinates, {
+          color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
+        }).addTo(map);
+        lines[l.id] = { casing: casing, main: main };
       } else {
-        pl.setLatLngs(l.coordinates);
-        pl.setStyle({ color: l.color, weight: l.width });
+        pair.casing.setLatLngs(l.coordinates);
+        pair.casing.setStyle({ weight: l.width + 4 });
+        pair.main.setLatLngs(l.coordinates);
+        pair.main.setStyle({ color: l.color, weight: l.width });
       }
     });
 
     Object.keys(lines).forEach(function (id) {
-      if (!seenLines[id]) { map.removeLayer(lines[id]); delete lines[id]; }
+      if (!seenLines[id]) {
+        map.removeLayer(lines[id].casing);
+        map.removeLayer(lines[id].main);
+        delete lines[id];
+      }
     });
   };
+
+  /* ---------- nearby hospitals (TomTom Nearby Search, category 7321) ---------- */
+
+  var hospitals = {};
+  var showHosp = INIT.hospitals;
+  var lastHosp = null;
+
+  function loadHospitals() {
+    if (!showHosp || !KEY) return;
+    if (map.getZoom() < 12) return;
+
+    var c = map.getCenter();
+    if (lastHosp && map.distance(lastHosp, c) < 1500) return;
+    lastHosp = c;
+
+    fetch(
+      'https://api.tomtom.com/search/2/nearbySearch/.json?lat=' + c.lat + '&lon=' + c.lng +
+        '&radius=6000&limit=15&categorySet=7321&key=' + KEY
+    )
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.results) { lastHosp = null; return; }
+
+        j.results.forEach(function (p) {
+          if (!p.poi || !p.position) return;
+
+          var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
+          if (hospitals[id]) return;
+
+          var name = p.poi.name || 'Hospital';
+          var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
+          var phone = p.poi.phone ? p.poi.phone : '';
+
+          var m = L.marker([p.position.lat, p.position.lon], { icon: iconFor('hospital'), zIndexOffset: 100 });
+          m.bindPopup(
+            '<b>' + esc(name) + '</b>' +
+            (addr ? '<br>' + esc(addr) : '') +
+            (phone ? '<br>' + esc(phone) : '')
+          );
+          m.bindTooltip(name, tip('hospital'));
+          if (showHosp) m.addTo(map);
+          hospitals[id] = m;
+        });
+      })
+      .catch(function () { lastHosp = null; });
+  }
+
+  window.__hospitals = function (on) {
+    showHosp = !!on;
+    Object.keys(hospitals).forEach(function (id) {
+      if (showHosp) { hospitals[id].addTo(map); } else { map.removeLayer(hospitals[id]); }
+    });
+    if (showHosp) loadHospitals();
+  };
+
+  /* ---------- road name at the map centre (TomTom Reverse Geocode) ---------- */
+
+  var lastStreet = null;
+
+  function loadStreet() {
+    if (!INIT.street || !KEY) return;
+
+    if (map.getZoom() < 14) {
+      lastStreet = null;
+      post({ type: 'street', name: '' });
+      return;
+    }
+
+    var c = map.getCenter();
+    if (lastStreet && map.distance(lastStreet, c) < 40) return;
+    lastStreet = c;
+
+    fetch(
+      'https://api.tomtom.com/search/2/reverseGeocode/' + c.lat + ',' + c.lng +
+        '.json?radius=150&key=' + KEY
+    )
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        var a = j && j.addresses && j.addresses[0] && j.addresses[0].address;
+        if (!a) return;
+
+        var road = a.streetName || '';
+        var area = a.municipalitySubdivision || a.municipality || '';
+        var name = road ? (area ? road + ' \\u00B7 ' + area : road) : area;
+        post({ type: 'street', name: name });
+      })
+      .catch(function () { lastStreet = null; });
+  }
+
+  /* ---------- camera ---------- */
 
   window.__fit = function (pts, pad, maxZoom) {
     if (!pts || !pts.length) return;
@@ -272,7 +467,22 @@ const PAGE = `<!doctype html>
   };
 
   window.__traffic = setTraffic;
+  window.__style = setStyle;
 
+  /* ---------- events ---------- */
+
+  var idleTimer = null;
+
+  function onIdle() {
+    mapEl.classList.toggle('zlow', map.getZoom() < 14);   // hide name labels when zoomed far out
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () {
+      loadHospitals();
+      loadStreet();
+    }, 700);
+  }
+
+  map.on('moveend zoomend', onIdle);
   map.on('dragstart', function () { post({ type: 'drag' }); });
 
   document.addEventListener('touchstart', function () { post({ type: 'touch', active: true }); }, { passive: true });
@@ -281,7 +491,10 @@ const PAGE = `<!doctype html>
 
   window.addEventListener('resize', function () { map.invalidateSize(); });
 
-  map.whenReady(function () { post({ type: 'ready' }); });
+  map.whenReady(function () {
+    onIdle();
+    post({ type: 'ready' });
+  });
 })();
 </script>
 </body>
@@ -296,17 +509,29 @@ function safeJson(value: unknown): string {
     .join("\\u2029");
 }
 
-function zoomForDelta(latitudeDelta: number): number {
-  const zoom = Math.log2(360 / Math.max(latitudeDelta, 0.0001));
-  return Math.max(3, Math.min(19, zoom));
+function zoomFor(latitudeDelta: number, boost: number): number {
+  const zoom = Math.log2(360 / Math.max(latitudeDelta, 0.0001)) + boost;
+  return Math.max(3, Math.min(MAX_ZOOM, zoom));
 }
 
-function buildHtml(region: Region, traffic: boolean): string {
+function buildHtml(
+  region: Region,
+  opts: {
+    traffic: boolean;
+    style: TomTomMapStyle;
+    hospitals: boolean;
+    street: boolean;
+    boost: number;
+  }
+): string {
   const init = {
     lat: region.latitude,
     lng: region.longitude,
-    zoom: zoomForDelta(region.latitudeDelta),
-    traffic,
+    zoom: zoomFor(region.latitudeDelta, opts.boost),
+    traffic: opts.traffic,
+    style: opts.style,
+    hospitals: opts.hospitals,
+    street: opts.street,
   };
 
   return PAGE.replace("__KEY__", () => JSON.stringify(TOMTOM_KEY)).replace(
@@ -323,7 +548,15 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
   props,
   ref
 ) {
-  const { style, initialRegion, showTraffic = false, children } = props;
+  const {
+    style,
+    initialRegion,
+    showTraffic = false,
+    mapStyle = "day",
+    showHospitals = true,
+    showStreetName = true,
+    children,
+  } = props;
 
   const webRef = useRef<React.ComponentRef<typeof WebView>>(null);
   const readyRef = useRef(false);
@@ -332,14 +565,30 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
   const linesRef = useRef(new Map<string, LineSpec>());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [street, setStreet] = useState("");
+
   // Always read the newest callbacks without re-creating handlers.
   const propsRef = useRef(props);
   propsRef.current = props;
 
   // The page is built once; changing it later would reload the WebView.
-  const initialRef = useRef({ region: initialRegion, traffic: showTraffic });
+  const initialRef = useRef({
+    region: initialRegion,
+    traffic: showTraffic,
+    style: mapStyle,
+    hospitals: showHospitals,
+    street: showStreetName,
+    boost: props.zoomBoost ?? DEFAULT_ZOOM_BOOST,
+  });
   const html = useMemo(
-    () => buildHtml(initialRef.current.region, initialRef.current.traffic),
+    () =>
+      buildHtml(initialRef.current.region, {
+        traffic: initialRef.current.traffic,
+        style: initialRef.current.style,
+        hospitals: initialRef.current.hospitals,
+        street: initialRef.current.street,
+        boost: initialRef.current.boost,
+      }),
     []
   );
 
@@ -411,6 +660,14 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     run(`window.__traffic(${showTraffic ? "true" : "false"});`);
   }, [showTraffic, run]);
 
+  useEffect(() => {
+    run(`window.__style(${safeJson(mapStyle)});`);
+  }, [mapStyle, run]);
+
+  useEffect(() => {
+    run(`window.__hospitals(${showHospitals ? "true" : "false"});`);
+  }, [showHospitals, run]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -431,9 +688,12 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
         );
       },
       animateToRegion: (region, durationMs = 600) => {
+        const boost = propsRef.current.zoomBoost ?? DEFAULT_ZOOM_BOOST;
+
         run(
-          `window.__fly(${region.latitude}, ${region.longitude}, ${zoomForDelta(
-            region.latitudeDelta
+          `window.__fly(${region.latitude}, ${region.longitude}, ${zoomFor(
+            region.latitudeDelta,
+            boost
           )}, ${durationMs});`
         );
       },
@@ -443,7 +703,7 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
 
   const onMessage = useCallback(
     (event: WebViewMessageEvent) => {
-      let message: { type?: string; active?: boolean };
+      let message: { type?: string; active?: boolean; name?: string };
 
       try {
         message = JSON.parse(event.nativeEvent.data);
@@ -465,6 +725,8 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
         propsRef.current.onPanDrag?.();
       } else if (message.type === "touch") {
         propsRef.current.onInteractionChange?.(!!message.active);
+      } else if (message.type === "street") {
+        setStreet(message.name ?? "");
       }
     },
     [sync, inject]
@@ -503,6 +765,15 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
         {children}
       </MapContext.Provider>
 
+      {showStreetName && !!street && (
+        <View style={styles.streetChip} pointerEvents="none">
+          <Ionicons name="navigate" size={11} color="#DC2626" />
+          <Text style={styles.streetText} numberOfLines={1}>
+            {street}
+          </Text>
+        </View>
+      )}
+
       {!TOMTOM_KEY && (
         <View style={styles.missingKey} pointerEvents="none">
           <Text style={styles.missingKeyText}>
@@ -525,19 +796,29 @@ export function TomTomMarker({
   coordinate,
   title,
   description,
+  label,
 }: {
   id: string;
   kind: MarkerKind;
   coordinate: LatLng;
   title?: string;
   description?: string;
+  label?: string;
 }) {
   const context = useContext(MapContext);
   const { latitude, longitude } = coordinate;
 
   useEffect(() => {
-    context?.setMarker({ id, kind, latitude, longitude, title, description });
-  }, [context, id, kind, latitude, longitude, title, description]);
+    context?.setMarker({
+      id,
+      kind,
+      latitude,
+      longitude,
+      title,
+      description,
+      label,
+    });
+  }, [context, id, kind, latitude, longitude, title, description, label]);
 
   useEffect(() => {
     return () => context?.removeMarker(id);
@@ -583,6 +864,30 @@ const styles = StyleSheet.create({
   web: {
     flex: 1,
     backgroundColor: "#E2E8F0",
+  },
+  streetChip: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    maxWidth: "70%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.95)",
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  streetText: {
+    flexShrink: 1,
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#0F172A",
   },
   missingKey: {
     position: "absolute",
