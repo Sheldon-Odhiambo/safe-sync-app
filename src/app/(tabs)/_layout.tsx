@@ -44,6 +44,8 @@ const ROUTE_RULES: RouteRule[] = [
   { prefix: "/admin", kinds: ["admin"] },
   { prefix: "/super-admin", kinds: ["super_admin"] },
   { prefix: "/responder", kinds: ["responder"] },
+  
+
 ];
 
 const PRIMARY_ROUTES: string[] = [
