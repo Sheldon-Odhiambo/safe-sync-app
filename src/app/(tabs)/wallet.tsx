@@ -122,6 +122,15 @@ type Subscription = {
   branch_count?: number | null;
 };
 
+type PromoPreview = {
+  code: string;
+  discount_type: "percent" | "fixed";
+  discount_value: number;
+  original_amount: number;
+  discount_amount: number;
+  final_amount: number;
+};
+
 type ChargeResponse = {
   reference: string;
   status: string; // "PENDING" | "SUCCESS" | "FAILED"
@@ -205,6 +214,9 @@ function durationLabel(months: number) {
   }
   return `${months} months`;
 }
+
+// Plans whose code contains "exclusive" (e.g. sp_exclusive_6m) get the Exclusive badge.
+const isExclusive = (plan: Plan) => plan.code.toLowerCase().includes("exclusive");
 
 function extractErrorMessage(detail: ApiErrorResponse["detail"], fallback: string) {
   if (typeof detail === "string") return detail;
@@ -378,6 +390,13 @@ export default function Wallet() {
   const [phone, setPhone] = useState("");
   const [card, setCard] = useState<CardInput>(EMPTY_CARD);
 
+  // Promo code (organisation subscriptions)
+  const [showPromo, setShowPromo] = useState(false);
+  const [promoInput, setPromoInput] = useState("");
+  const [promo, setPromo] = useState<PromoPreview | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [isApplyingPromo, setIsApplyingPromo] = useState(false);
+
   const [pending, setPending] = useState<PendingPayment | null>(null);
   const [challengeValue, setChallengeValue] = useState("");
   const [webUrl, setWebUrl] = useState<string | null>(null);
@@ -440,6 +459,9 @@ export default function Wallet() {
     () => plans.find((plan) => plan.code === selectedPlanCode) || null,
     [plans, selectedPlanCode]
   );
+
+  // What the customer will actually be charged (the server recomputes this).
+  const payableTotal = selectedPlan ? (promo ? promo.final_amount : selectedPlan.total) : 0;
 
   /* ---- card validation ---- */
 
@@ -691,6 +713,12 @@ export default function Wallet() {
       const receiptText = result.receipt ? ` (receipt ${result.receipt})` : "";
       setPending(null);
       setWebUrl(null);
+      if (kind === "subscription") {
+        setPromo(null);
+        setPromoInput("");
+        setPromoError(null);
+        setShowPromo(false);
+      }
       notify(
         "Payment confirmed",
         kind === "subscription"
@@ -910,6 +938,58 @@ export default function Wallet() {
     if (started && !firstDeposit) setAmount("");
   };
 
+  /*
+   * PROMO CODE (organisation subscriptions)
+   */
+
+  const validatePromo = async (code: string, planCode: string, silent = false) => {
+    const cleaned = code.trim().toUpperCase();
+    if (!cleaned) {
+      setPromoError("Enter a promo code.");
+      return;
+    }
+    if (isApplyingPromo && !silent) return;
+
+    setIsApplyingPromo(true);
+    setPromoError(null);
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setPromoError("Please sign in again.");
+        return;
+      }
+
+      const preview = await apiRequest<PromoPreview>(`${PAYMENTS_URL}/promo/validate`, token, {
+        method: "POST",
+        body: { code: cleaned, plan_code: planCode },
+      });
+
+      if (!mounted.current) return;
+      setPromo(preview);
+      setPromoInput(preview.code);
+    } catch (error) {
+      if (!mounted.current) return;
+      setPromo(null);
+      setPromoError(error instanceof Error ? error.message : "Could not check that promo code.");
+    } finally {
+      if (mounted.current) setIsApplyingPromo(false);
+    }
+  };
+
+  const handleRemovePromo = () => {
+    setPromo(null);
+    setPromoInput("");
+    setPromoError(null);
+    setShowPromo(false);
+  };
+
+  // A different plan has a different total (and the code may not apply): re-check it.
+  useEffect(() => {
+    if (promo && selectedPlanCode) void validatePromo(promo.code, selectedPlanCode, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPlanCode]);
+
   const handleSubscribe = async () => {
     if (!selectedPlan) {
       notify("Choose a plan", "Select a subscription plan to continue.");
@@ -918,9 +998,13 @@ export default function Wallet() {
 
     await submitPayment(
       "/subscribe",
-      { plan_code: selectedPlan.code, card: cardBody() },
+      {
+        plan_code: selectedPlan.code,
+        card: cardBody(),
+        ...(promo ? { promo_code: promo.code } : {}),
+      },
       "subscription",
-      selectedPlan.total
+      payableTotal
     );
   };
 
@@ -976,7 +1060,6 @@ export default function Wallet() {
   const mpesaForm = (
     <View style={styles.inputGroup}>
       <Text style={styles.inputLabel}>M-Pesa phone number</Text>
-
       <View style={styles.inputWrapper}>
         <View style={styles.currencyPrefix}>
           <Ionicons name="phone-portrait-outline" size={17} color="#64748B" />
@@ -1069,6 +1152,71 @@ export default function Wallet() {
         </View>
       </View>
     </View>
+  );
+
+  const promoBusy = busy || !!pending || isApplyingPromo;
+
+  const promoSection = promo ? (
+    <View style={styles.promoApplied}>
+      <Ionicons name="pricetag" size={16} color="#059669" />
+
+      <View style={{ flex: 1 }}>
+        <Text style={styles.promoAppliedTitle}>{promo.code} applied</Text>
+        <Text style={styles.promoAppliedText}>
+          You save {formatWholeCurrency(promo.discount_amount)}
+          {promo.discount_type === "percent" ? ` (${promo.discount_value}% off)` : ""}.
+        </Text>
+      </View>
+
+      <TouchableOpacity activeOpacity={0.7} disabled={busy || !!pending} onPress={handleRemovePromo}>
+        <Text style={styles.promoRemove}>Remove</Text>
+      </TouchableOpacity>
+    </View>
+  ) : showPromo || !!promoError ? (
+    <View style={styles.inputGroup}>
+      <Text style={styles.inputLabel}>Promo code</Text>
+
+      <View style={styles.promoRow}>
+        <View style={[styles.inputWrapper, { flex: 1 }]}>
+          <TextInput
+            style={[styles.input, { paddingHorizontal: 13 }]}
+            value={promoInput}
+            onChangeText={(value) => {
+              setPromoInput(value.toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 40));
+              setPromoError(null);
+            }}
+            placeholder="Enter code"
+            placeholderTextColor="#94A3B8"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            editable={!promoBusy}
+          />
+        </View>
+
+        <TouchableOpacity
+          activeOpacity={0.85}
+          disabled={!promoInput.trim() || !selectedPlan || promoBusy}
+          style={[
+            styles.promoButton,
+            (!promoInput.trim() || !selectedPlan || promoBusy) && styles.payButtonDisabled,
+          ]}
+          onPress={() => selectedPlan && validatePromo(promoInput, selectedPlan.code)}
+        >
+          {isApplyingPromo ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <Text style={styles.promoButtonText}>Apply</Text>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {!!promoError && <Text style={styles.inputError}>{promoError}</Text>}
+    </View>
+  ) : (
+    <TouchableOpacity activeOpacity={0.7} style={styles.promoLink} onPress={() => setShowPromo(true)}>
+      <Ionicons name="pricetag-outline" size={15} color="#DC2626" />
+      <Text style={styles.promoLinkText}>Have a promo code?</Text>
+    </TouchableOpacity>
   );
 
   const paymentFields = activeMethod === "mpesa" ? mpesaForm : cardForm;
@@ -1663,17 +1811,30 @@ export default function Wallet() {
                   <View style={styles.tierContainer}>
                     {plans.map((plan) => {
                       const active = selectedPlanCode === plan.code;
+                      const exclusive = isExclusive(plan);
 
                       return (
                         <TouchableOpacity
                           key={plan.code}
                           activeOpacity={0.8}
                           disabled={busy || !!pending}
-                          style={[styles.tierCard, active && styles.tierCardActive]}
+                          style={[
+                            styles.tierCard,
+                            exclusive && styles.tierCardExclusive,
+                            active && styles.tierCardActive,
+                          ]}
                           onPress={() => setSelectedPlanCode(plan.code)}
                         >
-                          <View style={[styles.radio, active && styles.radioActive]}>
-                            {active && <View style={styles.radioInner} />}
+                          <View style={styles.tierTopRow}>
+                            <View style={[styles.radio, active && styles.radioActive]}>
+                              {active && <View style={styles.radioInner} />}
+                            </View>
+
+                            {exclusive && (
+                              <View style={styles.exclusiveBadge}>
+                                <Text style={styles.exclusiveBadgeText}>EXCLUSIVE</Text>
+                              </View>
+                            )}
                           </View>
 
                           <Text style={[styles.tierTitle, active && styles.tierTitleActive]}>
@@ -1708,6 +1869,7 @@ export default function Wallet() {
                   )}
 
                   <View style={styles.formContainer}>
+                    {promoSection}
                     {cardForm}
 
                     <View style={styles.paymentSummary}>
@@ -1736,10 +1898,19 @@ export default function Wallet() {
                         <Text style={styles.summaryMethodText}>Bank card</Text>
                       </View>
 
+                      {promo && selectedPlan && (
+                        <View style={styles.summaryRow}>
+                          <Text style={styles.summaryLabel}>Promo ({promo.code})</Text>
+                          <Text style={[styles.summaryValue, { color: "#059669" }]}>
+                            -{formatWholeCurrency(promo.discount_amount)}
+                          </Text>
+                        </View>
+                      )}
+
                       <View style={styles.summaryRow}>
                         <Text style={styles.summaryLabel}>Amount to pay</Text>
                         <Text style={styles.summaryValue}>
-                          {selectedPlan ? formatWholeCurrency(selectedPlan.total) : "—"}
+                          {selectedPlan ? formatWholeCurrency(payableTotal) : "—"}
                         </Text>
                       </View>
                     </View>
@@ -1891,6 +2062,19 @@ const styles = StyleSheet.create({
   methodTextActive: { color: "#DC2626" },
   cardRow: { flexDirection: "row", gap: 12 },
 
+  promoLink: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", paddingVertical: 2 },
+  promoLinkText: { color: "#DC2626", fontSize: 12, fontWeight: "800" },
+  promoRow: { flexDirection: "row", gap: 8, alignItems: "center" },
+  promoButton: { height: 50, paddingHorizontal: 18, borderRadius: 13, backgroundColor: "#DC2626", alignItems: "center", justifyContent: "center" },
+  promoButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "900" },
+  promoApplied: {
+    flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 13,
+    backgroundColor: "#ECFDF5", borderWidth: 1, borderColor: "#A7F3D0",
+  },
+  promoAppliedTitle: { fontSize: 12, fontWeight: "900", color: "#065F46" },
+  promoAppliedText: { fontSize: 11, color: "#047857", marginTop: 2 },
+  promoRemove: { color: "#64748B", fontSize: 11, fontWeight: "800" },
+
   quickAmountLabel: { fontSize: 9, fontWeight: "900", letterSpacing: 1.2, color: "#94A3B8", marginBottom: 8 },
   quickAmountGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   quickAmount: {
@@ -1935,9 +2119,13 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF",
   },
 
-  tierContainer: { flexDirection: "row", gap: 9, marginTop: 15 },
-  tierCard: { flex: 1, minHeight: 126, padding: 13, borderRadius: 15, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#F8FAFC" },
+  tierContainer: { flexDirection: "row", flexWrap: "wrap", gap: 9, marginTop: 15 },
+  tierCard: { flexBasis: "47%", flexGrow: 1, minHeight: 126, padding: 13, borderRadius: 15, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#F8FAFC" },
+  tierCardExclusive: { borderColor: "#F59E0B", backgroundColor: "#FFFBEB" },
   tierCardActive: { borderColor: "#7C3AED", backgroundColor: "#F5F3FF" },
+  tierTopRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" },
+  exclusiveBadge: { backgroundColor: "#F59E0B", borderRadius: 8, paddingHorizontal: 6, paddingVertical: 3 },
+  exclusiveBadgeText: { color: "#FFFFFF", fontSize: 8, fontWeight: "900", letterSpacing: 0.8 },
   radio: {
     width: 18, height: 18, borderRadius: 18, borderWidth: 1.5, borderColor: "#CBD5E1",
     alignItems: "center", justifyContent: "center", marginBottom: 12,
