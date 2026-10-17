@@ -20,6 +20,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { WebView } from "react-native-webview";
 import * as Sharing from "expo-sharing";
 // SDK 54+: the callback API (downloadAsync, cacheDirectory) lives in /legacy.
@@ -358,6 +359,16 @@ async function fetchRows(
 const EMPTY_CARD: CardInput = { number: "", expiry: "", cvv: "" };
 
 export default function Wallet() {
+  const router = useRouter();
+  // Sent by the emergency screen when the wallet is short:
+  //   needed   = exact shortfall in KSh, returnTo = "emergency"
+  const params = useLocalSearchParams<{ needed?: string; returnTo?: string }>();
+  const neededParam = Math.ceil(Number(params.needed) || 0);
+  const returnToEmergency = params.returnTo === "emergency";
+
+  // Unpaid cancellation fee / fare; taken from the next top-up automatically.
+  const [amountOwed, setAmountOwed] = useState(0);
+
   /*
    * ACCOUNT / DATA STATE
    */
@@ -432,6 +443,38 @@ export default function Wallet() {
 
   // Organisations pay by bank card only; public users choose.
   const activeMethod: Method = isOrganisation ? "card" : method;
+
+  // Prefill the top-up with only what is missing (never below the minimum).
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (!profile || !isPublic || prefilled.current || !neededParam) return;
+    prefilled.current = true;
+    const value = profile.first_deposit_required
+      ? profile.first_deposit_amount
+      : Math.max(neededParam, profile.min_topup);
+    setAmount(String(value));
+  }, [profile, isPublic, neededParam]);
+
+  useEffect(() => {
+    if (!isPublic) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getAccessToken();
+        if (!token) return;
+        const debt = await apiRequest<{ amount_owed: number }>(
+          `${PAYMENTS_URL}/wallet/debt`,
+          token
+        );
+        if (!cancelled && mounted.current) setAmountOwed(Number(debt.amount_owed) || 0);
+      } catch {
+        /* the banner is optional */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPublic, rows]);
 
   const parsedAmount = useMemo(() => {
     const cleaned = amount.replace(/,/g, "").trim();
@@ -726,6 +769,9 @@ export default function Wallet() {
           : `Your payment was confirmed${receiptText} and your wallet has been credited. You can download the receipt below.`
       );
       loadData();
+      if (kind === "deposit" && returnToEmergency && router.canGoBack()) {
+        router.back(); // straight back to the emergency request
+      }
       return true;
     }
 
@@ -1593,6 +1639,29 @@ export default function Wallet() {
                 </View>
               </View>
 
+              {isPublic && neededParam > 0 && (
+                <View style={styles.neededBanner}>
+                  <Ionicons name="alert-circle-outline" size={20} color="#B45309" />
+                  <Text style={styles.neededBannerText}>
+                    Your wallet is short by KSh {neededParam.toLocaleString("en-KE")}. Top up
+                    {profile?.first_deposit_required
+                      ? ` KSh ${profile.first_deposit_amount}`
+                      : " the amount below"}{" "}
+                    to request help.
+                  </Text>
+                </View>
+              )}
+
+              {isPublic && amountOwed > 0 && (
+                <View style={styles.debtBanner}>
+                  <Ionicons name="information-circle-outline" size={20} color="#B91C1C" />
+                  <Text style={styles.debtBannerText}>
+                    You owe KSh {amountOwed.toLocaleString("en-KE")} from a cancellation fee or
+                    unpaid fare. It will be deducted automatically from your next top-up.
+                  </Text>
+                </View>
+              )}
+
               {/* ADD MONEY */}
 
               <View style={styles.panel}>
@@ -1990,6 +2059,30 @@ export default function Wallet() {
 */
 
 const styles = StyleSheet.create({
+  neededBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 14,
+  },
+  neededBannerText: { flex: 1, color: "#92400E", fontSize: 13, lineHeight: 19, fontWeight: "600" },
+  debtBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 14,
+  },
+  debtBannerText: { flex: 1, color: "#991B1B", fontSize: 13, lineHeight: 19, fontWeight: "600" },
   root: { flex: 1, backgroundColor: "#F8FAFC" },
   keyboardContainer: { flex: 1 },
   scrollContent: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 30 },
