@@ -115,3 +115,20 @@ export async function geocodeTomTom(
 
   return { latitude: position.lat, longitude: position.lon };
 }
+
+/** Straight-line distance between two points, in metres (haversine). */
+export function haversineMeters(a: LatLng, b: LatLng): number {
+  const R = 6_371_000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLng = toRad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitude)) *
+      Math.cos(toRad(b.latitude)) *
+      Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(Math.min(1, Math.max(0, h))));
+}
+
+/** Responders must be within this distance of the client to press Arrived. */
+export const ARRIVE_MAX_DISTANCE_METERS = 400;
