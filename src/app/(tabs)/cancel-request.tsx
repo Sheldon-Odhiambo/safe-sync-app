@@ -13,7 +13,9 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
+
+import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import {
   ArrowLeft,
   AlertTriangle,
@@ -21,6 +23,8 @@ import {
   BellRing,
   MapPin,
   FileText,
+  Clock,
+  Navigation,
   X,
   ChevronRight,
 } from "lucide-react-native";
@@ -60,6 +64,18 @@ const CANCELLATION_REASONS = [
     Icon: MapPin,
   },
   {
+    id: "taking_too_long",
+    title: "Taking too long",
+    description: "Help is not arriving fast enough",
+    Icon: Clock,
+  },
+  {
+    id: "responder_too_far",
+    title: "Responder too far away",
+    description: "I found quicker help",
+    Icon: Navigation,
+  },
+  {
     id: "other",
     title: "Other",
     description: "Another reason",
@@ -67,8 +83,28 @@ const CANCELLATION_REASONS = [
   },
 ];
 
+type CancelResult = {
+  message: string;
+  fee_applied: boolean;
+  fee_amount: number;
+  fee_charged: number;
+  fee_owed: number;
+};
+
 export default function CancelRequestScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    incidentId?: string | string[];
+    fee?: string | string[];
+  }>();
+
+  const incidentId =
+    typeof params.incidentId === "string"
+      ? params.incidentId
+      : params.incidentId?.[0] ?? null;
+  const feeRaw = typeof params.fee === "string" ? params.fee : params.fee?.[0];
+  // KSh charged for cancelling now (0 until a responder has accepted).
+  const fee = Math.max(0, Number(feeRaw) || 0);
 
   const [selectedReason, setSelectedReason] = useState("");
   const [comment, setComment] = useState("");
@@ -82,7 +118,7 @@ export default function CancelRequestScreen() {
     if (router.canGoBack()) {
       router.back();
     } else {
-      router.replace("");
+      router.replace("/home");
     }
   };
 
@@ -105,7 +141,11 @@ export default function CancelRequestScreen() {
 
     Alert.alert(
       "Cancel emergency request?",
-      "This action may notify the relevant responders. Only continue if you no longer need emergency assistance.",
+      fee > 0
+        ? `A responder is already on the way, so a KSh ${fee.toLocaleString(
+            "en-KE"
+          )} cancellation fee will be deducted from your wallet. Only continue if you no longer need emergency assistance.`
+        : "This action may notify the relevant responders. Only continue if you no longer need emergency assistance.",
       [
         {
           text: "Keep Request Active",
@@ -121,34 +161,37 @@ export default function CancelRequestScreen() {
   };
 
   const confirmCancellation = async () => {
+    if (!incidentId) {
+      Alert.alert("Nothing to cancel", "We couldn't find the request to cancel.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      /*
-       * BACKEND INTEGRATION REQUIRED
-       *
-       * This screen is not yet connected to the cancellation API.
-       *
-       * The backend should:
-       * 1. Receive the emergency request ID.
-       * 2. Verify the authenticated user's ownership.
-       * 3. Check the current request status.
-       * 4. Update the cancellation status.
-       * 5. Notify the relevant responders.
-       *
-       * Send selectedReason and comment.trim() as well.
-       *
-       * Do not report success until the backend confirms.
-       */
+      const result = await apiFetch<CancelResult>(
+        `/api/v1/emergencies/${encodeURIComponent(incidentId)}/cancel`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            reason_code: selectedReason,
+            comment: comment.trim() || null,
+          }),
+        }
+      );
 
       Alert.alert(
-        "Backend connection required",
-        "The cancellation service is not connected yet. Your emergency request has not been cancelled."
+        "Request cancelled",
+        result?.message || "Your emergency request has been cancelled.",
+        [{ text: "OK", onPress: () => router.replace("/home") }],
+        { cancelable: false }
       );
-    } catch {
+    } catch (error) {
       Alert.alert(
         "Cancellation failed",
-        "We could not process your request. Please check your connection. Your request should remain active until cancellation is confirmed."
+        error instanceof Error
+          ? error.message
+          : "We could not process your request. Your request stays active until cancellation is confirmed."
       );
     } finally {
       setLoading(false);
@@ -242,6 +285,19 @@ export default function CancelRequestScreen() {
               </Text>
             </View>
           </View>
+
+          {fee > 0 && (
+            <View style={styles.feeCard}>
+              <Text style={styles.feeTitle}>
+                Cancellation fee: KSh {fee.toLocaleString("en-KE")}
+              </Text>
+              <Text style={styles.feeText}>
+                A responder has already accepted your request. If you cancel now,
+                this fee is deducted from your wallet. If your balance is lower, the
+                rest is taken from your next top-up.
+              </Text>
+            </View>
+          )}
 
           {/* Cancellation reasons */}
           <Text style={styles.sectionTitle}>
@@ -411,6 +467,17 @@ export default function CancelRequestScreen() {
 }
 
 const styles = StyleSheet.create({
+  feeCard: {
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    borderRadius: 13,
+    padding: 16,
+    marginBottom: 24,
+  },
+  feeTitle: { color: "#92400E", fontSize: 15, fontWeight: "800", marginBottom: 5 },
+  feeText: { color: COLORS.text, fontSize: 13, lineHeight: 20 },
+
   flex: {
     flex: 1,
   },
