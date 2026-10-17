@@ -19,6 +19,7 @@ import {
   type TomTomMapHandle,
 } from "@/components/tomtom-map";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { FeedbackActions } from "@/components/feedback-actions";
 
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { playSiren, stopSiren } from "@/lib/sounds";
@@ -83,6 +84,12 @@ type Tracking = {
   eta_is_estimate: boolean;
   pricing: Pricing | null;
   can_cancel: boolean;
+  cancellation_fee?: number; // KSh charged if cancelled now (0 until a responder accepts)
+  can_rate?: boolean;
+  can_report?: boolean;
+  my_rating?: number | null;
+  has_reported?: boolean;
+  amount_charged?: number | null;
 };
 
 type RouteInfo = {
@@ -687,59 +694,21 @@ export default function TrackScreen() {
     arrived,
   ]);
 
+  // "Cancel Request" opens the cancel-request page, where the client picks a
+  // reason. The page makes the API call and shows any cancellation fee.
   const handleCancel = useCallback(() => {
-    if (!incidentId || cancelInProgressRef.current) {
+    if (!incidentId) {
       return;
     }
 
-    Alert.alert(
-      "Cancel Emergency",
-      "Are you sure you want to cancel this emergency request?",
-      [
-        {
-          text: "Keep Request",
-          style: "cancel",
-        },
-        {
-          text: "Cancel Request",
-          style: "destructive",
-          onPress: async () => {
-            if (cancelInProgressRef.current) {
-              return;
-            }
-
-            cancelInProgressRef.current = true;
-            setCancelling(true);
-
-            try {
-              await apiFetch<unknown>(
-                `/api/v1/emergencies/${encodeURIComponent(incidentId)}/cancel`,
-                {
-                  method: "POST",
-                  body: JSON.stringify({}),
-                }
-              );
-
-              if (mountedRef.current) {
-                router.replace("/home");
-              }
-            } catch (error) {
-              Alert.alert(
-                "Couldn't cancel",
-                errorMessage(error, "Please try again.")
-              );
-            } finally {
-              cancelInProgressRef.current = false;
-
-              if (mountedRef.current) {
-                setCancelling(false);
-              }
-            }
-          },
-        },
-      ]
-    );
-  }, [incidentId, router]);
+    router.push({
+      pathname: "/cancel-request",
+      params: {
+        incidentId,
+        fee: String(tracking?.cancellation_fee ?? 0),
+      },
+    });
+  }, [incidentId, router, tracking?.cancellation_fee]);
 
   const handleBackToHome = useCallback(() => {
     router.replace("/home");
@@ -1393,6 +1362,24 @@ export default function TrackScreen() {
         </View>
 
         {/* FOOTER ACTION */}
+
+        {(terminal || arrived) &&
+        tracking.responder &&
+        (tracking.can_rate ||
+          tracking.can_report ||
+          tracking.my_rating ||
+          tracking.has_reported) ? (
+          <FeedbackActions
+            incidentId={tracking.incident_id}
+            role="client"
+            otherName={tracking.responder.name}
+            canRate={!!tracking.can_rate}
+            canReport={!!tracking.can_report}
+            myRating={tracking.my_rating ?? null}
+            hasReported={!!tracking.has_reported}
+            onDone={() => setReloadKey((key) => key + 1)}
+          />
+        ) : null}
 
         {terminal || arrived ? (
           <Pressable
