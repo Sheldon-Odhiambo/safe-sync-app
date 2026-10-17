@@ -32,7 +32,13 @@ import * as Location from "expo-location";
 import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import { DebugLogButton } from "@/components/debug-log-panel";
 import { log } from "@/lib/debug-log";
-import { fetchTomTomRoute, geocodeTomTom } from "@/lib/tomtom";
+import {
+  ARRIVE_MAX_DISTANCE_METERS,
+  fetchTomTomRoute,
+  geocodeTomTom,
+  haversineMeters,
+} from "@/lib/tomtom";
+import { FeedbackActions } from "@/components/feedback-actions";
 import {
   TomTomMap,
   TomTomMarker,
@@ -125,6 +131,15 @@ type ClientProfile = {
   phone: string | null;
 };
 
+type FeedbackState = {
+  incident_id: string;
+  other_party_name: string | null;
+  can_rate: boolean;
+  can_report: boolean;
+  my_rating: number | null;
+  has_reported: boolean;
+};
+
 type Stats = {
   avg_response_seconds: number | null;
   completed_30d: number;
@@ -199,6 +214,9 @@ export default function ResponderConsole() {
   // keeps the responder 'busy' for exactly this period.
   const [awaitingRelease, setAwaitingRelease] = useState(false);
   const [releaseBusy, setReleaseBusy] = useState(false);
+  // Rate / report the client after the emergency (loaded after "Arrived").
+  const [feedback, setFeedback] = useState<FeedbackState | null>(null);
+  const feedbackDispatchRef = useRef<string | null>(null);
 
   /* ---------------- client profile ---------------- */
 
@@ -1054,12 +1072,74 @@ export default function ResponderConsole() {
   // "Arrived": the responder has reached the client. This ends the emergency
   // (the client is told the responder has arrived) but keeps the responder
   // busy until they free the vehicle below.
-  const handleArrived = () => {
+  const loadFeedback = useCallback(async (dispatchId: string) => {
+    try {
+      const state = await apiFetch<FeedbackState>(
+        `/api/v1/feedback/by-dispatch/${dispatchId}`
+      );
+      setFeedback(state);
+    } catch {
+      setFeedback(null); // rating is optional: never block the console
+    }
+  }, []);
+
+  // "Arrived": the responder has reached the client. This ends the emergency
+  // (the client is told the responder has arrived and the fare is taken from
+  // their wallet) but keeps the responder busy until they free the vehicle.
+  //
+  // Only allowed within 400 m of the client. Checked here with a fresh GPS fix
+  // and enforced again by the server.
+  const handleArrived = async () => {
     if (!dispatch || dispatchBusy) return;
+
+    if (dispatch.latitude == null || dispatch.longitude == null) {
+      Alert.alert("Client location missing", "We can't confirm your distance to the client.");
+      return;
+    }
+
+    setDispatchBusy(true);
+
+    let here: Coordinates | null = null;
+    try {
+      const fix = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      here = { latitude: fix.coords.latitude, longitude: fix.coords.longitude };
+      currentLocationRef.current = here;
+      setCurrentLocation(here);
+    } catch {
+      here = currentLocationRef.current;
+    }
+
+    setDispatchBusy(false);
+
+    if (!here) {
+      Alert.alert(
+        "Location unavailable",
+        "Turn on GPS so we can confirm you are at the client's location."
+      );
+      return;
+    }
+
+    const metres = haversineMeters(here, {
+      latitude: dispatch.latitude,
+      longitude: dispatch.longitude,
+    });
+
+    if (metres > ARRIVE_MAX_DISTANCE_METERS) {
+      Alert.alert(
+        "You're not there yet",
+        `You are about ${Math.round(metres).toLocaleString()} m from the client. ` +
+          `Get within ${ARRIVE_MAX_DISTANCE_METERS} m to confirm arrival.`
+      );
+      return;
+    }
+
+    const position = here;
 
     Alert.alert(
       "Confirm arrival",
-      "Confirm that you have reached the client. This ends the emergency and notifies them that you have arrived.",
+      "Confirm that you have reached the client. This ends the emergency, notifies them that you have arrived and charges their wallet.",
       [
         { text: "Not yet", style: "cancel" },
         {
@@ -1070,7 +1150,13 @@ export default function ResponderConsole() {
             try {
               const updated = await apiFetch<Dispatch | null>(
                 `${API.dispatches}/${dispatch.id}/arrive`,
-                { method: "POST" }
+                {
+                  method: "POST",
+                  body: JSON.stringify({
+                    latitude: position.latitude,
+                    longitude: position.longitude,
+                  }),
+                }
               );
 
               completedRef.current.add(dispatch.id);
@@ -1080,6 +1166,9 @@ export default function ResponderConsole() {
               setDispatch(null);
               setRoute(null);
               setAwaitingRelease(true);
+              feedbackDispatchRef.current = dispatch.id;
+              setFeedback(null);
+              loadFeedback(dispatch.id);
               refreshStats();
             } catch (err) {
               Alert.alert(
@@ -1879,6 +1968,26 @@ export default function ResponderConsole() {
                       </Pressable>
                     </View>
 
+                    {(() => {
+                      if (
+                        !currentLocation ||
+                        dispatch?.latitude == null ||
+                        dispatch?.longitude == null
+                      ) {
+                        return null;
+                      }
+                      const metres = haversineMeters(currentLocation, {
+                        latitude: dispatch.latitude,
+                        longitude: dispatch.longitude,
+                      });
+                      return metres > ARRIVE_MAX_DISTANCE_METERS ? (
+                        <Text style={{ color: "#B45309", fontSize: 12, fontWeight: "600", textAlign: "center", marginBottom: 8 }}>
+                          {Math.round(metres).toLocaleString()} m away. You can confirm arrival
+                          within {ARRIVE_MAX_DISTANCE_METERS} m.
+                        </Text>
+                      ) : null;
+                    })()}
+
                     <Pressable
                       style={[
                         styles.arrivedButton,
@@ -1988,6 +2097,26 @@ export default function ResponderConsole() {
                     </Pressable>
                   </View>
                 )}
+
+                {feedback &&
+                (feedback.can_rate ||
+                  feedback.can_report ||
+                  feedback.my_rating ||
+                  feedback.has_reported) ? (
+                  <FeedbackActions
+                    incidentId={feedback.incident_id}
+                    role="responder"
+                    otherName={feedback.other_party_name}
+                    canRate={feedback.can_rate}
+                    canReport={feedback.can_report}
+                    myRating={feedback.my_rating}
+                    hasReported={feedback.has_reported}
+                    onDone={() =>
+                      feedbackDispatchRef.current &&
+                      loadFeedback(feedbackDispatchRef.current)
+                    }
+                  />
+                ) : null}
 
                 <View style={styles.notesBox}>
                   <Text style={styles.notesLabel}>NOT AVAILABLE YET</Text>
