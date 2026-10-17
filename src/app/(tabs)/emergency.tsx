@@ -23,6 +23,16 @@ import {
 
 type Coordinates = { latitude: number; longitude: number };
 
+type EmergencyQuote = {
+  requires_wallet: boolean;
+  fare: number;
+  outstanding_debt: number;
+  required: number;
+  available: number;
+  shortfall: number;
+  sufficient: boolean;
+};
+
 type EmergencyOption = {
   id: string;
   label: string;
@@ -164,6 +174,36 @@ export default function EmergencyRequest() {
     return true;
   };
 
+  // Wallet too low: ask for ONLY the missing amount, before anything is sent to responders.
+  const promptTopUp = (quote: EmergencyQuote) => {
+    const shortfall = Math.ceil(quote.shortfall);
+    const debtLine =
+      quote.outstanding_debt > 0
+        ? `\n\nThis includes KSh ${Math.ceil(quote.outstanding_debt).toLocaleString(
+            "en-KE"
+          )} you still owe from an earlier cancellation.`
+        : "";
+
+    Alert.alert(
+      "Top up your wallet",
+      `Estimated cost is KSh ${Math.ceil(quote.fare).toLocaleString("en-KE")} and your ` +
+        `wallet has KSh ${Math.floor(quote.available).toLocaleString("en-KE")}. ` +
+        `Please add KSh ${shortfall.toLocaleString("en-KE")} to request help. ` +
+        `Nothing has been sent to responders yet.${debtLine}`,
+      [
+        { text: "Not now", style: "cancel" },
+        {
+          text: `Top up KSh ${shortfall.toLocaleString("en-KE")}`,
+          onPress: () =>
+            router.push({
+              pathname: "/(tabs)/wallet",
+              params: { needed: String(shortfall), returnTo: "emergency" },
+            }),
+        },
+      ]
+    );
+  };
+
   const sendEmergency = async () => {
     if (!selectedType || !coords || submitting) return;
 
@@ -187,20 +227,34 @@ export default function EmergencyRequest() {
       }
 
       const extra = notes.trim();
+      const body = JSON.stringify({
+        emergency_type: selectedType.dispatchType,
+        location: {
+          latitude: here.latitude,
+          longitude: here.longitude,
+          address,
+          accuracy: here_accuracy,
+        },
+        description: extra
+          ? `${selectedType.label} — ${extra}`
+          : selectedType.label,
+      });
+
+      // 1. Can the wallet cover it? (nothing is saved or sent yet)
+      const quote = await apiFetch<EmergencyQuote>("/api/v1/emergencies/quote", {
+        method: "POST",
+        body,
+      });
+
+      if (quote.requires_wallet && !quote.sufficient) {
+        promptTopUp(quote);
+        return;
+      }
+
+      // 2. Create it and dispatch.
       const created = await apiFetch<CreatedEmergency>("/api/v1/emergencies", {
         method: "POST",
-        body: JSON.stringify({
-          emergency_type: selectedType.dispatchType,
-          location: {
-            latitude: here.latitude,
-            longitude: here.longitude,
-            address,
-            accuracy: here_accuracy,
-          },
-          description: extra
-            ? `${selectedType.label} — ${extra}`
-            : selectedType.label,
-        }),
+        body,
       });
 
       router.push({
@@ -209,6 +263,19 @@ export default function EmergencyRequest() {
       });
     } catch (err) {
       if (await openActiveEmergency()) return;
+
+      // The balance changed between the check and the send: the server refused (402).
+      if ((err as { status?: number })?.status === 402) {
+        Alert.alert(
+          "Top up your wallet",
+          err instanceof Error ? err.message : "Your wallet balance is too low.",
+          [
+            { text: "Not now", style: "cancel" },
+            { text: "Open wallet", onPress: () => router.push("/(tabs)/wallet") },
+          ]
+        );
+        return;
+      }
 
       Alert.alert(
         "Couldn't send emergency",
