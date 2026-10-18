@@ -189,7 +189,7 @@ const PAGE = `<!doctype html>
       { tileSize: 512, zoomOffset: -1, minZoom: 3, maxZoom: 20, attribution: '&copy; TomTom' }
     );
     next.addTo(map);
-    next.bringToBack();               // stays under the traffic layer
+    next.bringToBack();
     if (base) map.removeLayer(base);
 
     base = next;
@@ -197,8 +197,6 @@ const PAGE = `<!doctype html>
     mapEl.classList.toggle('dark', name === 'night');
   }
   setStyle(INIT.style);
-
-  /* ---------- traffic ---------- */
 
   var traffic = null;
   function setTraffic(on) {
@@ -215,61 +213,60 @@ const PAGE = `<!doctype html>
   setTraffic(INIT.traffic);
 
   function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
 
   /* ---------- marker icons ---------- */
+  var ICON_CACHE = {};
 
-  // Two staggered rings; "d" is the final ring diameter in px.
   function rings(d, rgba) {
     var st = 'width:' + d + 'px;height:' + d + 'px;background:' + rgba;
     return '<div class="pulse" style="' + st + '"></div>' +
            '<div class="pulse b" style="' + st + '"></div>';
   }
 
-  function iconFor(kind) {
-    var html, size = 46, ax = 23, ay = 23;
-
+  function buildIconHtml(kind) {
     if (kind === 'client') {
-      size = 42; ax = 21; ay = 21;
-      html = '<div class="mk" style="width:42px;height:42px">' +
+      return '<div class="mk" style="width:42px;height:42px">' +
         rings(180, 'rgba(22,163,74,.28)') +
         '<div class="circle" style="width:25px;height:25px;border:2px solid #16A34A;background:#fff">' +
         '<div style="width:11px;height:11px;border-radius:50%;background:#16A34A"></div></div></div>';
     } else if (kind === 'me') {
-      size = 24; ax = 12; ay = 12;
-      html = '<div class="mk" style="width:24px;height:24px">' +
+      return '<div class="mk" style="width:24px;height:24px">' +
         rings(170, 'rgba(220,38,38,.25)') +
         '<div class="circle" style="width:24px;height:24px">' +
         '<div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div></div>';
     } else if (kind === 'emergency') {
-      size = 36; ax = 18; ay = 34;
-      html = '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;' +
+      return '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;' +
         'border:3px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);' +
         'box-shadow:0 2px 5px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center">' +
         '<div style="width:10px;height:10px;border-radius:50%;background:#fff"></div></div>';
     } else if (kind === 'hospital') {
-      size = 28; ax = 14; ay = 14;
-      html = '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626">' +
+      return '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626">' +
         '<div style="position:relative;width:14px;height:14px">' +
         '<div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:1px"></div>' +
         '<div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:1px"></div>' +
         '</div></div>';
     } else {
       var glyph = kind === 'fire' ? '&#128658;' : '&#128657;';
-      html = '<div class="mk" style="width:46px;height:46px">' +
+      return '<div class="mk" style="width:46px;height:46px">' +
         rings(150, 'rgba(220,38,38,.25)') +
         '<div class="circle" style="width:34px;height:34px;font-size:17px">' + glyph + '</div></div>';
     }
+  }
 
-    return L.divIcon({
-      html: html,
-      className: '',
-      iconSize: [size, size],
-      iconAnchor: [ax, ay]
-    });
+  function getIcon(kind) {
+    if (ICON_CACHE[kind]) return ICON_CACHE[kind];
+    var html = buildIconHtml(kind);
+    var size = 46, ax = 23, ay = 23;
+    if (kind === 'client') { size = 42; ax = 21; ay = 21; }
+    else if (kind === 'me') { size = 24; ax = 12; ay = 12; }
+    else if (kind === 'emergency') { size = 36; ax = 18; ay = 34; }
+    else if (kind === 'hospital') { size = 28; ax = 14; ay = 14; }
+    ICON_CACHE[kind] = L.divIcon({ html: html, className: '', iconSize: [size, size], iconAnchor: [ax, ay] });
+    return ICON_CACHE[kind];
   }
 
   function labelOffset(kind) {
@@ -283,118 +280,215 @@ const PAGE = `<!doctype html>
     return { permanent: true, direction: 'bottom', offset: labelOffset(kind), className: 'lbl', opacity: 1 };
   }
 
-  /* ---------- markers and lines driven by React ---------- */
-
   var markers = {};
   var lines = {};
 
+  function removeMarkerById(id) {
+    if (!markers[id]) return;
+    map.removeLayer(markers[id].mk);
+    delete markers[id];
+  }
+
+  function removeLineById(id) {
+    if (!lines[id]) return;
+    map.removeLayer(lines[id].casing);
+    map.removeLayer(lines[id].main);
+    delete lines[id];
+  }
+
+  function coordsEqual(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i][0] !== b[i][0] || a[i][1] !== b[i][1]) return false;
+    }
+    return true;
+  }
+
+  function applyAddMarker(m) {
+    if (markers[m.id]) return applyUpdateMarker(m);
+    var ll = [m.latitude, m.longitude];
+    var mk = L.marker(ll, { icon: getIcon(m.kind), zIndexOffset: m.kind === 'emergency' ? 500 : (m.kind === 'me' || m.kind === 'client') ? 200 : 0 }).addTo(map);
+    mk._spec = { latitude: m.latitude, longitude: m.longitude, kind: m.kind, title: m.title || '', description: m.description || '', label: m.label || '' };
+    if (m.title) { mk.bindPopup('<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')); }
+    if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
+    markers[m.id] = { mk: mk };
+  }
+
+  function applyUpdateMarker(m) {
+    var entry = markers[m.id];
+    if (!entry) { applyAddMarker(m); return; }
+    var mk = entry.mk;
+    var old = mk._spec || {};
+
+    if (old.latitude !== m.latitude || old.longitude !== m.longitude) {
+      mk.setLatLng([m.latitude, m.longitude]);
+    }
+
+    if (old.kind !== m.kind) {
+      mk.setIcon(getIcon(m.kind));
+    }
+
+    var text = m.title ? ('<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')) : '';
+    if (mk._text !== text) {
+      mk._text = text;
+      if (text) { mk.bindPopup(text); } else { mk.unbindPopup(); }
+    }
+
+    var lk = m.kind + '|' + (m.label || '');
+    if (mk._lk !== lk) {
+      mk._lk = lk;
+      mk.unbindTooltip();
+      if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
+    }
+
+    mk._spec = { latitude: m.latitude, longitude: m.longitude, kind: m.kind, title: m.title || '', description: m.description || '', label: m.label || '' };
+  }
+
+  function applyAddLine(l) {
+    if (lines[l.id]) return applyUpdateLine(l);
+    var casing = L.polyline(l.coordinates, {
+      color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
+    }).addTo(map);
+    var main = L.polyline(l.coordinates, {
+      color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
+    }).addTo(map);
+    lines[l.id] = { casing: casing, main: main };
+    lines[l.id]._spec = { coordinates: l.coordinates, color: l.color, width: l.width };
+  }
+
+  function applyUpdateLine(l) {
+    var pair = lines[l.id];
+    if (!pair) { applyAddLine(l); return; }
+    var old = pair._spec || {};
+    if (!coordsEqual(old.coordinates, l.coordinates)) {
+      pair.casing.setLatLngs(l.coordinates);
+      pair.main.setLatLngs(l.coordinates);
+    }
+    if (old.width !== l.width) {
+      pair.casing.setStyle({ weight: l.width + 4 });
+      pair.main.setStyle({ weight: l.width });
+    }
+    if (old.color !== l.color) {
+      pair.main.setStyle({ color: l.color });
+    }
+    pair._spec = { coordinates: l.coordinates, color: l.color, width: l.width };
+  }
+
+  function applyRemoveMarker(id) { removeMarkerById(id); }
+  function applyRemoveLine(id) { removeLineById(id); }
+
+  function applyOperation(op) {
+    if (!op || !op.type) return;
+    try {
+      if (op.type === 'add_marker') applyAddMarker(op.payload);
+      else if (op.type === 'update_marker') applyUpdateMarker(op.payload);
+      else if (op.type === 'remove_marker') applyRemoveMarker(op.payload.id || op.payload);
+      else if (op.type === 'add_line') applyAddLine(op.payload);
+      else if (op.type === 'update_line') applyUpdateLine(op.payload);
+      else if (op.type === 'remove_line') applyRemoveLine(op.payload.id || op.payload);
+      else if (op.type === 'replace_all') {
+        var keep = {};
+        (op.payload.markers || []).forEach(function (m) { applyAddMarker(m); keep[m.id] = true; });
+        Object.keys(markers).forEach(function (id) { if (!keep[id]) removeMarkerById(id); });
+        var keepL = {};
+        (op.payload.lines || []).forEach(function (l) { applyAddLine(l); keepL[l.id] = true; });
+        Object.keys(lines).forEach(function (id) { if (!keepL[id]) removeLineById(id); });
+      } else if (op.type === 'set_style') {
+        setStyle(op.payload);
+      } else if (op.type === 'set_traffic') {
+        setTraffic(!!op.payload);
+      } else if (op.type === 'fit') {
+        window.__fit(op.payload.pts, op.payload.pad, op.payload.maxZoom);
+      } else if (op.type === 'fly') {
+        window.__fly(op.payload.lat, op.payload.lng, op.payload.zoom, op.payload.ms);
+      } else if (op.type === 'hospitals') {
+        window.__hospitals(!!op.payload);
+      }
+    } catch (e) {}
+  }
+
+  function onMessageFromRN(e) {
+    var data = e && e.data ? e.data : e;
+    try {
+      var msg = (typeof data === 'string') ? JSON.parse(data) : data;
+      if (!msg || !msg.type) return;
+      if (msg.type === 'map_update' && Array.isArray(msg.operations)) {
+        msg.operations.forEach(applyOperation);
+      } else if (msg.type === 'initial_sync') {
+        applyOperation({ type: 'replace_all', payload: { markers: msg.markers || [], lines: msg.lines || [] } });
+      } else if (msg.type === 'command') {
+        applyOperation(msg.command);
+      }
+    } catch (err) {}
+  }
+
+  window.addEventListener('message', onMessageFromRN, false);
+
   window.__sync = function (state) {
-    var seen = {};
-
-    (state.markers || []).forEach(function (m) {
-      seen[m.id] = true;
-      var ll = [m.latitude, m.longitude];
-      var mk = markers[m.id];
-
-      if (!mk) {
-        var z = m.kind === 'emergency' ? 500 : (m.kind === 'me' || m.kind === 'client') ? 200 : 0;
-        mk = L.marker(ll, { icon: iconFor(m.kind), zIndexOffset: z }).addTo(map);
-        mk._kind = m.kind;
-        markers[m.id] = mk;
-      } else {
-        mk.setLatLng(ll);
-        if (mk._kind !== m.kind) {
-          mk.setIcon(iconFor(m.kind));
-          mk._kind = m.kind;
-        }
-      }
-
-      var text = m.title
-        ? '<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')
-        : '';
-
-      if (mk._text !== text) {
-        mk._text = text;
-        if (text) { mk.bindPopup(text); } else { mk.unbindPopup(); }
-      }
-
-      var lk = m.kind + '|' + (m.label || '');
-      if (mk._lk !== lk) {
-        mk._lk = lk;
-        mk.unbindTooltip();
-        if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
-      }
-    });
-
-    Object.keys(markers).forEach(function (id) {
-      if (!seen[id]) { map.removeLayer(markers[id]); delete markers[id]; }
-    });
-
-    var seenLines = {};
-
-    (state.lines || []).forEach(function (l) {
-      seenLines[l.id] = true;
-      var pair = lines[l.id];
-
-      if (!pair) {
-        // White outline underneath so the route stands out on any map style.
-        var casing = L.polyline(l.coordinates, {
-          color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
-        }).addTo(map);
-        var main = L.polyline(l.coordinates, {
-          color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
-        }).addTo(map);
-        lines[l.id] = { casing: casing, main: main };
-      } else {
-        pair.casing.setLatLngs(l.coordinates);
-        pair.casing.setStyle({ weight: l.width + 4 });
-        pair.main.setLatLngs(l.coordinates);
-        pair.main.setStyle({ color: l.color, weight: l.width });
-      }
-    });
-
-    Object.keys(lines).forEach(function (id) {
-      if (!seenLines[id]) {
-        map.removeLayer(lines[id].casing);
-        map.removeLayer(lines[id].main);
-        delete lines[id];
-      }
-    });
+    try {
+      var ops = [];
+      (state.markers || []).forEach(function (m) { ops.push({ type: 'add_marker', payload: m }); });
+      (state.lines || []).forEach(function (l) { ops.push({ type: 'add_line', payload: l }); });
+      ops.forEach(applyOperation);
+    } catch (e) {}
   };
-
-  /* ---------- nearby hospitals (TomTom Nearby Search, category 7321) ---------- */
 
   var hospitals = {};
   var showHosp = INIT.hospitals;
   var lastHosp = null;
+  var currentHospController = null;
+  var hospitalsCache = {};
+  var HOSP_CACHE_TTL = 1000 * 60 * 2;
+
+  function cacheKeyForCenter(c) {
+    return Math.round(c.lat * 100) + ':' + Math.round(c.lng * 100);
+  }
 
   function loadHospitals() {
     if (!showHosp || !KEY) return;
     if (map.getZoom() < 12) return;
 
     var c = map.getCenter();
+    var key = cacheKeyForCenter(c);
     if (lastHosp && map.distance(lastHosp, c) < 1500) return;
-    lastHosp = c;
 
+    var cached = hospitalsCache[key];
+    var now = Date.now();
+    if (cached && (now - cached.ts) < HOSP_CACHE_TTL) {
+      (cached.results || []).forEach(function (p) {
+        var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
+        if (hospitals[id]) return;
+        var name = p.poi.name || 'Hospital';
+        var m = L.marker([p.position.lat, p.position.lon], { icon: getIcon('hospital'), zIndexOffset: 100 });
+        m.bindPopup('<b>' + esc(name) + '</b>');
+        m.bindTooltip(name, tip('hospital'));
+        if (showHosp) m.addTo(map);
+        hospitals[id] = m;
+      });
+      lastHosp = c;
+      return;
+    }
+
+    if (currentHospController) { try { currentHospController.abort(); } catch (e) {} }
+    currentHospController = new AbortController();
     fetch(
       'https://api.tomtom.com/search/2/nearbySearch/.json?lat=' + c.lat + '&lon=' + c.lng +
-        '&radius=6000&limit=15&categorySet=7321&key=' + KEY
+        '&radius=6000&limit=15&categorySet=7321&key=' + KEY,
+      { signal: currentHospController.signal }
     )
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
         if (!j || !j.results) { lastHosp = null; return; }
-
+        hospitalsCache[key] = { ts: Date.now(), results: j.results };
         j.results.forEach(function (p) {
           if (!p.poi || !p.position) return;
-
           var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
           if (hospitals[id]) return;
-
           var name = p.poi.name || 'Hospital';
           var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
           var phone = p.poi.phone ? p.poi.phone : '';
 
-          var m = L.marker([p.position.lat, p.position.lon], { icon: iconFor('hospital'), zIndexOffset: 100 });
+          var m = L.marker([p.position.lat, p.position.lon], { icon: getIcon('hospital'), zIndexOffset: 100 });
           m.bindPopup(
             '<b>' + esc(name) + '</b>' +
             (addr ? '<br>' + esc(addr) : '') +
@@ -404,8 +498,10 @@ const PAGE = `<!doctype html>
           if (showHosp) m.addTo(map);
           hospitals[id] = m;
         });
+        lastHosp = c;
       })
-      .catch(function () { lastHosp = null; });
+      .catch(function () { lastHosp = null; })
+      .finally(function () { currentHospController = null; });
   }
 
   window.__hospitals = function (on) {
@@ -416,9 +512,14 @@ const PAGE = `<!doctype html>
     if (showHosp) loadHospitals();
   };
 
-  /* ---------- road name at the map centre (TomTom Reverse Geocode) ---------- */
-
   var lastStreet = null;
+  var currentStreetController = null;
+  var streetCache = {};
+  var STREET_CACHE_TTL = 1000 * 60 * 2;
+
+  function cacheKeyForStreet(c) {
+    return Math.round(c.lat * 100) + ':' + Math.round(c.lng * 100);
+  }
 
   function loadStreet() {
     if (!INIT.street || !KEY) return;
@@ -430,12 +531,21 @@ const PAGE = `<!doctype html>
     }
 
     var c = map.getCenter();
-    if (lastStreet && map.distance(lastStreet, c) < 40) return;
-    lastStreet = c;
+    var key = cacheKeyForStreet(c);
+    var cached = streetCache[key];
+    var now = Date.now();
+    if (cached && (now - cached.ts) < STREET_CACHE_TTL) {
+      post({ type: 'street', name: cached.name });
+      lastStreet = c;
+      return;
+    }
 
+    if (currentStreetController) { try { currentStreetController.abort(); } catch (e) {} }
+    currentStreetController = new AbortController();
     fetch(
       'https://api.tomtom.com/search/2/reverseGeocode/' + c.lat + ',' + c.lng +
-        '.json?radius=150&key=' + KEY
+        '.json?radius=150&key=' + KEY,
+      { signal: currentStreetController.signal }
     )
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
@@ -444,13 +554,12 @@ const PAGE = `<!doctype html>
 
         var road = a.streetName || '';
         var area = a.municipalitySubdivision || a.municipality || '';
-        var name = road ? (area ? road + ' \\u00B7 ' + area : road) : area;
+        var name = road ? (area ? road + ' \u00B7 ' + area : road) : area;
+        streetCache[key] = { ts: Date.now(), name: name };
         post({ type: 'street', name: name });
       })
       .catch(function () { lastStreet = null; });
   }
-
-  /* ---------- camera ---------- */
 
   window.__fit = function (pts, pad, maxZoom) {
     if (!pts || !pts.length) return;
@@ -469,12 +578,10 @@ const PAGE = `<!doctype html>
   window.__traffic = setTraffic;
   window.__style = setStyle;
 
-  /* ---------- events ---------- */
-
   var idleTimer = null;
 
   function onIdle() {
-    mapEl.classList.toggle('zlow', map.getZoom() < 14);   // hide name labels when zoomed far out
+    mapEl.classList.toggle('zlow', map.getZoom() < 14);
     clearTimeout(idleTimer);
     idleTimer = setTimeout(function () {
       loadHospitals();
@@ -501,7 +608,6 @@ const PAGE = `<!doctype html>
 </html>`;
 
 function safeJson(value: unknown): string {
-  // JSON is valid JavaScript except for the U+2028 / U+2029 separators.
   return JSON.stringify(value)
     .split(String.fromCharCode(0x2028))
     .join("\\u2028")
@@ -560,18 +666,18 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
 
   const webRef = useRef<React.ComponentRef<typeof WebView>>(null);
   const readyRef = useRef(false);
-  const queueRef = useRef<string[]>([]);
+  const queuedOpsRef = useRef(new Map<string, unknown>());
   const markersRef = useRef(new Map<string, MarkerSpec>());
   const linesRef = useRef(new Map<string, LineSpec>());
+  const lastSentMarkersRef = useRef(new Map<string, MarkerSpec>());
+  const lastSentLinesRef = useRef(new Map<string, LineSpec>());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [street, setStreet] = useState("");
 
-  // Always read the newest callbacks without re-creating handlers.
   const propsRef = useRef(props);
   propsRef.current = props;
 
-  // The page is built once; changing it later would reload the WebView.
   const initialRef = useRef({
     region: initialRegion,
     traffic: showTraffic,
@@ -580,6 +686,7 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     street: showStreetName,
     boost: props.zoomBoost ?? DEFAULT_ZOOM_BOOST,
   });
+
   const html = useMemo(
     () =>
       buildHtml(initialRef.current.region, {
@@ -592,81 +699,156 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     []
   );
 
-  const inject = useCallback((js: string) => {
-    webRef.current?.injectJavaScript(`${js}\ntrue;`);
+  const postMessageToWeb = useCallback((message: unknown) => {
+    try {
+      webRef.current?.postMessage(JSON.stringify(message));
+    } catch (e) {
+      // ignore
+    }
   }, []);
 
-  // `queue`: hold the command until the page reports ready.
-  const run = useCallback(
-    (js: string, queue = true) => {
-      if (!readyRef.current) {
-        if (queue) queueRef.current.push(js);
-        return;
-      }
-      inject(js);
-    },
-    [inject]
-  );
-
-  const sync = useCallback(() => {
-    run(
-      `window.__sync(${safeJson({
-        markers: Array.from(markersRef.current.values()),
-        lines: Array.from(linesRef.current.values()),
-      })});`,
-      false
+  const markerEqual = useCallback((a?: MarkerSpec, b?: MarkerSpec) => {
+    if (!a || !b) return false;
+    return (
+      a.latitude === b.latitude &&
+      a.longitude === b.longitude &&
+      a.kind === b.kind &&
+      (a.title ?? "") === (b.title ?? "") &&
+      (a.description ?? "") === (b.description ?? "") &&
+      (a.label ?? "") === (b.label ?? "")
     );
-  }, [run]);
+  }, []);
+
+  const lineEqual = useCallback((a?: LineSpec, b?: LineSpec) => {
+    if (!a || !b) return false;
+    if (a.color !== b.color || a.width !== b.width) return false;
+    if (!a.coordinates || !b.coordinates || a.coordinates.length !== b.coordinates.length) return false;
+    for (let i = 0; i < a.coordinates.length; i++) {
+      if (a.coordinates[i][0] !== b.coordinates[i][0] || a.coordinates[i][1] !== b.coordinates[i][1]) {
+        return false;
+      }
+    }
+    return true;
+  }, []);
+
+  const enqueueOp = useCallback((key: string, op: unknown) => {
+    const q = queuedOpsRef.current;
+    q.set(key, op);
+    if (q.size > 500) {
+      const firstKey = q.keys().next().value as string | undefined;
+      if (firstKey) q.delete(firstKey);
+    }
+  }, []);
+
+  const flushQueuedOps = useCallback(() => {
+    if (!readyRef.current || queuedOpsRef.current.size === 0) return;
+    const ops = Array.from(queuedOpsRef.current.values()) as Array<unknown>;
+    queuedOpsRef.current.clear();
+    if (ops.length) postMessageToWeb({ type: "map_update", operations: ops });
+  }, [postMessageToWeb]);
 
   const scheduleSync = useCallback(() => {
     if (timerRef.current) return;
-
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
-      sync();
+      if (readyRef.current) flushQueuedOps();
     }, 16);
-  }, [sync]);
+  }, [flushQueuedOps]);
 
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    },
-    []
-  );
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
 
   const context = useMemo<MapContextValue>(
     () => ({
       setMarker: (spec) => {
+        const prev = markersRef.current.get(spec.id);
         markersRef.current.set(spec.id, spec);
+
+        const previous = lastSentMarkersRef.current.get(spec.id);
+        if (previous && markerEqual(previous, spec)) return;
+
+        const op = previous
+          ? { type: "update_marker", payload: spec }
+          : { type: "add_marker", payload: spec };
+
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [op] });
+          lastSentMarkersRef.current.set(spec.id, spec);
+        } else {
+          enqueueOp(`marker:${spec.id}`, op);
+        }
         scheduleSync();
       },
       removeMarker: (id) => {
         markersRef.current.delete(id);
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [{ type: "remove_marker", payload: { id } }] });
+          lastSentMarkersRef.current.delete(id);
+        } else {
+          enqueueOp(`marker:${id}`, { type: "remove_marker", payload: { id } });
+        }
         scheduleSync();
       },
       setLine: (spec) => {
+        const prev = linesRef.current.get(spec.id);
         linesRef.current.set(spec.id, spec);
+
+        const previous = lastSentLinesRef.current.get(spec.id);
+        if (previous && lineEqual(previous, spec)) return;
+
+        const op = previous
+          ? { type: "update_line", payload: spec }
+          : { type: "add_line", payload: spec };
+
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [op] });
+          lastSentLinesRef.current.set(spec.id, spec);
+        } else {
+          enqueueOp(`line:${spec.id}`, op);
+        }
         scheduleSync();
       },
       removeLine: (id) => {
         linesRef.current.delete(id);
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [{ type: "remove_line", payload: { id } }] });
+          lastSentLinesRef.current.delete(id);
+        } else {
+          enqueueOp(`line:${id}`, { type: "remove_line", payload: { id } });
+        }
         scheduleSync();
       },
     }),
-    [scheduleSync]
+    [enqueueOp, lineEqual, markerEqual, postMessageToWeb, scheduleSync]
   );
 
   useEffect(() => {
-    run(`window.__traffic(${showTraffic ? "true" : "false"});`);
-  }, [showTraffic, run]);
+    const op = { type: "set_traffic", payload: showTraffic };
+    if (readyRef.current) {
+      postMessageToWeb({ type: "map_update", operations: [op] });
+    } else {
+      enqueueOp("command:traffic", op);
+    }
+  }, [enqueueOp, postMessageToWeb, showTraffic]);
 
   useEffect(() => {
-    run(`window.__style(${safeJson(mapStyle)});`);
-  }, [mapStyle, run]);
+    const op = { type: "set_style", payload: mapStyle };
+    if (readyRef.current) {
+      postMessageToWeb({ type: "map_update", operations: [op] });
+    } else {
+      enqueueOp("command:style", op);
+    }
+  }, [enqueueOp, mapStyle, postMessageToWeb]);
 
   useEffect(() => {
-    run(`window.__hospitals(${showHospitals ? "true" : "false"});`);
-  }, [showHospitals, run]);
+    const op = { type: "hospitals", payload: !!showHospitals };
+    if (readyRef.current) {
+      postMessageToWeb({ type: "map_update", operations: [op] });
+    } else {
+      enqueueOp("command:hospitals", op);
+    }
+  }, [enqueueOp, postMessageToWeb, showHospitals]);
 
   useImperativeHandle(
     ref,
@@ -681,29 +863,46 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
           left: 40,
         };
 
-        run(
-          `window.__fit(${safeJson(
-            coordinates.map((c) => [c.latitude, c.longitude])
-          )}, ${safeJson(padding)}, 18);`
-        );
+        const op = {
+          type: "fit",
+          payload: {
+            pts: coordinates.map((c) => [c.latitude, c.longitude]),
+            pad: padding,
+            maxZoom: 18,
+          },
+        };
+
+        if (readyRef.current) {
+          postMessageToWeb({ type: "command", command: op });
+        } else {
+          enqueueOp("command:fit", op);
+        }
       },
       animateToRegion: (region, durationMs = 600) => {
         const boost = propsRef.current.zoomBoost ?? DEFAULT_ZOOM_BOOST;
+        const op = {
+          type: "fly",
+          payload: {
+            lat: region.latitude,
+            lng: region.longitude,
+            zoom: zoomFor(region.latitudeDelta, boost),
+            ms: durationMs,
+          },
+        };
 
-        run(
-          `window.__fly(${region.latitude}, ${region.longitude}, ${zoomFor(
-            region.latitudeDelta,
-            boost
-          )}, ${durationMs});`
-        );
+        if (readyRef.current) {
+          postMessageToWeb({ type: "command", command: op });
+        } else {
+          enqueueOp("command:fly", op);
+        }
       },
     }),
-    [run]
+    [enqueueOp, postMessageToWeb]
   );
 
   const onMessage = useCallback(
     (event: WebViewMessageEvent) => {
-      let message: { type?: string; active?: boolean; name?: string };
+      let message: { type?: string; active?: boolean; name?: string } | null = null;
 
       try {
         message = JSON.parse(event.nativeEvent.data);
@@ -711,28 +910,28 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
         return;
       }
 
-      if (message.type === "ready") {
+      if (message?.type === "ready") {
         readyRef.current = true;
 
-        const queued = queueRef.current;
-        queueRef.current = [];
+        const markers = Array.from(markersRef.current.values());
+        const lines = Array.from(linesRef.current.values());
+        postMessageToWeb({ type: "initial_sync", markers, lines });
+        lastSentMarkersRef.current = new Map(markers.map((m) => [m.id, m]));
+        lastSentLinesRef.current = new Map(lines.map((l) => [l.id, l]));
 
-        sync();
-        queued.forEach(inject);
-
+        flushQueuedOps();
         propsRef.current.onMapReady?.();
-      } else if (message.type === "drag") {
+      } else if (message?.type === "drag") {
         propsRef.current.onPanDrag?.();
-      } else if (message.type === "touch") {
+      } else if (message?.type === "touch") {
         propsRef.current.onInteractionChange?.(!!message.active);
-      } else if (message.type === "street") {
+      } else if (message?.type === "street") {
         setStreet(message.name ?? "");
       }
     },
-    [sync, inject]
+    [flushQueuedOps, postMessageToWeb]
   );
 
-  // If the OS kills the WebView process, reload; "ready" re-sends everything.
   const recover = useCallback(() => {
     readyRef.current = false;
     webRef.current?.reload();
