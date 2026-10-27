@@ -1,8 +1,8 @@
 
 module.exports = {
   expo: {
-    name: "SafeSync-app",
-    slug: "SafeSync-app",
+    name: "safesync",
+    slug: "safesync-app",
     version: "1.0.0",
     orientation: "portrait",
     icon: "./assets/images/icon.png",
@@ -15,6 +15,7 @@ module.exports = {
       },
     },
     android: {
+      package: "ke.co.safesync.app",
       adaptiveIcon: {
         backgroundColor: "#E6F4FE",
         foregroundImage: "./assets/images/android-icon-foreground.png",

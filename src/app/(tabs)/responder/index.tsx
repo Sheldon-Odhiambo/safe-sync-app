@@ -20,7 +20,7 @@ import {
   View,
 } from "react-native";
 
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 
 import {
   Ionicons,
@@ -396,6 +396,16 @@ export default function ResponderConsole() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // The cancellation screen returns to this tab after the responder cancels.
+  // Refresh immediately so the console reflects the server state without
+  // waiting for the next four-second dispatch poll.
+  useFocusEffect(
+    useCallback(() => {
+      void loadData();
+      return undefined;
+    }, [loadData])
+  );
 
   useEffect(() => {
     dispatchRef.current = dispatch;
@@ -1184,65 +1194,21 @@ export default function ResponderConsole() {
     );
   };
 
-  // "Cancel Request": same confirm-then-cancel flow as the client's track
-  // page. Only available after accepting and before confirming arrival.
-  const handleCancelRequest = () => {
-    if (!dispatch || !accepted || cancelInProgressRef.current) return;
+  // Open the shared cancellation form. The form performs confirmation and
+  // calls the responder-specific dispatch cancellation endpoint.
+  const handleCancelRequest = useCallback(() => {
+    if (!dispatch || !accepted || cancelInProgressRef.current || dispatchBusy) {
+      return;
+    }
 
-    const target = dispatch;
-
-    Alert.alert(
-      "Cancel Emergency",
-      "This cancels the emergency for the client as well, and they will no longer have help on the way. You will become available again. Only do this if you cannot respond.",
-      [
-        { text: "Keep Request", style: "cancel" },
-        {
-          text: "Cancel Request",
-          style: "destructive",
-          onPress: async () => {
-            if (cancelInProgressRef.current) return;
-
-            cancelInProgressRef.current = true;
-            setDispatchBusy(true);
-
-            try {
-              await apiFetch<unknown>(
-                `${API.dispatches}/${target.id}/cancel`,
-                { method: "POST" }
-              );
-
-              // Ignore any poll that was already in flight, and make sure
-              // the poll does not announce a cancellation by the client.
-              completedRef.current.add(target.id);
-              dispatchRef.current = null;
-
-              setDispatch(null);
-              setFinished(null);
-              setRoute(null);
-              setAwaitingRelease(false);
-              setProfile((current) =>
-                current ? { ...current, status: "available" } : current
-              );
-              refreshStats();
-
-              Alert.alert(
-                "Emergency cancelled",
-                "The client has been notified. You are available again."
-              );
-            } catch (err) {
-              Alert.alert(
-                "Couldn't cancel",
-                errorMessage(err, "Please try again.")
-              );
-            } finally {
-              cancelInProgressRef.current = false;
-              setDispatchBusy(false);
-            }
-          },
-        },
-      ]
-    );
-  };
+    router.push({
+      pathname: "/cancel-request",
+      params: {
+        role: "responder",
+        dispatchId: dispatch.id,
+      },
+    });
+  }, [accepted, dispatch, dispatchBusy, router]);
 
   // "Free vehicle": the responder is back and ready for the next emergency.
   const handleRelease = async () => {
@@ -1475,36 +1441,19 @@ export default function ResponderConsole() {
 
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <View style={styles.logoBadge}>
-                <MaterialCommunityIcons
-                  name={isFireEngine(activeVehicle) ? "fire-truck" : "ambulance"}
-                  size={21}
-                  color="#FFFFFF"
-                />
-              </View>
-
               <View style={styles.headerInfo}>
-                <Text style={styles.headerTitle} numberOfLines={1}>
-                  {activeVehicle
-                    ? `Unit ${activeVehicle.registration_number}`
-                    : driverName}
-                </Text>
 
-                <Text style={styles.headerSubtitle} numberOfLines={1}>
-                  {driverName} •{" "}
-                  {activeVehicle
-                    ? activeVehicle.station
-                    : profile.organization_name}
+                <Text style={styles.headerTitle} numberOfLines={1}>
+                  {(() => {
+                    const hour = new Date().getHours();
+                    const greeting = 
+                      hour < 12 ? "Good morning" : 
+                      hour < 17 ? "Good afternoon" : 
+                      "Good evening";
+                    return `${greeting}, ${driverName}`;
+                  })()}
                 </Text>
               </View>
-            </View>
-
-            <View style={styles.headerActions}>
-              <DebugLogButton />
-
-              <Pressable style={styles.logoutButton} onPress={handleSignOut}>
-                <Ionicons name="log-out-outline" size={21} color="#0F172A" />
-              </Pressable>
             </View>
           </View>
 
@@ -2576,8 +2525,8 @@ const styles = StyleSheet.create({
   },
 
   headerTitle: {
-    fontSize: 17,
-    fontWeight: "800",
+    fontSize: 23,
+    fontWeight: "bold",
     color: "#0F172A",
   },
 

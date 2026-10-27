@@ -94,16 +94,31 @@ type CancelResult = {
 export default function CancelRequestScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
+    role?: string | string[];
     incidentId?: string | string[];
+    dispatchId?: string | string[];
     fee?: string | string[];
   }>();
+
+  const role =
+    typeof params.role === "string"
+      ? params.role
+      : params.role?.[0] ?? "client";
+
+  const isResponder = role === "responder";
 
   const incidentId =
     typeof params.incidentId === "string"
       ? params.incidentId
       : params.incidentId?.[0] ?? null;
+
+  const dispatchId =
+    typeof params.dispatchId === "string"
+      ? params.dispatchId
+      : params.dispatchId?.[0] ?? null;
+
   const feeRaw = typeof params.fee === "string" ? params.fee : params.fee?.[0];
-  // KSh charged for cancelling now (0 until a responder has accepted).
+  // KSh charged for a client cancellation when a responder has already accepted.
   const fee = Math.max(0, Number(feeRaw) || 0);
 
   const [selectedReason, setSelectedReason] = useState("");
@@ -117,16 +132,19 @@ export default function CancelRequestScreen() {
   const handleGoBack = () => {
     if (router.canGoBack()) {
       router.back();
-    } else {
-      router.replace("/home");
+      return;
     }
+
+    router.replace(isResponder ? "/responder" : "/home");
   };
 
   const handleCancelRequest = () => {
     if (!selectedReason) {
       Alert.alert(
         "Reason required",
-        "Please select a reason for cancelling your emergency request."
+        isResponder
+          ? "Please select a reason for cancelling this dispatch."
+          : "Please select a reason for cancelling your emergency request."
       );
       return;
     }
@@ -139,16 +157,20 @@ export default function CancelRequestScreen() {
       return;
     }
 
-    Alert.alert(
-      "Cancel emergency request?",
-      fee > 0
+    const confirmationMessage = isResponder
+      ? "Cancelling this dispatch will remove the emergency from your active assignments. The client will no longer have this responder assigned to the request. Only continue if you cannot safely respond."
+      : fee > 0
         ? `A responder is already on the way, so a KSh ${fee.toLocaleString(
             "en-KE"
           )} cancellation fee will be deducted from your wallet. Only continue if you no longer need emergency assistance.`
-        : "This action may notify the relevant responders. Only continue if you no longer need emergency assistance.",
+        : "This action may notify the relevant responders. Only continue if you no longer need emergency assistance.";
+
+    Alert.alert(
+      isResponder ? "Cancel dispatch?" : "Cancel emergency request?",
+      confirmationMessage,
       [
         {
-          text: "Keep Request Active",
+          text: isResponder ? "Keep Dispatch" : "Keep Request Active",
           style: "cancel",
         },
         {
@@ -161,16 +183,39 @@ export default function CancelRequestScreen() {
   };
 
   const confirmCancellation = async () => {
-    if (!incidentId) {
-      Alert.alert("Nothing to cancel", "We couldn't find the request to cancel.");
+    if (isResponder ? !dispatchId : !incidentId) {
+      Alert.alert(
+        "Nothing to cancel",
+        isResponder
+          ? "We couldn't find the dispatch to cancel."
+          : "We couldn't find the emergency request to cancel."
+      );
       return;
     }
 
     setLoading(true);
 
     try {
+      if (isResponder) {
+        // The responder endpoint uses the dispatch id and currently expects
+        // no cancellation payload. The selected reason/comment stays local to
+        // this screen and is not sent to an endpoint that does not accept it.
+        await apiFetch<unknown>(
+          `/api/v1/drivers/dispatches/${encodeURIComponent(dispatchId!)}/cancel`,
+          { method: "POST" }
+        );
+
+        Alert.alert(
+          "Emergency cancelled",
+          "The client has been notified. You are available again.",
+          [{ text: "OK", onPress: () => router.replace("/responder") }],
+          { cancelable: false }
+        );
+        return;
+      }
+
       const result = await apiFetch<CancelResult>(
-        `/api/v1/emergencies/${encodeURIComponent(incidentId)}/cancel`,
+        `/api/v1/emergencies/${encodeURIComponent(incidentId!)}/cancel`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -191,7 +236,9 @@ export default function CancelRequestScreen() {
         "Cancellation failed",
         error instanceof Error
           ? error.message
-          : "We could not process your request. Your request stays active until cancellation is confirmed."
+          : isResponder
+            ? "We could not cancel this dispatch. It remains active until cancellation is confirmed."
+            : "We could not process your request. Your request stays active until cancellation is confirmed."
       );
     } finally {
       setLoading(false);
@@ -254,13 +301,13 @@ export default function CancelRequestScreen() {
 
             <View style={styles.introTextContainer}>
               <Text style={styles.pageTitle}>
-                Cancel Request
+                {isResponder ? "Cancel Dispatch" : "Cancel Request"}
               </Text>
 
               <Text style={styles.pageDescription}>
-                Are you sure you want to cancel this emergency
-                request? This may notify responders and close
-                your request.
+                {isResponder
+                  ? "Cancel the emergency assignment from your responder console. This removes the dispatch from your active work."
+                  : "Are you sure you want to cancel this emergency request? This may notify responders and close your request."}
               </Text>
             </View>
           </View>
@@ -279,14 +326,14 @@ export default function CancelRequestScreen() {
               </Text>
 
               <Text style={styles.warningDescription}>
-                Only cancel if the situation has been resolved
-                or you no longer need assistance. If you are
-                still in danger, keep your request active.
+                {isResponder
+                  ? "Only cancel if you cannot safely respond. The client will be notified and the dispatch will be released."
+                  : "Only cancel if the situation has been resolved or you no longer need assistance. If you are still in danger, keep your request active."}
               </Text>
             </View>
           </View>
 
-          {fee > 0 && (
+          {!isResponder && fee > 0 && (
             <View style={styles.feeCard}>
               <Text style={styles.feeTitle}>
                 Cancellation fee: KSh {fee.toLocaleString("en-KE")}
@@ -420,7 +467,9 @@ export default function CancelRequestScreen() {
               loading && styles.buttonDisabled,
             ]}
             accessibilityRole="button"
-            accessibilityLabel="Cancel emergency request"
+            accessibilityLabel={
+              isResponder ? "Cancel emergency dispatch" : "Cancel emergency request"
+            }
           >
             {loading ? (
               <ActivityIndicator color="#FFFFFF" />
@@ -433,7 +482,7 @@ export default function CancelRequestScreen() {
                 />
 
                 <Text style={styles.cancelButtonText}>
-                  Cancel Request
+                  {isResponder ? "Cancel Dispatch" : "Cancel Request"}
                 </Text>
               </>
             )}

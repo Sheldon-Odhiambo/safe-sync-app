@@ -297,7 +297,6 @@ export default function TrackScreen() {
   const vehicleRef = useRef<Coordinates | null>(null);
   const incidentRef = useRef<Coordinates | null>(null);
   const mountedRef = useRef(true);
-  const cancelInProgressRef = useRef(false);
   // null until the first tracking answer, then whether the responder had
   // already arrived. Used to play the arrival siren only on the change.
   const previousArrivedRef = useRef<boolean | null>(null);
@@ -316,7 +315,6 @@ export default function TrackScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [mapTouching, setMapTouching] = useState(false);
 
@@ -694,21 +692,22 @@ export default function TrackScreen() {
     arrived,
   ]);
 
-  // "Cancel Request" opens the cancel-request page, where the client picks a
-  // reason. The page makes the API call and shows any cancellation fee.
+  // Open the dedicated cancellation screen. The cancellation screen owns
+  // validation, confirmation, the reason/comment form, and the API request.
   const handleCancel = useCallback(() => {
-    if (!incidentId) {
+    if (!incidentId || !tracking?.can_cancel) {
       return;
     }
 
     router.push({
       pathname: "/cancel-request",
       params: {
+        role: "client",
         incidentId,
-        fee: String(tracking?.cancellation_fee ?? 0),
+        fee: String(tracking.cancellation_fee ?? 0),
       },
     });
-  }, [incidentId, router, tracking?.cancellation_fee]);
+  }, [incidentId, router, tracking?.can_cancel, tracking?.cancellation_fee]);
 
   const handleBackToHome = useCallback(() => {
     router.replace("/home");
@@ -1392,31 +1391,20 @@ export default function TrackScreen() {
           </Pressable>
         ) : tracking.can_cancel ? (
           <Pressable
-            style={[
+            style={({ pressed }) => [
               styles.cancelButton,
-              cancelling && styles.disabledButton,
+              pressed && styles.cancelButtonPressed,
             ]}
             onPress={handleCancel}
-            disabled={cancelling}
+            accessibilityRole="button"
+            accessibilityLabel="Open cancellation form"
           >
-            {cancelling ? (
-              <ActivityIndicator
-                size="small"
-                color={COLORS.muted}
-              />
-            ) : (
-              <>
-                <Ionicons
-                  name="close"
-                  size={18}
-                  color={COLORS.muted}
-                />
-
-                <Text style={styles.cancelText}>
-                  Cancel Request
-                </Text>
-              </>
-            )}
+            <Ionicons
+              name="close-circle-outline"
+              size={19}
+              color={COLORS.muted}
+            />
+            <Text style={styles.cancelText}>Cancel Request</Text>
           </Pressable>
         ) : null}
       </ScrollView>
@@ -2129,8 +2117,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
   },
-  disabledButton: {
-    opacity: 0.6,
+  cancelButtonPressed: {
+    opacity: 0.65,
   },
   cancelText: {
     marginLeft: 7,

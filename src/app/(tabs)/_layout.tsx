@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Platform,
   SafeAreaView,
   StyleSheet,
@@ -489,7 +490,7 @@ function TabsLayoutContent() {
   if (!hasProfile || !kind) {
     if (!stalled || loadingProfile || refreshingProfile) {
       return (
-        <LoadingScreen message="Loading your account and permissions..." />
+        <LoadingScreen message="Loading your account ..." />
       );
     }
 
@@ -566,13 +567,11 @@ function TabsLayoutContent() {
       <View style={styles.container}>
         <View style={styles.header}>
           <View style={styles.brandContainer}>
-            <View style={styles.logoBadge}>
-              <Ionicons
-                name="shield-checkmark"
-                size={18}
-                color="#FFFFFF"
-              />
-            </View>
+            <Image
+              source={require("../../../assets/images/safesync-logo-nobg.png")}
+              style={styles.logo}
+              resizeMode="contain"
+            />
 
             <View style={styles.brandTextContainer}>
               <Text style={styles.brandTitle}>SafeSync</Text>
@@ -665,10 +664,10 @@ function TabsLayoutContent() {
             />
 
             <Tabs.Screen
-              name="admin/index"
+              name="admin"
               options={{
                 title: "Admin",
-                href: canUseAdmin ? undefined : null,
+                href: canUseAdmin ? "/admin" : null,
                 tabBarIcon: ({ color, size }) => (
                   <Ionicons
                     name="briefcase-outline"
@@ -725,6 +724,7 @@ function TabsLayoutContent() {
 
             <Tabs.Screen name="emergency" options={{ href: null }} />
             <Tabs.Screen name="track" options={{ href: null }} />
+            <Tabs.Screen name="cancel-request" options={{ href: null }} />
 
             <Tabs.Screen
               name="super-admin/branch/[branchId]"
@@ -773,6 +773,7 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#F8FAFC",
+    marginTop: 25
   },
   container: {
     flex: 1,
@@ -846,14 +847,10 @@ const styles = StyleSheet.create({
   brandTextContainer: {
     flexShrink: 1,
   },
-  logoBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#E11D48",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 9,
+  logo: {
+    width: 42,
+    height: 42,
+    marginRight: 10,
   },
   brandTitle: {
     fontSize: 20,

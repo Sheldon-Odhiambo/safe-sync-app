@@ -15,10 +15,9 @@ function RootNavigation() {
     const inTabsGroup = segments[0] === "(tabs)";
 
     if (session && !inTabsGroup) {
-      // Already logged in (e.g. app relaunch) — skip straight past login/signup.
-      router.replace("./(tabs)");
+      // Tabs layout redirects each role to its own landing screen.
+      router.replace("/home");
     } else if (!session && inTabsGroup) {
-      // No session (never logged in, or signed out) — bounce to login.
       router.replace("/");
     }
   }, [session, initializing, segments]);

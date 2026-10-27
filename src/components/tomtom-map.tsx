@@ -229,7 +229,10 @@ const PAGE = `<!doctype html>
            '<div class="pulse b" style="' + st + '"></div>';
   }
 
+  var iconCache = Object.create(null);
+
   function iconFor(kind) {
+    if (iconCache[kind]) return iconCache[kind];
     var html, size = 46, ax = 23, ay = 23;
 
     if (kind === 'client') {
@@ -242,34 +245,19 @@ const PAGE = `<!doctype html>
       size = 24; ax = 12; ay = 12;
       html = '<div class="mk" style="width:24px;height:24px">' +
         rings(170, 'rgba(220,38,38,.25)') +
-        '<div class="circle" style="width:24px;height:24px">' +
-        '<div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div></div>';
+        '<div class="circle" style="width:24px;height:24px"><div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div></div>';
     } else if (kind === 'emergency') {
       size = 36; ax = 18; ay = 34;
-      html = '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;' +
-        'border:3px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);' +
-        'box-shadow:0 2px 5px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center">' +
-        '<div style="width:10px;height:10px;border-radius:50%;background:#fff"></div></div>';
+      html = '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;border:3px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 2px 5px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center"><div style="width:10px;height:10px;border-radius:50%;background:#fff"></div></div>';
     } else if (kind === 'hospital') {
       size = 28; ax = 14; ay = 14;
-      html = '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626">' +
-        '<div style="position:relative;width:14px;height:14px">' +
-        '<div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:1px"></div>' +
-        '<div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:1px"></div>' +
-        '</div></div>';
+      html = '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626"><div style="position:relative;width:14px;height:14px"><div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:1px"></div><div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:1px"></div></div></div>';
     } else {
       var glyph = kind === 'fire' ? '&#128658;' : '&#128657;';
-      html = '<div class="mk" style="width:46px;height:46px">' +
-        rings(150, 'rgba(220,38,38,.25)') +
-        '<div class="circle" style="width:34px;height:34px;font-size:17px">' + glyph + '</div></div>';
+      html = '<div class="mk" style="width:46px;height:46px">' + rings(150, 'rgba(220,38,38,.25)') + '<div class="circle" style="width:34px;height:34px;font-size:17px">' + glyph + '</div></div>';
     }
-
-    return L.divIcon({
-      html: html,
-      className: '',
-      iconSize: [size, size],
-      iconAnchor: [ax, ay]
-    });
+    iconCache[kind] = L.divIcon({ html: html, className: '', iconSize: [size, size], iconAnchor: [ax, ay] });
+    return iconCache[kind];
   }
 
   function labelOffset(kind) {
@@ -283,129 +271,204 @@ const PAGE = `<!doctype html>
     return { permanent: true, direction: 'bottom', offset: labelOffset(kind), className: 'lbl', opacity: 1 };
   }
 
-  /* ---------- markers and lines driven by React ---------- */
+  /* ---------- incremental markers and lines driven by React Native ---------- */
+  var markers = Object.create(null);
+  var lines = Object.create(null);
 
-  var markers = {};
-  var lines = {};
+  function markerText(m) {
+    return m.title ? '<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '') : '';
+  }
 
-  window.__sync = function (state) {
-    var seen = {};
-
-    (state.markers || []).forEach(function (m) {
-      seen[m.id] = true;
-      var ll = [m.latitude, m.longitude];
-      var mk = markers[m.id];
-
-      if (!mk) {
-        var z = m.kind === 'emergency' ? 500 : (m.kind === 'me' || m.kind === 'client') ? 200 : 0;
-        mk = L.marker(ll, { icon: iconFor(m.kind), zIndexOffset: z }).addTo(map);
-        mk._kind = m.kind;
-        markers[m.id] = mk;
-      } else {
+  function upsertMarker(m) {
+    if (!m || !m.id || !isFinite(m.latitude) || !isFinite(m.longitude)) return;
+    var ll = [m.latitude, m.longitude];
+    var mk = markers[m.id];
+    if (!mk) {
+      var z = m.kind === 'emergency' ? 500 : (m.kind === 'me' || m.kind === 'client') ? 200 : 0;
+      mk = L.marker(ll, { icon: iconFor(m.kind), zIndexOffset: z }).addTo(map);
+      mk._kind = m.kind;
+      mk._lastLat = m.latitude;
+      mk._lastLng = m.longitude;
+      markers[m.id] = mk;
+    } else {
+      if (mk._lastLat !== m.latitude || mk._lastLng !== m.longitude) {
         mk.setLatLng(ll);
-        if (mk._kind !== m.kind) {
-          mk.setIcon(iconFor(m.kind));
-          mk._kind = m.kind;
-        }
+        mk._lastLat = m.latitude;
+        mk._lastLng = m.longitude;
       }
-
-      var text = m.title
-        ? '<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')
-        : '';
-
-      if (mk._text !== text) {
-        mk._text = text;
-        if (text) { mk.bindPopup(text); } else { mk.unbindPopup(); }
+      if (mk._kind !== m.kind) {
+        mk.setIcon(iconFor(m.kind));
+        mk._kind = m.kind;
       }
+    }
+    var text = markerText(m);
+    if (mk._text !== text) {
+      mk._text = text;
+      if (text) mk.bindPopup(text); else mk.unbindPopup();
+    }
+    var lk = m.kind + '|' + (m.label || '');
+    if (mk._lk !== lk) {
+      mk._lk = lk;
+      mk.unbindTooltip();
+      if (m.label) mk.bindTooltip(m.label, tip(m.kind));
+    }
+  }
 
-      var lk = m.kind + '|' + (m.label || '');
-      if (mk._lk !== lk) {
-        mk._lk = lk;
-        mk.unbindTooltip();
-        if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
-      }
+  function removeMarker(id) {
+    if (!markers[id]) return;
+    map.removeLayer(markers[id]);
+    delete markers[id];
+  }
+
+  function sameCoordinates(a, b) {
+    if (a === b) return true;
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!b[i] || a[i][0] !== b[i][0] || a[i][1] !== b[i][1]) return false;
+    }
+    return true;
+  }
+
+  function upsertLine(l) {
+    if (!l || !l.id || !Array.isArray(l.coordinates) || !l.coordinates.length) return;
+    var pair = lines[l.id];
+    if (!pair) {
+      var casing = L.polyline(l.coordinates, { color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round' }).addTo(map);
+      var main = L.polyline(l.coordinates, { color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round' }).addTo(map);
+      lines[l.id] = { casing: casing, main: main, coordinates: l.coordinates.map(function (p) { return [p[0], p[1]]; }), color: l.color, width: l.width };
+      return;
+    }
+    if (!sameCoordinates(pair.coordinates, l.coordinates)) {
+      pair.casing.setLatLngs(l.coordinates);
+      pair.main.setLatLngs(l.coordinates);
+      pair.coordinates = l.coordinates.map(function (p) { return [p[0], p[1]]; });
+    }
+    if (pair.width !== l.width) {
+      pair.casing.setStyle({ weight: l.width + 4 });
+      pair.main.setStyle({ weight: l.width });
+      pair.width = l.width;
+    }
+    if (pair.color !== l.color) {
+      pair.main.setStyle({ color: l.color });
+      pair.color = l.color;
+    }
+  }
+
+  function removeLine(id) {
+    var pair = lines[id];
+    if (!pair) return;
+    map.removeLayer(pair.casing);
+    map.removeLayer(pair.main);
+    delete lines[id];
+  }
+
+  function applyOperations(operations) {
+    (operations || []).forEach(function (op) {
+      if (op.op === 'upsert_marker') upsertMarker(op.marker);
+      else if (op.op === 'remove_marker') removeMarker(op.id);
+      else if (op.op === 'upsert_line') upsertLine(op.line);
+      else if (op.op === 'remove_line') removeLine(op.id);
     });
+  }
 
-    Object.keys(markers).forEach(function (id) {
-      if (!seen[id]) { map.removeLayer(markers[id]); delete markers[id]; }
-    });
-
-    var seenLines = {};
-
-    (state.lines || []).forEach(function (l) {
-      seenLines[l.id] = true;
-      var pair = lines[l.id];
-
-      if (!pair) {
-        // White outline underneath so the route stands out on any map style.
-        var casing = L.polyline(l.coordinates, {
-          color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
-        }).addTo(map);
-        var main = L.polyline(l.coordinates, {
-          color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
-        }).addTo(map);
-        lines[l.id] = { casing: casing, main: main };
-      } else {
-        pair.casing.setLatLngs(l.coordinates);
-        pair.casing.setStyle({ weight: l.width + 4 });
-        pair.main.setLatLngs(l.coordinates);
-        pair.main.setStyle({ color: l.color, weight: l.width });
-      }
-    });
-
-    Object.keys(lines).forEach(function (id) {
-      if (!seenLines[id]) {
-        map.removeLayer(lines[id].casing);
-        map.removeLayer(lines[id].main);
-        delete lines[id];
-      }
-    });
+  window.__snapshot = function (state) {
+    var seenMarkers = Object.create(null);
+    var seenLines = Object.create(null);
+    (state.markers || []).forEach(function (m) { seenMarkers[m.id] = true; upsertMarker(m); });
+    Object.keys(markers).forEach(function (id) { if (!seenMarkers[id]) removeMarker(id); });
+    (state.lines || []).forEach(function (l) { seenLines[l.id] = true; upsertLine(l); });
+    Object.keys(lines).forEach(function (id) { if (!seenLines[id]) removeLine(id); });
   };
+
+  var seenNativeMessageIds = Object.create(null);
+  var seenNativeMessageOrder = [];
+  function handleNativeMessage(raw) {
+    var msg = raw;
+    try { if (typeof raw === 'string') msg = JSON.parse(raw); } catch (e) { return; }
+    if (!msg || typeof msg !== 'object') return;
+    if (msg._id != null) {
+      if (seenNativeMessageIds[msg._id]) return;
+      seenNativeMessageIds[msg._id] = true;
+      seenNativeMessageOrder.push(msg._id);
+      while (seenNativeMessageOrder.length > 100) delete seenNativeMessageIds[seenNativeMessageOrder.shift()];
+    }
+    if (msg.type === 'snapshot') window.__snapshot(msg.state || {});
+    else if (msg.type === 'map_ops') applyOperations(msg.operations);
+    else if (msg.type === 'command') {
+      var a = msg.args || {};
+      if (msg.name === 'traffic') setTraffic(!!a.enabled);
+      else if (msg.name === 'style') setStyle(a.style);
+      else if (msg.name === 'hospitals') window.__hospitals(!!a.enabled);
+      else if (msg.name === 'fit') window.__fit(a.points, a.padding, a.maxZoom, a.animated);
+      else if (msg.name === 'fly') window.__fly(a.latitude, a.longitude, a.zoom, a.durationMs);
+    }
+  }
+  // React Native WebView dispatches native messages differently across platforms.
+  document.addEventListener('message', function (e) { handleNativeMessage(e.data); });
+  window.addEventListener('message', function (e) { handleNativeMessage(e.data); });
 
   /* ---------- nearby hospitals (TomTom Nearby Search, category 7321) ---------- */
 
-  var hospitals = {};
+  var hospitals = Object.create(null);
   var showHosp = INIT.hospitals;
   var lastHosp = null;
+  var hospitalRequest = null;
+  var hospitalCache = Object.create(null);
+  var hospitalCacheOrder = [];
+
+  function cachePut(cache, order, key, value, max) {
+    cache[key] = { value: value, time: Date.now() };
+    var idx = order.indexOf(key);
+    if (idx >= 0) order.splice(idx, 1);
+    order.push(key);
+    while (order.length > max) delete cache[order.shift()];
+  }
+  function cacheGet(cache, key, ttl) {
+    var entry = cache[key];
+    if (!entry) return null;
+    if (Date.now() - entry.time > ttl) { delete cache[key]; return null; }
+    return entry.value;
+  }
+  function hospitalKey(c) { return (Math.round(c.lat * 100) / 100) + ':' + (Math.round(c.lng * 100) / 100); }
+
+  function renderHospitals(results) {
+    (results || []).forEach(function (p) {
+      if (!p.poi || !p.position) return;
+      var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
+      var name = p.poi.name || 'Hospital';
+      var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
+      var phone = p.poi.phone || '';
+      if (!hospitals[id]) {
+        var m = L.marker([p.position.lat, p.position.lon], { icon: iconFor('hospital'), zIndexOffset: 100 });
+        m.bindPopup('<b>' + esc(name) + '</b>' + (addr ? '<br>' + esc(addr) : '') + (phone ? '<br>' + esc(phone) : ''));
+        m.bindTooltip(name, tip('hospital'));
+        hospitals[id] = m;
+      }
+      if (showHosp && !map.hasLayer(hospitals[id])) hospitals[id].addTo(map);
+    });
+  }
 
   function loadHospitals() {
-    if (!showHosp || !KEY) return;
-    if (map.getZoom() < 12) return;
-
+    if (!showHosp || !KEY || map.getZoom() < 12) return;
     var c = map.getCenter();
     if (lastHosp && map.distance(lastHosp, c) < 1500) return;
-    lastHosp = c;
-
-    fetch(
-      'https://api.tomtom.com/search/2/nearbySearch/.json?lat=' + c.lat + '&lon=' + c.lng +
-        '&radius=6000&limit=15&categorySet=7321&key=' + KEY
-    )
+    lastHosp = L.latLng(c.lat, c.lng);
+    var key = hospitalKey(c);
+    var cached = cacheGet(hospitalCache, key, 10 * 60 * 1000);
+    if (cached) { renderHospitals(cached); return; }
+    if (hospitalRequest) hospitalRequest.abort();
+    hospitalRequest = new AbortController();
+    var controller = hospitalRequest;
+    fetch('https://api.tomtom.com/search/2/nearbySearch/.json?lat=' + c.lat + '&lon=' + c.lng + '&radius=6000&limit=15&categorySet=7321&key=' + KEY, { signal: controller.signal })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
+        if (controller !== hospitalRequest) return;
         if (!j || !j.results) { lastHosp = null; return; }
-
-        j.results.forEach(function (p) {
-          if (!p.poi || !p.position) return;
-
-          var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
-          if (hospitals[id]) return;
-
-          var name = p.poi.name || 'Hospital';
-          var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
-          var phone = p.poi.phone ? p.poi.phone : '';
-
-          var m = L.marker([p.position.lat, p.position.lon], { icon: iconFor('hospital'), zIndexOffset: 100 });
-          m.bindPopup(
-            '<b>' + esc(name) + '</b>' +
-            (addr ? '<br>' + esc(addr) : '') +
-            (phone ? '<br>' + esc(phone) : '')
-          );
-          m.bindTooltip(name, tip('hospital'));
-          if (showHosp) m.addTo(map);
-          hospitals[id] = m;
-        });
+        cachePut(hospitalCache, hospitalCacheOrder, key, j.results, 24);
+        renderHospitals(j.results);
       })
-      .catch(function () { lastHosp = null; });
+      .catch(function (e) { if (e && e.name !== 'AbortError' && controller === hospitalRequest) lastHosp = null; })
+      .then(function () { if (controller === hospitalRequest) hospitalRequest = null; });
   }
 
   window.__hospitals = function (on) {
@@ -419,46 +482,52 @@ const PAGE = `<!doctype html>
   /* ---------- road name at the map centre (TomTom Reverse Geocode) ---------- */
 
   var lastStreet = null;
+  var streetRequest = null;
+  var streetCache = Object.create(null);
+  var streetCacheOrder = [];
 
   function loadStreet() {
     if (!INIT.street || !KEY) return;
-
     if (map.getZoom() < 14) {
+      if (streetRequest) { streetRequest.abort(); streetRequest = null; }
       lastStreet = null;
       post({ type: 'street', name: '' });
       return;
     }
-
     var c = map.getCenter();
     if (lastStreet && map.distance(lastStreet, c) < 40) return;
-    lastStreet = c;
-
-    fetch(
-      'https://api.tomtom.com/search/2/reverseGeocode/' + c.lat + ',' + c.lng +
-        '.json?radius=150&key=' + KEY
-    )
+    lastStreet = L.latLng(c.lat, c.lng);
+    var key = Math.round(c.lat * 10000) + ':' + Math.round(c.lng * 10000);
+    var cached = cacheGet(streetCache, key, 15 * 60 * 1000);
+    if (cached !== null) { post({ type: 'street', name: cached }); return; }
+    if (streetRequest) streetRequest.abort();
+    streetRequest = new AbortController();
+    var controller = streetRequest;
+    fetch('https://api.tomtom.com/search/2/reverseGeocode/' + c.lat + ',' + c.lng + '.json?radius=150&key=' + KEY, { signal: controller.signal })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
+        if (controller !== streetRequest) return;
         var a = j && j.addresses && j.addresses[0] && j.addresses[0].address;
         if (!a) return;
-
         var road = a.streetName || '';
         var area = a.municipalitySubdivision || a.municipality || '';
         var name = road ? (area ? road + ' \\u00B7 ' + area : road) : area;
+        cachePut(streetCache, streetCacheOrder, key, name, 60);
         post({ type: 'street', name: name });
       })
-      .catch(function () { lastStreet = null; });
+      .catch(function (e) { if (e && e.name !== 'AbortError' && controller === streetRequest) lastStreet = null; })
+      .then(function () { if (controller === streetRequest) streetRequest = null; });
   }
 
   /* ---------- camera ---------- */
 
-  window.__fit = function (pts, pad, maxZoom) {
+  window.__fit = function (pts, pad, maxZoom, animated) {
     if (!pts || !pts.length) return;
     map.fitBounds(L.latLngBounds(pts), {
       paddingTopLeft: [pad.left, pad.top],
       paddingBottomRight: [pad.right, pad.bottom],
       maxZoom: maxZoom || 18,
-      animate: true
+      animate: animated !== false && pts.length < 100
     });
   };
 
@@ -560,18 +629,15 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
 
   const webRef = useRef<React.ComponentRef<typeof WebView>>(null);
   const readyRef = useRef(false);
-  const queueRef = useRef<string[]>([]);
   const markersRef = useRef(new Map<string, MarkerSpec>());
   const linesRef = useRef(new Map<string, LineSpec>());
+  const pendingOpsRef = useRef(new Map<string, Record<string, unknown>>());
+  const commandQueueRef = useRef<Array<{ type: string; name: string; args: Record<string, unknown> }>>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const [street, setStreet] = useState("");
-
-  // Always read the newest callbacks without re-creating handlers.
   const propsRef = useRef(props);
   propsRef.current = props;
 
-  // The page is built once; changing it later would reload the WebView.
   const initialRef = useRef({
     region: initialRegion,
     traffic: showTraffic,
@@ -580,159 +646,147 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     street: showStreetName,
     boost: props.zoomBoost ?? DEFAULT_ZOOM_BOOST,
   });
-  const html = useMemo(
-    () =>
-      buildHtml(initialRef.current.region, {
-        traffic: initialRef.current.traffic,
-        style: initialRef.current.style,
-        hospitals: initialRef.current.hospitals,
-        street: initialRef.current.street,
-        boost: initialRef.current.boost,
-      }),
-    []
-  );
+  const html = useMemo(() => buildHtml(initialRef.current.region, {
+    traffic: initialRef.current.traffic,
+    style: initialRef.current.style,
+    hospitals: initialRef.current.hospitals,
+    street: initialRef.current.street,
+    boost: initialRef.current.boost,
+  }), []);
 
-  const inject = useCallback((js: string) => {
-    webRef.current?.injectJavaScript(`${js}\ntrue;`);
+  const messageIdRef = useRef(0);
+  const postNativeMessage = useCallback((message: Record<string, unknown>) => {
+    try {
+      const envelope = { ...message, _id: ++messageIdRef.current };
+      webRef.current?.postMessage(JSON.stringify(envelope));
+    } catch {
+      // A WebView may be between processes; the next ready event sends a fresh snapshot.
+    }
   }, []);
 
-  // `queue`: hold the command until the page reports ready.
-  const run = useCallback(
-    (js: string, queue = true) => {
-      if (!readyRef.current) {
-        if (queue) queueRef.current.push(js);
-        return;
+  const sendCommand = useCallback((name: string, args: Record<string, unknown>, coalesce = true) => {
+    if (!readyRef.current) {
+      if (coalesce) {
+        commandQueueRef.current = commandQueueRef.current.filter((item) => item.name !== name);
       }
-      inject(js);
-    },
-    [inject]
-  );
+      commandQueueRef.current.push({ type: "command", name, args });
+      if (commandQueueRef.current.length > 50) commandQueueRef.current.splice(0, commandQueueRef.current.length - 50);
+      return;
+    }
+    postNativeMessage({ type: "command", name, args });
+  }, [postNativeMessage]);
 
-  const sync = useCallback(() => {
-    run(
-      `window.__sync(${safeJson({
-        markers: Array.from(markersRef.current.values()),
-        lines: Array.from(linesRef.current.values()),
-      })});`,
-      false
-    );
-  }, [run]);
+  const flushOperations = useCallback(() => {
+    timerRef.current = null;
+    if (!readyRef.current || pendingOpsRef.current.size === 0) return;
+    const operations = Array.from(pendingOpsRef.current.values());
+    pendingOpsRef.current.clear();
+    postNativeMessage({ type: "map_ops", operations });
+  }, [postNativeMessage]);
 
-  const scheduleSync = useCallback(() => {
+  const scheduleFlush = useCallback(() => {
     if (timerRef.current) return;
+    timerRef.current = setTimeout(flushOperations, 16);
+  }, [flushOperations]);
 
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      sync();
-    }, 16);
-  }, [sync]);
+  const queueOperation = useCallback((key: string, operation: Record<string, unknown>) => {
+    // Coalesce repeated changes to the same entity while the 16ms batch is pending.
+    pendingOpsRef.current.set(key, operation);
+    scheduleFlush();
+  }, [scheduleFlush]);
 
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    pendingOpsRef.current.clear();
+    commandQueueRef.current = [];
+  }, []);
+
+  const sameMarker = (a: MarkerSpec | undefined, b: MarkerSpec) => !!a && a.id === b.id && a.kind === b.kind && a.latitude === b.latitude && a.longitude === b.longitude && a.title === b.title && a.description === b.description && a.label === b.label;
+  const sameLine = (a: LineSpec | undefined, b: LineSpec) => {
+    if (!a || a.id !== b.id || a.color !== b.color || a.width !== b.width || a.coordinates.length !== b.coordinates.length) return false;
+    return a.coordinates.every((point, i) => point[0] === b.coordinates[i]?.[0] && point[1] === b.coordinates[i]?.[1]);
+  };
+
+  const context = useMemo<MapContextValue>(() => ({
+    setMarker: (spec) => {
+      const previous = markersRef.current.get(spec.id);
+      if (sameMarker(previous, spec)) return;
+      markersRef.current.set(spec.id, spec);
+      queueOperation("marker:" + spec.id, { op: "upsert_marker", marker: spec });
     },
-    []
-  );
-
-  const context = useMemo<MapContextValue>(
-    () => ({
-      setMarker: (spec) => {
-        markersRef.current.set(spec.id, spec);
-        scheduleSync();
-      },
-      removeMarker: (id) => {
-        markersRef.current.delete(id);
-        scheduleSync();
-      },
-      setLine: (spec) => {
-        linesRef.current.set(spec.id, spec);
-        scheduleSync();
-      },
-      removeLine: (id) => {
-        linesRef.current.delete(id);
-        scheduleSync();
-      },
-    }),
-    [scheduleSync]
-  );
-
-  useEffect(() => {
-    run(`window.__traffic(${showTraffic ? "true" : "false"});`);
-  }, [showTraffic, run]);
-
-  useEffect(() => {
-    run(`window.__style(${safeJson(mapStyle)});`);
-  }, [mapStyle, run]);
-
-  useEffect(() => {
-    run(`window.__hospitals(${showHospitals ? "true" : "false"});`);
-  }, [showHospitals, run]);
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      fitToCoordinates: (coordinates, options) => {
-        if (!coordinates || coordinates.length === 0) return;
-
-        const padding = options?.edgePadding ?? {
-          top: 40,
-          right: 40,
-          bottom: 40,
-          left: 40,
-        };
-
-        run(
-          `window.__fit(${safeJson(
-            coordinates.map((c) => [c.latitude, c.longitude])
-          )}, ${safeJson(padding)}, 18);`
-        );
-      },
-      animateToRegion: (region, durationMs = 600) => {
-        const boost = propsRef.current.zoomBoost ?? DEFAULT_ZOOM_BOOST;
-
-        run(
-          `window.__fly(${region.latitude}, ${region.longitude}, ${zoomFor(
-            region.latitudeDelta,
-            boost
-          )}, ${durationMs});`
-        );
-      },
-    }),
-    [run]
-  );
-
-  const onMessage = useCallback(
-    (event: WebViewMessageEvent) => {
-      let message: { type?: string; active?: boolean; name?: string };
-
-      try {
-        message = JSON.parse(event.nativeEvent.data);
-      } catch {
-        return;
-      }
-
-      if (message.type === "ready") {
-        readyRef.current = true;
-
-        const queued = queueRef.current;
-        queueRef.current = [];
-
-        sync();
-        queued.forEach(inject);
-
-        propsRef.current.onMapReady?.();
-      } else if (message.type === "drag") {
-        propsRef.current.onPanDrag?.();
-      } else if (message.type === "touch") {
-        propsRef.current.onInteractionChange?.(!!message.active);
-      } else if (message.type === "street") {
-        setStreet(message.name ?? "");
-      }
+    removeMarker: (id) => {
+      if (!markersRef.current.has(id)) return;
+      markersRef.current.delete(id);
+      queueOperation("marker:" + id, { op: "remove_marker", id });
     },
-    [sync, inject]
-  );
+    setLine: (spec) => {
+      const previous = linesRef.current.get(spec.id);
+      if (sameLine(previous, spec)) return;
+      linesRef.current.set(spec.id, spec);
+      queueOperation("line:" + spec.id, { op: "upsert_line", line: spec });
+    },
+    removeLine: (id) => {
+      if (!linesRef.current.has(id)) return;
+      linesRef.current.delete(id);
+      queueOperation("line:" + id, { op: "remove_line", id });
+    },
+  }), [queueOperation]);
 
-  // If the OS kills the WebView process, reload; "ready" re-sends everything.
+  useEffect(() => { sendCommand("traffic", { enabled: showTraffic }); }, [showTraffic, sendCommand]);
+  useEffect(() => { sendCommand("style", { style: mapStyle }); }, [mapStyle, sendCommand]);
+  useEffect(() => { sendCommand("hospitals", { enabled: showHospitals }); }, [showHospitals, sendCommand]);
+
+  useImperativeHandle(ref, () => ({
+    fitToCoordinates: (coordinates, options) => {
+      if (!coordinates || coordinates.length === 0) return;
+      const padding = options?.edgePadding ?? { top: 40, right: 40, bottom: 40, left: 40 };
+      sendCommand("fit", {
+        points: coordinates.map((c) => [c.latitude, c.longitude]),
+        padding,
+        maxZoom: 18,
+        animated: options?.animated ?? true,
+      }, false);
+    },
+    animateToRegion: (region, durationMs = 600) => {
+      const boost = propsRef.current.zoomBoost ?? DEFAULT_ZOOM_BOOST;
+      sendCommand("fly", {
+        latitude: region.latitude,
+        longitude: region.longitude,
+        zoom: zoomFor(region.latitudeDelta, boost),
+        durationMs,
+      }, false);
+    },
+  }), [sendCommand]);
+
+  const onMessage = useCallback((event: WebViewMessageEvent) => {
+    let message: { type?: string; active?: boolean; name?: string };
+    try { message = JSON.parse(event.nativeEvent.data); } catch { return; }
+
+    if (message.type === "ready") {
+      readyRef.current = true;
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      pendingOpsRef.current.clear();
+      postNativeMessage({
+        type: "snapshot",
+        state: {
+          markers: Array.from(markersRef.current.values()),
+          lines: Array.from(linesRef.current.values()),
+        },
+      });
+      const queued = commandQueueRef.current;
+      commandQueueRef.current = [];
+      queued.forEach((command) => postNativeMessage(command));
+      propsRef.current.onMapReady?.();
+    } else if (message.type === "drag") {
+      propsRef.current.onPanDrag?.();
+    } else if (message.type === "touch") {
+      propsRef.current.onInteractionChange?.(!!message.active);
+    } else if (message.type === "street") {
+      setStreet(message.name ?? "");
+    }
+  }, [postNativeMessage]);
+
   const recover = useCallback(() => {
     readyRef.current = false;
     webRef.current?.reload();

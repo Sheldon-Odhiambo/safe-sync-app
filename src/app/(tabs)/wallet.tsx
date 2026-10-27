@@ -1065,7 +1065,7 @@ export default function Wallet() {
       <Text style={styles.securityText}>
         {activeMethod === "mpesa"
           ? "You'll get an M-Pesa prompt on your phone. Enter your M-Pesa PIN there; SafeSync never sees it."
-          : "Your card details are sent securely to Paystack to process the payment. SafeSync never stores your card number, CVV or PIN."}
+          : "Your card details are securely processed. SafeSync never stores your card number, CVV or PIN."}
       </Text>
     </View>
   );
@@ -1783,11 +1783,6 @@ export default function Wallet() {
               </View>
             </>
           )}
-
-          {/* ==========================================================
-              ORGANISATION (CLIENT OR SERVICE PROVIDER): SUBSCRIPTION
-              No wallet, no deposit form, no M-Pesa. Bank card only. Priced per branch.
-          ========================================================== */}
 
           {profileLoaded && isOrganisation && (
             <>

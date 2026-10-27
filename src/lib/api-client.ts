@@ -5,12 +5,33 @@ const API_BASE_URL =
 
 export class ApiError extends Error {
   status: number;
+  /** Raw FastAPI `detail`: string, {code, message, blockers?}, or a 422 array. */
+  detail: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, detail?: unknown) {
     super(message);
     this.status = status;
+    this.detail = detail;
+  }
+
+  get code(): string | undefined {
+    const d = this.detail as { code?: string } | null;
+    return d && typeof d === "object" && !Array.isArray(d) ? d.code : undefined;
   }
 }
+
+function messageFromDetail(detail: unknown, status: number): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    // FastAPI 422 validation errors
+    return detail.map((e) => e?.msg).filter(Boolean).join("\n") || "Invalid input.";
+  }
+  if (detail && typeof detail === "object" && "message" in detail) {
+    return String((detail as { message: unknown }).message);
+  }
+  return `Something went wrong (${status}).`;
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
@@ -29,8 +50,9 @@ export async function apiFetch<T>(
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new ApiError(
-      body?.detail ?? `Something went wrong (${response.status}).`,
-      response.status
+      messageFromDetail(body?.detail, response.status),
+      response.status,
+      body?.detail
     );
   }
 
