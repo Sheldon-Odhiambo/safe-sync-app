@@ -189,7 +189,7 @@ const PAGE = `<!doctype html>
       { tileSize: 512, zoomOffset: -1, minZoom: 3, maxZoom: 20, attribution: '&copy; TomTom' }
     );
     next.addTo(map);
-    next.bringToBack();               // stays under the traffic layer
+    next.bringToBack();
     if (base) map.removeLayer(base);
 
     base = next;
@@ -197,8 +197,6 @@ const PAGE = `<!doctype html>
     mapEl.classList.toggle('dark', name === 'night');
   }
   setStyle(INIT.style);
-
-  /* ---------- traffic ---------- */
 
   var traffic = null;
   function setTraffic(on) {
@@ -215,49 +213,60 @@ const PAGE = `<!doctype html>
   setTraffic(INIT.traffic);
 
   function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
 
   /* ---------- marker icons ---------- */
+  var ICON_CACHE = {};
 
-  // Two staggered rings; "d" is the final ring diameter in px.
   function rings(d, rgba) {
     var st = 'width:' + d + 'px;height:' + d + 'px;background:' + rgba;
     return '<div class="pulse" style="' + st + '"></div>' +
            '<div class="pulse b" style="' + st + '"></div>';
   }
 
-  var iconCache = Object.create(null);
-
-  function iconFor(kind) {
-    if (iconCache[kind]) return iconCache[kind];
-    var html, size = 46, ax = 23, ay = 23;
-
+  function buildIconHtml(kind) {
     if (kind === 'client') {
-      size = 42; ax = 21; ay = 21;
-      html = '<div class="mk" style="width:42px;height:42px">' +
+      return '<div class="mk" style="width:42px;height:42px">' +
         rings(180, 'rgba(22,163,74,.28)') +
         '<div class="circle" style="width:25px;height:25px;border:2px solid #16A34A;background:#fff">' +
         '<div style="width:11px;height:11px;border-radius:50%;background:#16A34A"></div></div></div>';
     } else if (kind === 'me') {
-      size = 24; ax = 12; ay = 12;
-      html = '<div class="mk" style="width:24px;height:24px">' +
+      return '<div class="mk" style="width:24px;height:24px">' +
         rings(170, 'rgba(220,38,38,.25)') +
-        '<div class="circle" style="width:24px;height:24px"><div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div></div>';
+        '<div class="circle" style="width:24px;height:24px">' +
+        '<div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div></div>';
     } else if (kind === 'emergency') {
-      size = 36; ax = 18; ay = 34;
-      html = '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;border:3px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 2px 5px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center"><div style="width:10px;height:10px;border-radius:50%;background:#fff"></div></div>';
+      return '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;' +
+        'border:3px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);' +
+        'box-shadow:0 2px 5px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center">' +
+        '<div style="width:10px;height:10px;border-radius:50%;background:#fff"></div></div>';
     } else if (kind === 'hospital') {
-      size = 28; ax = 14; ay = 14;
-      html = '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626"><div style="position:relative;width:14px;height:14px"><div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:1px"></div><div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:1px"></div></div></div>';
+      return '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626">' +
+        '<div style="position:relative;width:14px;height:14px">' +
+        '<div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:1px"></div>' +
+        '<div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:1px"></div>' +
+        '</div></div>';
     } else {
       var glyph = kind === 'fire' ? '&#128658;' : '&#128657;';
-      html = '<div class="mk" style="width:46px;height:46px">' + rings(150, 'rgba(220,38,38,.25)') + '<div class="circle" style="width:34px;height:34px;font-size:17px">' + glyph + '</div></div>';
+      return '<div class="mk" style="width:46px;height:46px">' +
+        rings(150, 'rgba(220,38,38,.25)') +
+        '<div class="circle" style="width:34px;height:34px;font-size:17px">' + glyph + '</div></div>';
     }
-    iconCache[kind] = L.divIcon({ html: html, className: '', iconSize: [size, size], iconAnchor: [ax, ay] });
-    return iconCache[kind];
+  }
+
+  function getIcon(kind) {
+    if (ICON_CACHE[kind]) return ICON_CACHE[kind];
+    var html = buildIconHtml(kind);
+    var size = 46, ax = 23, ay = 23;
+    if (kind === 'client') { size = 42; ax = 21; ay = 21; }
+    else if (kind === 'me') { size = 24; ax = 12; ay = 12; }
+    else if (kind === 'emergency') { size = 36; ax = 18; ay = 34; }
+    else if (kind === 'hospital') { size = 28; ax = 14; ay = 14; }
+    ICON_CACHE[kind] = L.divIcon({ html: html, className: '', iconSize: [size, size], iconAnchor: [ax, ay] });
+    return ICON_CACHE[kind];
   }
 
   function labelOffset(kind) {
@@ -271,204 +280,228 @@ const PAGE = `<!doctype html>
     return { permanent: true, direction: 'bottom', offset: labelOffset(kind), className: 'lbl', opacity: 1 };
   }
 
-  /* ---------- incremental markers and lines driven by React Native ---------- */
-  var markers = Object.create(null);
-  var lines = Object.create(null);
+  var markers = {};
+  var lines = {};
 
-  function markerText(m) {
-    return m.title ? '<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '') : '';
-  }
-
-  function upsertMarker(m) {
-    if (!m || !m.id || !isFinite(m.latitude) || !isFinite(m.longitude)) return;
-    var ll = [m.latitude, m.longitude];
-    var mk = markers[m.id];
-    if (!mk) {
-      var z = m.kind === 'emergency' ? 500 : (m.kind === 'me' || m.kind === 'client') ? 200 : 0;
-      mk = L.marker(ll, { icon: iconFor(m.kind), zIndexOffset: z }).addTo(map);
-      mk._kind = m.kind;
-      mk._lastLat = m.latitude;
-      mk._lastLng = m.longitude;
-      markers[m.id] = mk;
-    } else {
-      if (mk._lastLat !== m.latitude || mk._lastLng !== m.longitude) {
-        mk.setLatLng(ll);
-        mk._lastLat = m.latitude;
-        mk._lastLng = m.longitude;
-      }
-      if (mk._kind !== m.kind) {
-        mk.setIcon(iconFor(m.kind));
-        mk._kind = m.kind;
-      }
-    }
-    var text = markerText(m);
-    if (mk._text !== text) {
-      mk._text = text;
-      if (text) mk.bindPopup(text); else mk.unbindPopup();
-    }
-    var lk = m.kind + '|' + (m.label || '');
-    if (mk._lk !== lk) {
-      mk._lk = lk;
-      mk.unbindTooltip();
-      if (m.label) mk.bindTooltip(m.label, tip(m.kind));
-    }
-  }
-
-  function removeMarker(id) {
+  function removeMarkerById(id) {
     if (!markers[id]) return;
-    map.removeLayer(markers[id]);
+    map.removeLayer(markers[id].mk);
     delete markers[id];
   }
 
-  function sameCoordinates(a, b) {
-    if (a === b) return true;
+  function removeLineById(id) {
+    if (!lines[id]) return;
+    map.removeLayer(lines[id].casing);
+    map.removeLayer(lines[id].main);
+    delete lines[id];
+  }
+
+  function coordsEqual(a, b) {
     if (!a || !b || a.length !== b.length) return false;
     for (var i = 0; i < a.length; i++) {
-      if (!b[i] || a[i][0] !== b[i][0] || a[i][1] !== b[i][1]) return false;
+      if (a[i][0] !== b[i][0] || a[i][1] !== b[i][1]) return false;
     }
     return true;
   }
 
-  function upsertLine(l) {
-    if (!l || !l.id || !Array.isArray(l.coordinates) || !l.coordinates.length) return;
-    var pair = lines[l.id];
-    if (!pair) {
-      var casing = L.polyline(l.coordinates, { color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-      var main = L.polyline(l.coordinates, { color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-      lines[l.id] = { casing: casing, main: main, coordinates: l.coordinates.map(function (p) { return [p[0], p[1]]; }), color: l.color, width: l.width };
-      return;
+  function applyAddMarker(m) {
+    if (markers[m.id]) return applyUpdateMarker(m);
+    var ll = [m.latitude, m.longitude];
+    var mk = L.marker(ll, { icon: getIcon(m.kind), zIndexOffset: m.kind === 'emergency' ? 500 : (m.kind === 'me' || m.kind === 'client') ? 200 : 0 }).addTo(map);
+    mk._spec = { latitude: m.latitude, longitude: m.longitude, kind: m.kind, title: m.title || '', description: m.description || '', label: m.label || '' };
+    if (m.title) { mk.bindPopup('<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')); }
+    if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
+    markers[m.id] = { mk: mk };
+  }
+
+  function applyUpdateMarker(m) {
+    var entry = markers[m.id];
+    if (!entry) { applyAddMarker(m); return; }
+    var mk = entry.mk;
+    var old = mk._spec || {};
+
+    if (old.latitude !== m.latitude || old.longitude !== m.longitude) {
+      mk.setLatLng([m.latitude, m.longitude]);
     }
-    if (!sameCoordinates(pair.coordinates, l.coordinates)) {
+
+    if (old.kind !== m.kind) {
+      mk.setIcon(getIcon(m.kind));
+    }
+
+    var text = m.title ? ('<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')) : '';
+    if (mk._text !== text) {
+      mk._text = text;
+      if (text) { mk.bindPopup(text); } else { mk.unbindPopup(); }
+    }
+
+    var lk = m.kind + '|' + (m.label || '');
+    if (mk._lk !== lk) {
+      mk._lk = lk;
+      mk.unbindTooltip();
+      if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
+    }
+
+    mk._spec = { latitude: m.latitude, longitude: m.longitude, kind: m.kind, title: m.title || '', description: m.description || '', label: m.label || '' };
+  }
+
+  function applyAddLine(l) {
+    if (lines[l.id]) return applyUpdateLine(l);
+    var casing = L.polyline(l.coordinates, {
+      color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
+    }).addTo(map);
+    var main = L.polyline(l.coordinates, {
+      color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
+    }).addTo(map);
+    lines[l.id] = { casing: casing, main: main };
+    lines[l.id]._spec = { coordinates: l.coordinates, color: l.color, width: l.width };
+  }
+
+  function applyUpdateLine(l) {
+    var pair = lines[l.id];
+    if (!pair) { applyAddLine(l); return; }
+    var old = pair._spec || {};
+    if (!coordsEqual(old.coordinates, l.coordinates)) {
       pair.casing.setLatLngs(l.coordinates);
       pair.main.setLatLngs(l.coordinates);
-      pair.coordinates = l.coordinates.map(function (p) { return [p[0], p[1]]; });
     }
-    if (pair.width !== l.width) {
+    if (old.width !== l.width) {
       pair.casing.setStyle({ weight: l.width + 4 });
       pair.main.setStyle({ weight: l.width });
-      pair.width = l.width;
     }
-    if (pair.color !== l.color) {
+    if (old.color !== l.color) {
       pair.main.setStyle({ color: l.color });
-      pair.color = l.color;
     }
+    pair._spec = { coordinates: l.coordinates, color: l.color, width: l.width };
   }
 
-  function removeLine(id) {
-    var pair = lines[id];
-    if (!pair) return;
-    map.removeLayer(pair.casing);
-    map.removeLayer(pair.main);
-    delete lines[id];
+  function applyRemoveMarker(id) { removeMarkerById(id); }
+  function applyRemoveLine(id) { removeLineById(id); }
+
+  function applyOperation(op) {
+    if (!op || !op.type) return;
+    try {
+      if (op.type === 'add_marker') applyAddMarker(op.payload);
+      else if (op.type === 'update_marker') applyUpdateMarker(op.payload);
+      else if (op.type === 'remove_marker') applyRemoveMarker(op.payload.id || op.payload);
+      else if (op.type === 'add_line') applyAddLine(op.payload);
+      else if (op.type === 'update_line') applyUpdateLine(op.payload);
+      else if (op.type === 'remove_line') applyRemoveLine(op.payload.id || op.payload);
+      else if (op.type === 'replace_all') {
+        var keep = {};
+        (op.payload.markers || []).forEach(function (m) { applyAddMarker(m); keep[m.id] = true; });
+        Object.keys(markers).forEach(function (id) { if (!keep[id]) removeMarkerById(id); });
+        var keepL = {};
+        (op.payload.lines || []).forEach(function (l) { applyAddLine(l); keepL[l.id] = true; });
+        Object.keys(lines).forEach(function (id) { if (!keepL[id]) removeLineById(id); });
+      } else if (op.type === 'set_style') {
+        setStyle(op.payload);
+      } else if (op.type === 'set_traffic') {
+        setTraffic(!!op.payload);
+      } else if (op.type === 'fit') {
+        window.__fit(op.payload.pts, op.payload.pad, op.payload.maxZoom);
+      } else if (op.type === 'fly') {
+        window.__fly(op.payload.lat, op.payload.lng, op.payload.zoom, op.payload.ms);
+      } else if (op.type === 'hospitals') {
+        window.__hospitals(!!op.payload);
+      }
+    } catch (e) {}
   }
 
-  function applyOperations(operations) {
-    (operations || []).forEach(function (op) {
-      if (op.op === 'upsert_marker') upsertMarker(op.marker);
-      else if (op.op === 'remove_marker') removeMarker(op.id);
-      else if (op.op === 'upsert_line') upsertLine(op.line);
-      else if (op.op === 'remove_line') removeLine(op.id);
-    });
+  function onMessageFromRN(e) {
+    var data = e && e.data ? e.data : e;
+    try {
+      var msg = (typeof data === 'string') ? JSON.parse(data) : data;
+      if (!msg || !msg.type) return;
+      if (msg.type === 'map_update' && Array.isArray(msg.operations)) {
+        msg.operations.forEach(applyOperation);
+      } else if (msg.type === 'initial_sync') {
+        applyOperation({ type: 'replace_all', payload: { markers: msg.markers || [], lines: msg.lines || [] } });
+      } else if (msg.type === 'command') {
+        applyOperation(msg.command);
+      }
+    } catch (err) {}
   }
 
-  window.__snapshot = function (state) {
-    var seenMarkers = Object.create(null);
-    var seenLines = Object.create(null);
-    (state.markers || []).forEach(function (m) { seenMarkers[m.id] = true; upsertMarker(m); });
-    Object.keys(markers).forEach(function (id) { if (!seenMarkers[id]) removeMarker(id); });
-    (state.lines || []).forEach(function (l) { seenLines[l.id] = true; upsertLine(l); });
-    Object.keys(lines).forEach(function (id) { if (!seenLines[id]) removeLine(id); });
+  window.addEventListener('message', onMessageFromRN, false);
+
+  window.__sync = function (state) {
+    try {
+      var ops = [];
+      (state.markers || []).forEach(function (m) { ops.push({ type: 'add_marker', payload: m }); });
+      (state.lines || []).forEach(function (l) { ops.push({ type: 'add_line', payload: l }); });
+      ops.forEach(applyOperation);
+    } catch (e) {}
   };
 
-  var seenNativeMessageIds = Object.create(null);
-  var seenNativeMessageOrder = [];
-  function handleNativeMessage(raw) {
-    var msg = raw;
-    try { if (typeof raw === 'string') msg = JSON.parse(raw); } catch (e) { return; }
-    if (!msg || typeof msg !== 'object') return;
-    if (msg._id != null) {
-      if (seenNativeMessageIds[msg._id]) return;
-      seenNativeMessageIds[msg._id] = true;
-      seenNativeMessageOrder.push(msg._id);
-      while (seenNativeMessageOrder.length > 100) delete seenNativeMessageIds[seenNativeMessageOrder.shift()];
-    }
-    if (msg.type === 'snapshot') window.__snapshot(msg.state || {});
-    else if (msg.type === 'map_ops') applyOperations(msg.operations);
-    else if (msg.type === 'command') {
-      var a = msg.args || {};
-      if (msg.name === 'traffic') setTraffic(!!a.enabled);
-      else if (msg.name === 'style') setStyle(a.style);
-      else if (msg.name === 'hospitals') window.__hospitals(!!a.enabled);
-      else if (msg.name === 'fit') window.__fit(a.points, a.padding, a.maxZoom, a.animated);
-      else if (msg.name === 'fly') window.__fly(a.latitude, a.longitude, a.zoom, a.durationMs);
-    }
-  }
-  // React Native WebView dispatches native messages differently across platforms.
-  document.addEventListener('message', function (e) { handleNativeMessage(e.data); });
-  window.addEventListener('message', function (e) { handleNativeMessage(e.data); });
-
-  /* ---------- nearby hospitals (TomTom Nearby Search, category 7321) ---------- */
-
-  var hospitals = Object.create(null);
+  var hospitals = {};
   var showHosp = INIT.hospitals;
   var lastHosp = null;
-  var hospitalRequest = null;
-  var hospitalCache = Object.create(null);
-  var hospitalCacheOrder = [];
+  var currentHospController = null;
+  var hospitalsCache = {};
+  var HOSP_CACHE_TTL = 1000 * 60 * 2;
 
-  function cachePut(cache, order, key, value, max) {
-    cache[key] = { value: value, time: Date.now() };
-    var idx = order.indexOf(key);
-    if (idx >= 0) order.splice(idx, 1);
-    order.push(key);
-    while (order.length > max) delete cache[order.shift()];
-  }
-  function cacheGet(cache, key, ttl) {
-    var entry = cache[key];
-    if (!entry) return null;
-    if (Date.now() - entry.time > ttl) { delete cache[key]; return null; }
-    return entry.value;
-  }
-  function hospitalKey(c) { return (Math.round(c.lat * 100) / 100) + ':' + (Math.round(c.lng * 100) / 100); }
-
-  function renderHospitals(results) {
-    (results || []).forEach(function (p) {
-      if (!p.poi || !p.position) return;
-      var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
-      var name = p.poi.name || 'Hospital';
-      var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
-      var phone = p.poi.phone || '';
-      if (!hospitals[id]) {
-        var m = L.marker([p.position.lat, p.position.lon], { icon: iconFor('hospital'), zIndexOffset: 100 });
-        m.bindPopup('<b>' + esc(name) + '</b>' + (addr ? '<br>' + esc(addr) : '') + (phone ? '<br>' + esc(phone) : ''));
-        m.bindTooltip(name, tip('hospital'));
-        hospitals[id] = m;
-      }
-      if (showHosp && !map.hasLayer(hospitals[id])) hospitals[id].addTo(map);
-    });
+  function cacheKeyForCenter(c) {
+    return Math.round(c.lat * 100) + ':' + Math.round(c.lng * 100);
   }
 
   function loadHospitals() {
-    if (!showHosp || !KEY || map.getZoom() < 12) return;
+    if (!showHosp || !KEY) return;
+    if (map.getZoom() < 12) return;
+
     var c = map.getCenter();
+    var key = cacheKeyForCenter(c);
     if (lastHosp && map.distance(lastHosp, c) < 1500) return;
-    lastHosp = L.latLng(c.lat, c.lng);
-    var key = hospitalKey(c);
-    var cached = cacheGet(hospitalCache, key, 10 * 60 * 1000);
-    if (cached) { renderHospitals(cached); return; }
-    if (hospitalRequest) hospitalRequest.abort();
-    hospitalRequest = new AbortController();
-    var controller = hospitalRequest;
-    fetch('https://api.tomtom.com/search/2/nearbySearch/.json?lat=' + c.lat + '&lon=' + c.lng + '&radius=6000&limit=15&categorySet=7321&key=' + KEY, { signal: controller.signal })
+
+    var cached = hospitalsCache[key];
+    var now = Date.now();
+    if (cached && (now - cached.ts) < HOSP_CACHE_TTL) {
+      (cached.results || []).forEach(function (p) {
+        var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
+        if (hospitals[id]) return;
+        var name = p.poi.name || 'Hospital';
+        var m = L.marker([p.position.lat, p.position.lon], { icon: getIcon('hospital'), zIndexOffset: 100 });
+        m.bindPopup('<b>' + esc(name) + '</b>');
+        m.bindTooltip(name, tip('hospital'));
+        if (showHosp) m.addTo(map);
+        hospitals[id] = m;
+      });
+      lastHosp = c;
+      return;
+    }
+
+    if (currentHospController) { try { currentHospController.abort(); } catch (e) {} }
+    currentHospController = new AbortController();
+    fetch(
+      'https://api.tomtom.com/search/2/nearbySearch/.json?lat=' + c.lat + '&lon=' + c.lng +
+        '&radius=6000&limit=15&categorySet=7321&key=' + KEY,
+      { signal: currentHospController.signal }
+    )
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
-        if (controller !== hospitalRequest) return;
         if (!j || !j.results) { lastHosp = null; return; }
-        cachePut(hospitalCache, hospitalCacheOrder, key, j.results, 24);
-        renderHospitals(j.results);
+        hospitalsCache[key] = { ts: Date.now(), results: j.results };
+        j.results.forEach(function (p) {
+          if (!p.poi || !p.position) return;
+          var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
+          if (hospitals[id]) return;
+          var name = p.poi.name || 'Hospital';
+          var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
+          var phone = p.poi.phone ? p.poi.phone : '';
+
+          var m = L.marker([p.position.lat, p.position.lon], { icon: getIcon('hospital'), zIndexOffset: 100 });
+          m.bindPopup(
+            '<b>' + esc(name) + '</b>' +
+            (addr ? '<br>' + esc(addr) : '') +
+            (phone ? '<br>' + esc(phone) : '')
+          );
+          m.bindTooltip(name, tip('hospital'));
+          if (showHosp) m.addTo(map);
+          hospitals[id] = m;
+        });
+        lastHosp = c;
       })
-      .catch(function (e) { if (e && e.name !== 'AbortError' && controller === hospitalRequest) lastHosp = null; })
-      .then(function () { if (controller === hospitalRequest) hospitalRequest = null; });
+      .catch(function () { lastHosp = null; })
+      .finally(function () { currentHospController = null; });
   }
 
   window.__hospitals = function (on) {
@@ -479,55 +512,62 @@ const PAGE = `<!doctype html>
     if (showHosp) loadHospitals();
   };
 
-  /* ---------- road name at the map centre (TomTom Reverse Geocode) ---------- */
-
   var lastStreet = null;
-  var streetRequest = null;
-  var streetCache = Object.create(null);
-  var streetCacheOrder = [];
+  var currentStreetController = null;
+  var streetCache = {};
+  var STREET_CACHE_TTL = 1000 * 60 * 2;
+
+  function cacheKeyForStreet(c) {
+    return Math.round(c.lat * 100) + ':' + Math.round(c.lng * 100);
+  }
 
   function loadStreet() {
     if (!INIT.street || !KEY) return;
+
     if (map.getZoom() < 14) {
-      if (streetRequest) { streetRequest.abort(); streetRequest = null; }
       lastStreet = null;
       post({ type: 'street', name: '' });
       return;
     }
+
     var c = map.getCenter();
-    if (lastStreet && map.distance(lastStreet, c) < 40) return;
-    lastStreet = L.latLng(c.lat, c.lng);
-    var key = Math.round(c.lat * 10000) + ':' + Math.round(c.lng * 10000);
-    var cached = cacheGet(streetCache, key, 15 * 60 * 1000);
-    if (cached !== null) { post({ type: 'street', name: cached }); return; }
-    if (streetRequest) streetRequest.abort();
-    streetRequest = new AbortController();
-    var controller = streetRequest;
-    fetch('https://api.tomtom.com/search/2/reverseGeocode/' + c.lat + ',' + c.lng + '.json?radius=150&key=' + KEY, { signal: controller.signal })
+    var key = cacheKeyForStreet(c);
+    var cached = streetCache[key];
+    var now = Date.now();
+    if (cached && (now - cached.ts) < STREET_CACHE_TTL) {
+      post({ type: 'street', name: cached.name });
+      lastStreet = c;
+      return;
+    }
+
+    if (currentStreetController) { try { currentStreetController.abort(); } catch (e) {} }
+    currentStreetController = new AbortController();
+    fetch(
+      'https://api.tomtom.com/search/2/reverseGeocode/' + c.lat + ',' + c.lng +
+        '.json?radius=150&key=' + KEY,
+      { signal: currentStreetController.signal }
+    )
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
-        if (controller !== streetRequest) return;
         var a = j && j.addresses && j.addresses[0] && j.addresses[0].address;
         if (!a) return;
+
         var road = a.streetName || '';
         var area = a.municipalitySubdivision || a.municipality || '';
-        var name = road ? (area ? road + ' \\u00B7 ' + area : road) : area;
-        cachePut(streetCache, streetCacheOrder, key, name, 60);
+        var name = road ? (area ? road + ' \u00B7 ' + area : road) : area;
+        streetCache[key] = { ts: Date.now(), name: name };
         post({ type: 'street', name: name });
       })
-      .catch(function (e) { if (e && e.name !== 'AbortError' && controller === streetRequest) lastStreet = null; })
-      .then(function () { if (controller === streetRequest) streetRequest = null; });
+      .catch(function () { lastStreet = null; });
   }
 
-  /* ---------- camera ---------- */
-
-  window.__fit = function (pts, pad, maxZoom, animated) {
+  window.__fit = function (pts, pad, maxZoom) {
     if (!pts || !pts.length) return;
     map.fitBounds(L.latLngBounds(pts), {
       paddingTopLeft: [pad.left, pad.top],
       paddingBottomRight: [pad.right, pad.bottom],
       maxZoom: maxZoom || 18,
-      animate: animated !== false && pts.length < 100
+      animate: true
     });
   };
 
@@ -538,12 +578,10 @@ const PAGE = `<!doctype html>
   window.__traffic = setTraffic;
   window.__style = setStyle;
 
-  /* ---------- events ---------- */
-
   var idleTimer = null;
 
   function onIdle() {
-    mapEl.classList.toggle('zlow', map.getZoom() < 14);   // hide name labels when zoomed far out
+    mapEl.classList.toggle('zlow', map.getZoom() < 14);
     clearTimeout(idleTimer);
     idleTimer = setTimeout(function () {
       loadHospitals();
@@ -570,7 +608,6 @@ const PAGE = `<!doctype html>
 </html>`;
 
 function safeJson(value: unknown): string {
-  // JSON is valid JavaScript except for the U+2028 / U+2029 separators.
   return JSON.stringify(value)
     .split(String.fromCharCode(0x2028))
     .join("\\u2028")
@@ -629,12 +666,15 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
 
   const webRef = useRef<React.ComponentRef<typeof WebView>>(null);
   const readyRef = useRef(false);
+  const queuedOpsRef = useRef(new Map<string, unknown>());
   const markersRef = useRef(new Map<string, MarkerSpec>());
   const linesRef = useRef(new Map<string, LineSpec>());
-  const pendingOpsRef = useRef(new Map<string, Record<string, unknown>>());
-  const commandQueueRef = useRef<Array<{ type: string; name: string; args: Record<string, unknown> }>>([]);
+  const lastSentMarkersRef = useRef(new Map<string, MarkerSpec>());
+  const lastSentLinesRef = useRef(new Map<string, LineSpec>());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [street, setStreet] = useState("");
+
   const propsRef = useRef(props);
   propsRef.current = props;
 
@@ -646,146 +686,251 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     street: showStreetName,
     boost: props.zoomBoost ?? DEFAULT_ZOOM_BOOST,
   });
-  const html = useMemo(() => buildHtml(initialRef.current.region, {
-    traffic: initialRef.current.traffic,
-    style: initialRef.current.style,
-    hospitals: initialRef.current.hospitals,
-    street: initialRef.current.street,
-    boost: initialRef.current.boost,
-  }), []);
 
-  const messageIdRef = useRef(0);
-  const postNativeMessage = useCallback((message: Record<string, unknown>) => {
+  const html = useMemo(
+    () =>
+      buildHtml(initialRef.current.region, {
+        traffic: initialRef.current.traffic,
+        style: initialRef.current.style,
+        hospitals: initialRef.current.hospitals,
+        street: initialRef.current.street,
+        boost: initialRef.current.boost,
+      }),
+    []
+  );
+
+  const postMessageToWeb = useCallback((message: unknown) => {
     try {
-      const envelope = { ...message, _id: ++messageIdRef.current };
-      webRef.current?.postMessage(JSON.stringify(envelope));
-    } catch {
-      // A WebView may be between processes; the next ready event sends a fresh snapshot.
+      webRef.current?.postMessage(JSON.stringify(message));
+    } catch (e) {
+      // ignore
     }
   }, []);
 
-  const sendCommand = useCallback((name: string, args: Record<string, unknown>, coalesce = true) => {
-    if (!readyRef.current) {
-      if (coalesce) {
-        commandQueueRef.current = commandQueueRef.current.filter((item) => item.name !== name);
+  const markerEqual = useCallback((a?: MarkerSpec, b?: MarkerSpec) => {
+    if (!a || !b) return false;
+    return (
+      a.latitude === b.latitude &&
+      a.longitude === b.longitude &&
+      a.kind === b.kind &&
+      (a.title ?? "") === (b.title ?? "") &&
+      (a.description ?? "") === (b.description ?? "") &&
+      (a.label ?? "") === (b.label ?? "")
+    );
+  }, []);
+
+  const lineEqual = useCallback((a?: LineSpec, b?: LineSpec) => {
+    if (!a || !b) return false;
+    if (a.color !== b.color || a.width !== b.width) return false;
+    if (!a.coordinates || !b.coordinates || a.coordinates.length !== b.coordinates.length) return false;
+    for (let i = 0; i < a.coordinates.length; i++) {
+      if (a.coordinates[i][0] !== b.coordinates[i][0] || a.coordinates[i][1] !== b.coordinates[i][1]) {
+        return false;
       }
-      commandQueueRef.current.push({ type: "command", name, args });
-      if (commandQueueRef.current.length > 50) commandQueueRef.current.splice(0, commandQueueRef.current.length - 50);
-      return;
     }
-    postNativeMessage({ type: "command", name, args });
-  }, [postNativeMessage]);
+    return true;
+  }, []);
 
-  const flushOperations = useCallback(() => {
-    timerRef.current = null;
-    if (!readyRef.current || pendingOpsRef.current.size === 0) return;
-    const operations = Array.from(pendingOpsRef.current.values());
-    pendingOpsRef.current.clear();
-    postNativeMessage({ type: "map_ops", operations });
-  }, [postNativeMessage]);
+  const enqueueOp = useCallback((key: string, op: unknown) => {
+    const q = queuedOpsRef.current;
+    q.set(key, op);
+    if (q.size > 500) {
+      const firstKey = q.keys().next().value as string | undefined;
+      if (firstKey) q.delete(firstKey);
+    }
+  }, []);
 
-  const scheduleFlush = useCallback(() => {
+  const flushQueuedOps = useCallback(() => {
+    if (!readyRef.current || queuedOpsRef.current.size === 0) return;
+    const ops = Array.from(queuedOpsRef.current.values()) as Array<unknown>;
+    queuedOpsRef.current.clear();
+    if (ops.length) postMessageToWeb({ type: "map_update", operations: ops });
+  }, [postMessageToWeb]);
+
+  const scheduleSync = useCallback(() => {
     if (timerRef.current) return;
-    timerRef.current = setTimeout(flushOperations, 16);
-  }, [flushOperations]);
-
-  const queueOperation = useCallback((key: string, operation: Record<string, unknown>) => {
-    // Coalesce repeated changes to the same entity while the 16ms batch is pending.
-    pendingOpsRef.current.set(key, operation);
-    scheduleFlush();
-  }, [scheduleFlush]);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      if (readyRef.current) flushQueuedOps();
+    }, 16);
+  }, [flushQueuedOps]);
 
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = null;
-    pendingOpsRef.current.clear();
-    commandQueueRef.current = [];
   }, []);
 
-  const sameMarker = (a: MarkerSpec | undefined, b: MarkerSpec) => !!a && a.id === b.id && a.kind === b.kind && a.latitude === b.latitude && a.longitude === b.longitude && a.title === b.title && a.description === b.description && a.label === b.label;
-  const sameLine = (a: LineSpec | undefined, b: LineSpec) => {
-    if (!a || a.id !== b.id || a.color !== b.color || a.width !== b.width || a.coordinates.length !== b.coordinates.length) return false;
-    return a.coordinates.every((point, i) => point[0] === b.coordinates[i]?.[0] && point[1] === b.coordinates[i]?.[1]);
-  };
+  const context = useMemo<MapContextValue>(
+    () => ({
+      setMarker: (spec) => {
+        const prev = markersRef.current.get(spec.id);
+        markersRef.current.set(spec.id, spec);
 
-  const context = useMemo<MapContextValue>(() => ({
-    setMarker: (spec) => {
-      const previous = markersRef.current.get(spec.id);
-      if (sameMarker(previous, spec)) return;
-      markersRef.current.set(spec.id, spec);
-      queueOperation("marker:" + spec.id, { op: "upsert_marker", marker: spec });
-    },
-    removeMarker: (id) => {
-      if (!markersRef.current.has(id)) return;
-      markersRef.current.delete(id);
-      queueOperation("marker:" + id, { op: "remove_marker", id });
-    },
-    setLine: (spec) => {
-      const previous = linesRef.current.get(spec.id);
-      if (sameLine(previous, spec)) return;
-      linesRef.current.set(spec.id, spec);
-      queueOperation("line:" + spec.id, { op: "upsert_line", line: spec });
-    },
-    removeLine: (id) => {
-      if (!linesRef.current.has(id)) return;
-      linesRef.current.delete(id);
-      queueOperation("line:" + id, { op: "remove_line", id });
-    },
-  }), [queueOperation]);
+        const previous = lastSentMarkersRef.current.get(spec.id);
+        if (previous && markerEqual(previous, spec)) return;
 
-  useEffect(() => { sendCommand("traffic", { enabled: showTraffic }); }, [showTraffic, sendCommand]);
-  useEffect(() => { sendCommand("style", { style: mapStyle }); }, [mapStyle, sendCommand]);
-  useEffect(() => { sendCommand("hospitals", { enabled: showHospitals }); }, [showHospitals, sendCommand]);
+        const op = previous
+          ? { type: "update_marker", payload: spec }
+          : { type: "add_marker", payload: spec };
 
-  useImperativeHandle(ref, () => ({
-    fitToCoordinates: (coordinates, options) => {
-      if (!coordinates || coordinates.length === 0) return;
-      const padding = options?.edgePadding ?? { top: 40, right: 40, bottom: 40, left: 40 };
-      sendCommand("fit", {
-        points: coordinates.map((c) => [c.latitude, c.longitude]),
-        padding,
-        maxZoom: 18,
-        animated: options?.animated ?? true,
-      }, false);
-    },
-    animateToRegion: (region, durationMs = 600) => {
-      const boost = propsRef.current.zoomBoost ?? DEFAULT_ZOOM_BOOST;
-      sendCommand("fly", {
-        latitude: region.latitude,
-        longitude: region.longitude,
-        zoom: zoomFor(region.latitudeDelta, boost),
-        durationMs,
-      }, false);
-    },
-  }), [sendCommand]);
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [op] });
+          lastSentMarkersRef.current.set(spec.id, spec);
+        } else {
+          enqueueOp(`marker:${spec.id}`, op);
+        }
+        scheduleSync();
+      },
+      removeMarker: (id) => {
+        markersRef.current.delete(id);
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [{ type: "remove_marker", payload: { id } }] });
+          lastSentMarkersRef.current.delete(id);
+        } else {
+          enqueueOp(`marker:${id}`, { type: "remove_marker", payload: { id } });
+        }
+        scheduleSync();
+      },
+      setLine: (spec) => {
+        const prev = linesRef.current.get(spec.id);
+        linesRef.current.set(spec.id, spec);
 
-  const onMessage = useCallback((event: WebViewMessageEvent) => {
-    let message: { type?: string; active?: boolean; name?: string };
-    try { message = JSON.parse(event.nativeEvent.data); } catch { return; }
+        const previous = lastSentLinesRef.current.get(spec.id);
+        if (previous && lineEqual(previous, spec)) return;
 
-    if (message.type === "ready") {
-      readyRef.current = true;
-      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-      pendingOpsRef.current.clear();
-      postNativeMessage({
-        type: "snapshot",
-        state: {
-          markers: Array.from(markersRef.current.values()),
-          lines: Array.from(linesRef.current.values()),
-        },
-      });
-      const queued = commandQueueRef.current;
-      commandQueueRef.current = [];
-      queued.forEach((command) => postNativeMessage(command));
-      propsRef.current.onMapReady?.();
-    } else if (message.type === "drag") {
-      propsRef.current.onPanDrag?.();
-    } else if (message.type === "touch") {
-      propsRef.current.onInteractionChange?.(!!message.active);
-    } else if (message.type === "street") {
-      setStreet(message.name ?? "");
+        const op = previous
+          ? { type: "update_line", payload: spec }
+          : { type: "add_line", payload: spec };
+
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [op] });
+          lastSentLinesRef.current.set(spec.id, spec);
+        } else {
+          enqueueOp(`line:${spec.id}`, op);
+        }
+        scheduleSync();
+      },
+      removeLine: (id) => {
+        linesRef.current.delete(id);
+        if (readyRef.current) {
+          postMessageToWeb({ type: "map_update", operations: [{ type: "remove_line", payload: { id } }] });
+          lastSentLinesRef.current.delete(id);
+        } else {
+          enqueueOp(`line:${id}`, { type: "remove_line", payload: { id } });
+        }
+        scheduleSync();
+      },
+    }),
+    [enqueueOp, lineEqual, markerEqual, postMessageToWeb, scheduleSync]
+  );
+
+  useEffect(() => {
+    const op = { type: "set_traffic", payload: showTraffic };
+    if (readyRef.current) {
+      postMessageToWeb({ type: "map_update", operations: [op] });
+    } else {
+      enqueueOp("command:traffic", op);
     }
-  }, [postNativeMessage]);
+  }, [enqueueOp, postMessageToWeb, showTraffic]);
+
+  useEffect(() => {
+    const op = { type: "set_style", payload: mapStyle };
+    if (readyRef.current) {
+      postMessageToWeb({ type: "map_update", operations: [op] });
+    } else {
+      enqueueOp("command:style", op);
+    }
+  }, [enqueueOp, mapStyle, postMessageToWeb]);
+
+  useEffect(() => {
+    const op = { type: "hospitals", payload: !!showHospitals };
+    if (readyRef.current) {
+      postMessageToWeb({ type: "map_update", operations: [op] });
+    } else {
+      enqueueOp("command:hospitals", op);
+    }
+  }, [enqueueOp, postMessageToWeb, showHospitals]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      fitToCoordinates: (coordinates, options) => {
+        if (!coordinates || coordinates.length === 0) return;
+
+        const padding = options?.edgePadding ?? {
+          top: 40,
+          right: 40,
+          bottom: 40,
+          left: 40,
+        };
+
+        const op = {
+          type: "fit",
+          payload: {
+            pts: coordinates.map((c) => [c.latitude, c.longitude]),
+            pad: padding,
+            maxZoom: 18,
+          },
+        };
+
+        if (readyRef.current) {
+          postMessageToWeb({ type: "command", command: op });
+        } else {
+          enqueueOp("command:fit", op);
+        }
+      },
+      animateToRegion: (region, durationMs = 600) => {
+        const boost = propsRef.current.zoomBoost ?? DEFAULT_ZOOM_BOOST;
+        const op = {
+          type: "fly",
+          payload: {
+            lat: region.latitude,
+            lng: region.longitude,
+            zoom: zoomFor(region.latitudeDelta, boost),
+            ms: durationMs,
+          },
+        };
+
+        if (readyRef.current) {
+          postMessageToWeb({ type: "command", command: op });
+        } else {
+          enqueueOp("command:fly", op);
+        }
+      },
+    }),
+    [enqueueOp, postMessageToWeb]
+  );
+
+  const onMessage = useCallback(
+    (event: WebViewMessageEvent) => {
+      let message: { type?: string; active?: boolean; name?: string } | null = null;
+
+      try {
+        message = JSON.parse(event.nativeEvent.data);
+      } catch {
+        return;
+      }
+
+      if (message?.type === "ready") {
+        readyRef.current = true;
+
+        const markers = Array.from(markersRef.current.values());
+        const lines = Array.from(linesRef.current.values());
+        postMessageToWeb({ type: "initial_sync", markers, lines });
+        lastSentMarkersRef.current = new Map(markers.map((m) => [m.id, m]));
+        lastSentLinesRef.current = new Map(lines.map((l) => [l.id, l]));
+
+        flushQueuedOps();
+        propsRef.current.onMapReady?.();
+      } else if (message?.type === "drag") {
+        propsRef.current.onPanDrag?.();
+      } else if (message?.type === "touch") {
+        propsRef.current.onInteractionChange?.(!!message.active);
+      } else if (message?.type === "street") {
+        setStreet(message.name ?? "");
+      }
+    },
+    [flushQueuedOps, postMessageToWeb]
+  );
 
   const recover = useCallback(() => {
     readyRef.current = false;
