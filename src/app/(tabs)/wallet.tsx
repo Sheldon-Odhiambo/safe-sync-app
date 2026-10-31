@@ -76,7 +76,7 @@ type PaymentProfile = {
   organization_type?: "client" | "service_provider" | null;
   is_super_admin: boolean;
   first_deposit_required: boolean;
-  first_deposit_amount: number;
+  first_deposit_amount: number; // the MINIMUM for a first deposit
   min_topup: number;
   max_deposit: number;
   methods?: Method[];
@@ -441,6 +441,14 @@ export default function Wallet() {
   const canPaySubscription = isOrganisation && !!profile?.is_super_admin;
   const firstDeposit = !!profile?.first_deposit_required;
 
+  // The lowest amount the user may deposit right now. A first deposit has its own
+  // minimum; any amount at or above the minimum (up to the maximum) is allowed.
+  const minDeposit = profile
+    ? firstDeposit
+      ? profile.first_deposit_amount
+      : profile.min_topup
+    : 0;
+
   // Organisations pay by bank card only; public users choose.
   const activeMethod: Method = isOrganisation ? "card" : method;
 
@@ -450,7 +458,7 @@ export default function Wallet() {
     if (!profile || !isPublic || prefilled.current || !neededParam) return;
     prefilled.current = true;
     const value = profile.first_deposit_required
-      ? profile.first_deposit_amount
+      ? Math.max(neededParam, profile.first_deposit_amount)
       : Math.max(neededParam, profile.min_topup);
     setAmount(String(value));
   }, [profile, isPublic, neededParam]);
@@ -486,17 +494,16 @@ export default function Wallet() {
   const amountError = useMemo(() => {
     if (!parsedAmount || !profile) return null;
 
-    if (firstDeposit && parsedAmount !== profile.first_deposit_amount) {
-      return `Your first deposit must be exactly KSh ${profile.first_deposit_amount}.`;
-    }
-    if (!firstDeposit && parsedAmount < profile.min_topup) {
-      return `Minimum deposit is KSh ${profile.min_topup}.`;
+    if (parsedAmount < minDeposit) {
+      return firstDeposit
+        ? `Your first minimum deposit is KSh ${minDeposit.toLocaleString("en-KE")}.`
+        : `Minimum deposit is KSh ${minDeposit.toLocaleString("en-KE")}.`;
     }
     if (parsedAmount > profile.max_deposit) {
       return `Maximum deposit is KSh ${profile.max_deposit.toLocaleString("en-KE")}.`;
     }
     return null;
-  }, [parsedAmount, firstDeposit, profile]);
+  }, [parsedAmount, firstDeposit, minDeposit, profile]);
 
   const selectedPlan = useMemo(
     () => plans.find((plan) => plan.code === selectedPlanCode) || null,
@@ -552,6 +559,9 @@ export default function Wallet() {
   const visibleRows = showAll ? rows : rows.slice(0, COLLAPSED_ROWS);
   const canExpand = rows.length > COLLAPSED_ROWS || hasMore;
 
+  // Quick amounts below the minimum are hidden.
+  const quickAmounts = QUICK_AMOUNTS.filter((value) => value >= minDeposit);
+
   /*
    * LOAD DATA
    */
@@ -599,7 +609,7 @@ export default function Wallet() {
       setProfileLoaded(true);
       setLoadError(null);
 
-      // The first deposit has one fixed amount: prefill it.
+      // Start the field at the first-deposit minimum; the user can raise it.
       if (profileData.first_deposit_required) {
         setAmount((current) => current || String(profileData.first_deposit_amount));
       }
@@ -981,7 +991,7 @@ export default function Wallet() {
 
     const started = await submitPayment("/deposit", body, "deposit", parsedAmount);
 
-    if (started && !firstDeposit) setAmount("");
+    if (started) setAmount("");
   };
 
   /*
@@ -1064,7 +1074,7 @@ export default function Wallet() {
 
       <Text style={styles.securityText}>
         {activeMethod === "mpesa"
-          ? "You'll get an M-Pesa prompt on your phone. Enter your M-Pesa PIN there; SafeSync never sees it."
+          ? "Enter your M-Pesa PIN on your phone to authorize payment."
           : "Your card details are securely processed. SafeSync never stores your card number, CVV or PIN."}
       </Text>
     </View>
@@ -1567,7 +1577,7 @@ export default function Wallet() {
                   ? isClientOrg
                     ? "Keep your organisation subscribed so all your branches stay connected to SafeSync."
                     : "Keep your organisation subscribed so your responders stay active."
-                  : "Keep funds available so emergency dispatch is never delayed by payment."}
+                  : "Keep funds available to ensure emergency dispatch is never delayed by payment."}
               </Text>
             </View>
 
@@ -1645,7 +1655,10 @@ export default function Wallet() {
                   <Text style={styles.neededBannerText}>
                     Your wallet is short by KSh {neededParam.toLocaleString("en-KE")}. Top up
                     {profile?.first_deposit_required
-                      ? ` KSh ${profile.first_deposit_amount}`
+                      ? ` at least KSh ${Math.max(
+                          neededParam,
+                          profile.first_deposit_amount
+                        ).toLocaleString("en-KE")}`
                       : " the amount below"}{" "}
                     to request help.
                   </Text>
@@ -1675,7 +1688,9 @@ export default function Wallet() {
 
                     <Text style={styles.panelSubtitle}>
                       {firstDeposit && profile
-                        ? `Your first deposit is KSh ${profile.first_deposit_amount}.`
+                        ? `Your first minimum deposit is KSh ${profile.first_deposit_amount.toLocaleString(
+                            "en-KE"
+                          )}. You can deposit more if you like.`
                         : "Top up your wallet with M-Pesa or your bank card."}
                     </Text>
                   </View>
@@ -1694,22 +1709,24 @@ export default function Wallet() {
                         style={styles.input}
                         value={amount}
                         onChangeText={(value) => setAmount(value.replace(/[^0-9]/g, ""))}
-                        placeholder="Enter amount"
+                        placeholder={
+                          minDeposit ? `Minimum ${minDeposit.toLocaleString("en-KE")}` : "Enter amount"
+                        }
                         placeholderTextColor="#94A3B8"
                         keyboardType="number-pad"
-                        editable={!busy && !pending && !(firstDeposit && !!amount)}
+                        editable={!busy && !pending}
                       />
                     </View>
 
                     {!!amountError && <Text style={styles.inputError}>{amountError}</Text>}
                   </View>
 
-                  {!firstDeposit && (
+                  {quickAmounts.length > 0 && (
                     <View>
                       <Text style={styles.quickAmountLabel}>QUICK AMOUNTS</Text>
 
                       <View style={styles.quickAmountGrid}>
-                        {QUICK_AMOUNTS.map((value) => {
+                        {quickAmounts.map((value) => {
                           const selected = parsedAmount === value;
 
                           return (
@@ -1777,7 +1794,7 @@ export default function Wallet() {
 
                   <Text style={styles.infoText}>
                     Pay with an M-Pesa prompt or your bank card. Your wallet is credited only after
-                    the payment has been confirmed, never before.
+                    the payment has been confirmed.
                   </Text>
                 </View>
               </View>

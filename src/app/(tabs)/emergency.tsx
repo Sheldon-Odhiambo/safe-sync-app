@@ -14,12 +14,12 @@ import {
   View,
 } from "react-native";
 
-import { useEmergencyBar } from "../../components/emergency-bar-context";
-import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
 import {
   ensureLocationAccess,
   promptLocationSettings,
 } from "@/lib/location-access";
+import { apiFetchLogged as apiFetch } from "@/lib/logged-api";
+import { useEmergencyBar } from "../../components/emergency-bar-context";
 
 type Coordinates = { latitude: number; longitude: number };
 
@@ -185,19 +185,18 @@ export default function EmergencyRequest() {
         : "";
 
     Alert.alert(
-      "Top up your wallet",
-      `Estimated cost is KSh ${Math.ceil(quote.fare).toLocaleString("en-KE")} and your ` +
-        `wallet has KSh ${Math.floor(quote.available).toLocaleString("en-KE")}. ` +
-        `Please add KSh ${shortfall.toLocaleString("en-KE")} to request help. ` +
-        `Nothing has been sent to responders yet.${debtLine}`,
+      "🚨 Critical: Insufficient Funds",
+      `Your emergency dispatch is on hold. Your wallet only has KSh ${Math.floor(quote.available).toLocaleString("en-KE")}.\n\n` +
+        `**Add KSh 500 immediately** to secure your responder and request urgent help. No rescue unit can be dispatched until this is covered.${debtLine}`,
       [
-        { text: "Not now", style: "cancel" },
+        { text: "Cancel", style: "cancel" },
         {
-          text: `Top up KSh ${shortfall.toLocaleString("en-KE")}`,
+          text: "Top Up KSh 500 Now",
+          style: "destructive",
           onPress: () =>
             router.push({
               pathname: "/(tabs)/wallet",
-              params: { needed: String(shortfall), returnTo: "emergency" },
+              params: { needed: "500", returnTo: "emergency" },
             }),
         },
       ]
@@ -279,7 +278,7 @@ export default function EmergencyRequest() {
 
       Alert.alert(
         "Couldn't send emergency",
-        err instanceof Error ? err.message : "Please try again."
+        "All responder's are busy. Try again"
       );
     } finally {
       setSubmitting(false);

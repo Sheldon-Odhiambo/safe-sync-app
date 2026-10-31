@@ -35,6 +35,18 @@ export type MarkerKind =
 
 export type TomTomMapStyle = "day" | "night" | "satellite";
 
+/**
+ * Colour tint laid over the map tiles (markers, routes and traffic keep their own colours).
+ * classic = TomTom's original colours.
+ */
+export type TomTomMapTheme =
+  | "classic"
+  | "ocean"
+  | "forest"
+  | "sunset"
+  | "rose"
+  | "mono";
+
 type MarkerSpec = {
   id: string;
   kind: MarkerKind;
@@ -65,9 +77,20 @@ type Padding = { top: number; right: number; bottom: number; left: number };
 export type TomTomMapHandle = {
   fitToCoordinates: (
     coordinates: LatLng[],
-    options?: { edgePadding?: Padding; animated?: boolean }
+    options?: {
+      edgePadding?: Padding;
+      animated?: boolean;
+      /** Keep cached hospitals / street name. Default false (refresh them). */
+      keepCache?: boolean;
+    }
   ) => void;
-  animateToRegion: (region: Region, durationMs?: number) => void;
+  animateToRegion: (
+    region: Region,
+    durationMs?: number,
+    options?: { keepCache?: boolean }
+  ) => void;
+  /** Drop cached hospitals / street name and reload them for the current view. */
+  refreshLocationData: () => void;
 };
 
 type Props = {
@@ -76,6 +99,8 @@ type Props = {
   showTraffic?: boolean;
   /** day (default), night or satellite. Can change at any time. */
   mapStyle?: TomTomMapStyle;
+  /** Colour tint for the map: classic (default), ocean, forest, sunset, rose, mono. */
+  theme?: TomTomMapTheme;
   /**
    * Extra zoom levels added to the region's zoom. Default 1 (about twice as close).
    * Applies to the initial view and animateToRegion, not fitToCoordinates.
@@ -117,31 +142,65 @@ const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
-  html, body, #map { height: 100%; margin: 0; padding: 0; background: #E2E8F0; }
+  :root {
+    --ink: #0F172A;
+    --card: rgba(255,255,255,.97);
+    --card-line: rgba(15,23,42,.08);
+    --muted: #64748B;
+    --shadow: 0 6px 20px rgba(15,23,42,.22);
+  }
+  body.dark {
+    --ink: #F1F5F9;
+    --card: rgba(30,41,59,.96);
+    --card-line: rgba(255,255,255,.10);
+    --muted: #94A3B8;
+    --shadow: 0 6px 20px rgba(0,0,0,.55);
+  }
+
+  html, body, #map { height: 100%; margin: 0; padding: 0; background: #E8EDF3; }
   #map.dark { background: #1E293B; }
-  .leaflet-container { font-family: -apple-system, Roboto, sans-serif; }
-  .leaflet-control-attribution { font-size: 9px; }
+  .leaflet-tile-pane { transition: filter .5s ease; }
+  .leaflet-container { font-family: -apple-system, "SF Pro Text", Roboto, "Segoe UI", sans-serif; -webkit-tap-highlight-color: transparent; }
+
+  /* Attribution: tiny frosted pill */
+  .leaflet-control-attribution { font-size: 9px; color: var(--muted); background: var(--card) !important;
+            border-radius: 8px 0 0 0; padding: 1px 6px; box-shadow: none; }
+  .leaflet-control-attribution a { color: var(--muted); }
+
+  /* Markers fade in instead of popping */
+  .leaflet-marker-icon > div { animation: fi .28s ease-out both; }
+  @keyframes fi { from { opacity: 0; } to { opacity: 1; } }
+
   .mk { position: relative; display: flex; align-items: center; justify-content: center; }
   .circle { position: relative; z-index: 1; box-sizing: border-box; border-radius: 50%; border: 3px solid #fff; background: #DC2626;
-            box-shadow: 0 2px 5px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; }
+            box-shadow: 0 3px 8px rgba(15,23,42,.35), 0 0 0 1px rgba(15,23,42,.06);
+            display: flex; align-items: center; justify-content: center; }
 
   /* Signal rings: the element's width/height is the FINAL ring diameter.
      Two rings run staggered so the signal keeps spreading outward. */
   .pulse { position: absolute; left: 50%; top: 50%; border-radius: 50%; pointer-events: none;
            transform: translate(-50%, -50%) scale(.15); opacity: 0;
-           animation: p 2.6s ease-out infinite; }
-  .pulse.b { animation-delay: 1.3s; }
+           animation: p 2.8s cubic-bezier(.2,.6,.3,1) infinite; }
+  .pulse.b { animation-delay: 1.4s; }
   @keyframes p {
-    0%   { transform: translate(-50%, -50%) scale(.15); opacity: .85; }
+    0%   { transform: translate(-50%, -50%) scale(.15); opacity: .9; }
+    70%  { opacity: .25; }
     100% { transform: translate(-50%, -50%) scale(1);   opacity: 0; }
   }
 
-  .leaflet-popup-content-wrapper { border-radius: 12px; box-shadow: 0 4px 14px rgba(15,23,42,.25); }
-  .leaflet-popup-content { margin: 10px 12px; font-size: 12px; line-height: 17px; color: #0F172A; }
+  /* Popups: floating rounded card */
+  .leaflet-popup-content-wrapper { background: var(--card); color: var(--ink); border-radius: 16px;
+            box-shadow: var(--shadow); border: 1px solid var(--card-line); }
+  .leaflet-popup-tip { background: var(--card); box-shadow: none; }
+  .leaflet-popup-content { margin: 12px 14px; font-size: 12px; line-height: 17px; color: var(--ink); }
+  .leaflet-container a.leaflet-popup-close-button { color: var(--muted); top: 6px; right: 6px; }
+  .pop-t { font-size: 13px; font-weight: 800; letter-spacing: -.1px; }
+  .pop-s { margin-top: 3px; color: var(--muted); font-weight: 500; }
 
-  .leaflet-tooltip.lbl { background: rgba(255,255,255,.96); border: 0; border-radius: 8px; color: #0F172A;
-            box-shadow: 0 1px 4px rgba(15,23,42,.3); font-size: 10px; font-weight: 700; padding: 2px 7px;
-            max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Labels: small pill under each marker */
+  .leaflet-tooltip.lbl { background: var(--card); border: 1px solid var(--card-line); border-radius: 999px; color: var(--ink);
+            box-shadow: 0 2px 8px rgba(15,23,42,.22); font-size: 10px; font-weight: 800; letter-spacing: .1px;
+            padding: 3px 9px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .leaflet-tooltip.lbl:before { display: none; }
   .zlow .leaflet-tooltip.lbl { display: none; }
 </style>
@@ -168,6 +227,44 @@ const PAGE = `<!doctype html>
 
   map.attributionControl.setPrefix(false);
 
+  /* Traffic lives in its own pane so the theme tint never recolours it. */
+  map.createPane('traffic');
+  map.getPane('traffic').style.zIndex = 250;
+  map.getPane('traffic').style.pointerEvents = 'none';
+
+  var markers = {};
+  var lines = {};
+
+  /* ---------- colour themes (a tint over the base tiles only) ----------
+     tint(hue, strength, saturation): sepia gives a warm base, hue-rotate swings it
+     to the target hue (sepia sits at ~35deg). Tweak these numbers to taste. */
+  function tint(h, s, sat) {
+    return 'sepia(' + s + ') hue-rotate(' + (h - 35) + 'deg) saturate(' + sat + ')';
+  }
+  var THEMES = {
+    classic: { day: 'none', night: 'none' },
+    ocean:   { day: tint(205, 0.40, 1.5), night: tint(210, 0.50, 1.4) },
+    forest:  { day: tint(140, 0.40, 1.5), night: tint(145, 0.50, 1.3) },
+    sunset:  { day: tint(25,  0.50, 1.5), night: tint(20,  0.50, 1.3) },
+    rose:    { day: tint(340, 0.40, 1.5), night: tint(335, 0.50, 1.3) },
+    mono:    { day: 'grayscale(1) contrast(1.05) brightness(1.04)', night: 'grayscale(1) contrast(1.1)' }
+  };
+  var themeName = INIT.theme || 'classic';
+
+  function applyTheme() {
+    var t = THEMES[themeName] || THEMES.classic;
+    var f = baseName === 'satellite'
+      ? 'saturate(1.08) contrast(1.04)'
+      : (baseName === 'night' ? t.night : t.day);
+    map.getPane('tilePane').style.filter = f;
+  }
+
+  function setTheme(name) {
+    if (!THEMES[name]) name = 'classic';
+    themeName = name;
+    applyTheme();
+  }
+
   /* ---------- base map style ---------- */
 
   var STYLES = {
@@ -177,6 +274,10 @@ const PAGE = `<!doctype html>
   };
   var base = null;
   var baseName = null;
+
+  function casingColor() {
+    return baseName === 'night' ? '#0F172A' : '#FFFFFF';
+  }
 
   function setStyle(name) {
     if (!STYLES[name]) name = 'day';
@@ -194,7 +295,14 @@ const PAGE = `<!doctype html>
 
     base = next;
     baseName = name;
-    mapEl.classList.toggle('dark', name === 'night');
+    var dark = name === 'night';
+    mapEl.classList.toggle('dark', dark);
+    document.body.classList.toggle('dark', dark);
+    applyTheme();
+
+    Object.keys(lines).forEach(function (id) {
+      if (lines[id] && lines[id].casing) lines[id].casing.setStyle({ color: casingColor() });
+    });
   }
   setStyle(INIT.style);
 
@@ -203,7 +311,7 @@ const PAGE = `<!doctype html>
     if (on && !traffic) {
       traffic = L.tileLayer(
         'https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.png?key=' + KEY + '&tileSize=512',
-        { tileSize: 512, zoomOffset: -1, minZoom: 3, maxZoom: 20, opacity: 0.85 }
+        { tileSize: 512, zoomOffset: -1, minZoom: 3, maxZoom: 20, opacity: 0.85, pane: 'traffic' }
       ).addTo(map);
     } else if (!on && traffic) {
       map.removeLayer(traffic);
@@ -218,11 +326,16 @@ const PAGE = `<!doctype html>
     });
   }
 
+  function pop(title, desc) {
+    return '<div class="pop-t">' + esc(title) + '</div>' + (desc ? '<div class="pop-s">' + desc + '</div>' : '');
+  }
+
   /* ---------- marker icons ---------- */
   var ICON_CACHE = {};
 
   function rings(d, rgba) {
-    var st = 'width:' + d + 'px;height:' + d + 'px;background:' + rgba;
+    var bg = 'radial-gradient(circle, ' + rgba + ' 0%, ' + rgba + ' 55%, rgba(255,255,255,0) 72%)';
+    var st = 'width:' + d + 'px;height:' + d + 'px;background:' + bg;
     return '<div class="pulse" style="' + st + '"></div>' +
            '<div class="pulse b" style="' + st + '"></div>';
   }
@@ -230,30 +343,34 @@ const PAGE = `<!doctype html>
   function buildIconHtml(kind) {
     if (kind === 'client') {
       return '<div class="mk" style="width:42px;height:42px">' +
-        rings(180, 'rgba(22,163,74,.28)') +
-        '<div class="circle" style="width:25px;height:25px;border:2px solid #16A34A;background:#fff">' +
+        rings(190, 'rgba(22,163,74,.30)') +
+        '<div class="circle" style="width:26px;height:26px;border:2.5px solid #16A34A;background:#fff">' +
         '<div style="width:11px;height:11px;border-radius:50%;background:#16A34A"></div></div></div>';
     } else if (kind === 'me') {
-      return '<div class="mk" style="width:24px;height:24px">' +
-        rings(170, 'rgba(220,38,38,.25)') +
-        '<div class="circle" style="width:24px;height:24px">' +
-        '<div style="width:7px;height:7px;border-radius:50%;background:#fff"></div></div></div>';
+      return '<div class="mk" style="width:26px;height:26px">' +
+        rings(180, 'rgba(220,38,38,.28)') +
+        '<div class="circle" style="width:26px;height:26px">' +
+        '<div style="width:8px;height:8px;border-radius:50%;background:#fff"></div></div></div>';
     } else if (kind === 'emergency') {
-      return '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;background:#DC2626;' +
+      return '<div style="width:30px;height:30px;margin:3px;box-sizing:border-box;' +
+        'background:linear-gradient(135deg,#EF4444,#B91C1C);' +
         'border:3px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);' +
-        'box-shadow:0 2px 5px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center">' +
+        'box-shadow:0 4px 10px rgba(15,23,42,.4);display:flex;align-items:center;justify-content:center">' +
         '<div style="width:10px;height:10px;border-radius:50%;background:#fff"></div></div>';
     } else if (kind === 'hospital') {
       return '<div class="circle" style="width:28px;height:28px;background:#fff;border:2px solid #DC2626">' +
         '<div style="position:relative;width:14px;height:14px">' +
-        '<div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:1px"></div>' +
-        '<div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:1px"></div>' +
+        '<div style="position:absolute;left:5px;top:0;width:4px;height:14px;background:#DC2626;border-radius:2px"></div>' +
+        '<div style="position:absolute;left:0;top:5px;width:14px;height:4px;background:#DC2626;border-radius:2px"></div>' +
         '</div></div>';
     } else {
-      var glyph = kind === 'fire' ? '&#128658;' : '&#128657;';
+      var fire = kind === 'fire';
+      var glyph = fire ? '&#128658;' : '&#128657;';
+      var ring = fire ? 'rgba(234,88,12,.28)' : 'rgba(220,38,38,.28)';
+      var bg = fire ? 'linear-gradient(135deg,#FB923C,#C2410C)' : 'linear-gradient(135deg,#EF4444,#B91C1C)';
       return '<div class="mk" style="width:46px;height:46px">' +
-        rings(150, 'rgba(220,38,38,.25)') +
-        '<div class="circle" style="width:34px;height:34px;font-size:17px">' + glyph + '</div></div>';
+        rings(150, ring) +
+        '<div class="circle" style="width:34px;height:34px;font-size:17px;background:' + bg + '">' + glyph + '</div></div>';
     }
   }
 
@@ -262,7 +379,7 @@ const PAGE = `<!doctype html>
     var html = buildIconHtml(kind);
     var size = 46, ax = 23, ay = 23;
     if (kind === 'client') { size = 42; ax = 21; ay = 21; }
-    else if (kind === 'me') { size = 24; ax = 12; ay = 12; }
+    else if (kind === 'me') { size = 26; ax = 13; ay = 13; }
     else if (kind === 'emergency') { size = 36; ax = 18; ay = 34; }
     else if (kind === 'hospital') { size = 28; ax = 14; ay = 14; }
     ICON_CACHE[kind] = L.divIcon({ html: html, className: '', iconSize: [size, size], iconAnchor: [ax, ay] });
@@ -272,16 +389,13 @@ const PAGE = `<!doctype html>
   function labelOffset(kind) {
     if (kind === 'emergency') return [0, 4];
     if (kind === 'hospital') return [0, 12];
-    if (kind === 'me') return [0, 10];
+    if (kind === 'me') return [0, 11];
     return [0, 20];
   }
 
   function tip(kind) {
     return { permanent: true, direction: 'bottom', offset: labelOffset(kind), className: 'lbl', opacity: 1 };
   }
-
-  var markers = {};
-  var lines = {};
 
   function removeMarkerById(id) {
     if (!markers[id]) return;
@@ -309,7 +423,7 @@ const PAGE = `<!doctype html>
     var ll = [m.latitude, m.longitude];
     var mk = L.marker(ll, { icon: getIcon(m.kind), zIndexOffset: m.kind === 'emergency' ? 500 : (m.kind === 'me' || m.kind === 'client') ? 200 : 0 }).addTo(map);
     mk._spec = { latitude: m.latitude, longitude: m.longitude, kind: m.kind, title: m.title || '', description: m.description || '', label: m.label || '' };
-    if (m.title) { mk.bindPopup('<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')); }
+    if (m.title) { mk.bindPopup(pop(m.title, m.description ? esc(m.description) : '')); }
     if (m.label) { mk.bindTooltip(m.label, tip(m.kind)); }
     markers[m.id] = { mk: mk };
   }
@@ -328,7 +442,7 @@ const PAGE = `<!doctype html>
       mk.setIcon(getIcon(m.kind));
     }
 
-    var text = m.title ? ('<b>' + esc(m.title) + '</b>' + (m.description ? '<br>' + esc(m.description) : '')) : '';
+    var text = m.title ? pop(m.title, m.description ? esc(m.description) : '') : '';
     if (mk._text !== text) {
       mk._text = text;
       if (text) { mk.bindPopup(text); } else { mk.unbindPopup(); }
@@ -347,10 +461,10 @@ const PAGE = `<!doctype html>
   function applyAddLine(l) {
     if (lines[l.id]) return applyUpdateLine(l);
     var casing = L.polyline(l.coordinates, {
-      color: '#FFFFFF', weight: l.width + 4, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
+      color: casingColor(), weight: l.width + 5, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
     }).addTo(map);
     var main = L.polyline(l.coordinates, {
-      color: l.color, weight: l.width, opacity: 0.95, lineJoin: 'round', lineCap: 'round'
+      color: l.color, weight: l.width, opacity: 1, lineJoin: 'round', lineCap: 'round'
     }).addTo(map);
     lines[l.id] = { casing: casing, main: main };
     lines[l.id]._spec = { coordinates: l.coordinates, color: l.color, width: l.width };
@@ -365,7 +479,7 @@ const PAGE = `<!doctype html>
       pair.main.setLatLngs(l.coordinates);
     }
     if (old.width !== l.width) {
-      pair.casing.setStyle({ weight: l.width + 4 });
+      pair.casing.setStyle({ weight: l.width + 5 });
       pair.main.setStyle({ weight: l.width });
     }
     if (old.color !== l.color) {
@@ -403,6 +517,10 @@ const PAGE = `<!doctype html>
         window.__fly(op.payload.lat, op.payload.lng, op.payload.zoom, op.payload.ms);
       } else if (op.type === 'hospitals') {
         window.__hospitals(!!op.payload);
+      } else if (op.type === 'invalidate') {
+        window.__invalidate();
+      } else if (op.type === 'set_theme') {
+        setTheme(op.payload);
       }
     } catch (e) {}
   }
@@ -423,6 +541,7 @@ const PAGE = `<!doctype html>
   }
 
   window.addEventListener('message', onMessageFromRN, false);
+  document.addEventListener('message', onMessageFromRN, false);
 
   window.__sync = function (state) {
     try {
@@ -433,15 +552,34 @@ const PAGE = `<!doctype html>
     } catch (e) {}
   };
 
+  /* ---------- nearby data caches (short-lived on purpose) ---------- */
+
   var hospitals = {};
   var showHosp = INIT.hospitals;
   var lastHosp = null;
   var currentHospController = null;
   var hospitalsCache = {};
-  var HOSP_CACHE_TTL = 1000 * 60 * 2;
+  var HOSP_CACHE_TTL = 1000 * 20; // 20 seconds
+  var HOSP_MOVE_METERS = 400;     // reload once the centre moves this far
 
   function cacheKeyForCenter(c) {
-    return Math.round(c.lat * 100) + ':' + Math.round(c.lng * 100);
+    return Math.round(c.lat * 200) + ':' + Math.round(c.lng * 200);
+  }
+
+  function addHospital(p) {
+    if (!p.poi || !p.position) return;
+    var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
+    if (hospitals[id]) return;
+    var name = p.poi.name || 'Hospital';
+    var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
+    var phone = p.poi.phone ? p.poi.phone : '';
+    var sub = (addr ? esc(addr) : '') + (phone ? (addr ? '<br>' : '') + esc(phone) : '');
+
+    var m = L.marker([p.position.lat, p.position.lon], { icon: getIcon('hospital'), zIndexOffset: 100 });
+    m.bindPopup(pop(name, sub));
+    m.bindTooltip(name, tip('hospital'));
+    if (showHosp) m.addTo(map);
+    hospitals[id] = m;
   }
 
   function loadHospitals() {
@@ -450,21 +588,12 @@ const PAGE = `<!doctype html>
 
     var c = map.getCenter();
     var key = cacheKeyForCenter(c);
-    if (lastHosp && map.distance(lastHosp, c) < 1500) return;
+    if (lastHosp && map.distance(lastHosp, c) < HOSP_MOVE_METERS) return;
 
     var cached = hospitalsCache[key];
     var now = Date.now();
     if (cached && (now - cached.ts) < HOSP_CACHE_TTL) {
-      (cached.results || []).forEach(function (p) {
-        var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
-        if (hospitals[id]) return;
-        var name = p.poi.name || 'Hospital';
-        var m = L.marker([p.position.lat, p.position.lon], { icon: getIcon('hospital'), zIndexOffset: 100 });
-        m.bindPopup('<b>' + esc(name) + '</b>');
-        m.bindTooltip(name, tip('hospital'));
-        if (showHosp) m.addTo(map);
-        hospitals[id] = m;
-      });
+      (cached.results || []).forEach(addHospital);
       lastHosp = c;
       return;
     }
@@ -480,24 +609,7 @@ const PAGE = `<!doctype html>
       .then(function (j) {
         if (!j || !j.results) { lastHosp = null; return; }
         hospitalsCache[key] = { ts: Date.now(), results: j.results };
-        j.results.forEach(function (p) {
-          if (!p.poi || !p.position) return;
-          var id = p.id || (p.poi.name + p.position.lat + p.position.lon);
-          if (hospitals[id]) return;
-          var name = p.poi.name || 'Hospital';
-          var addr = p.address && p.address.freeformAddress ? p.address.freeformAddress : '';
-          var phone = p.poi.phone ? p.poi.phone : '';
-
-          var m = L.marker([p.position.lat, p.position.lon], { icon: getIcon('hospital'), zIndexOffset: 100 });
-          m.bindPopup(
-            '<b>' + esc(name) + '</b>' +
-            (addr ? '<br>' + esc(addr) : '') +
-            (phone ? '<br>' + esc(phone) : '')
-          );
-          m.bindTooltip(name, tip('hospital'));
-          if (showHosp) m.addTo(map);
-          hospitals[id] = m;
-        });
+        j.results.forEach(addHospital);
         lastHosp = c;
       })
       .catch(function () { lastHosp = null; })
@@ -515,10 +627,10 @@ const PAGE = `<!doctype html>
   var lastStreet = null;
   var currentStreetController = null;
   var streetCache = {};
-  var STREET_CACHE_TTL = 1000 * 60 * 2;
+  var STREET_CACHE_TTL = 1000 * 15; // 15 seconds
 
   function cacheKeyForStreet(c) {
-    return Math.round(c.lat * 100) + ':' + Math.round(c.lng * 100);
+    return Math.round(c.lat * 1000) + ':' + Math.round(c.lng * 1000);
   }
 
   function loadStreet() {
@@ -561,6 +673,18 @@ const PAGE = `<!doctype html>
       .catch(function () { lastStreet = null; });
   }
 
+  /* Throw away everything cached about "where the user is" and reload it.
+     Called whenever the user presses recenter / redirect. */
+  window.__invalidate = function () {
+    hospitalsCache = {};
+    streetCache = {};
+    lastHosp = null;
+    lastStreet = null;
+    if (currentHospController) { try { currentHospController.abort(); } catch (e) {} currentHospController = null; }
+    if (currentStreetController) { try { currentStreetController.abort(); } catch (e) {} currentStreetController = null; }
+    onIdle();
+  };
+
   window.__fit = function (pts, pad, maxZoom) {
     if (!pts || !pts.length) return;
     map.fitBounds(L.latLngBounds(pts), {
@@ -586,7 +710,7 @@ const PAGE = `<!doctype html>
     idleTimer = setTimeout(function () {
       loadHospitals();
       loadStreet();
-    }, 700);
+    }, 500);
   }
 
   map.on('moveend zoomend', onIdle);
@@ -625,6 +749,7 @@ function buildHtml(
   opts: {
     traffic: boolean;
     style: TomTomMapStyle;
+    theme: TomTomMapTheme;
     hospitals: boolean;
     street: boolean;
     boost: number;
@@ -636,6 +761,7 @@ function buildHtml(
     zoom: zoomFor(region.latitudeDelta, opts.boost),
     traffic: opts.traffic,
     style: opts.style,
+    theme: opts.theme,
     hospitals: opts.hospitals,
     street: opts.street,
   };
@@ -659,6 +785,7 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     initialRegion,
     showTraffic = false,
     mapStyle = "day",
+    theme = "classic",
     showHospitals = true,
     showStreetName = true,
     children,
@@ -682,6 +809,7 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     region: initialRegion,
     traffic: showTraffic,
     style: mapStyle,
+    theme,
     hospitals: showHospitals,
     street: showStreetName,
     boost: props.zoomBoost ?? DEFAULT_ZOOM_BOOST,
@@ -692,6 +820,7 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
       buildHtml(initialRef.current.region, {
         traffic: initialRef.current.traffic,
         style: initialRef.current.style,
+        theme: initialRef.current.theme,
         hospitals: initialRef.current.hospitals,
         street: initialRef.current.street,
         boost: initialRef.current.boost,
@@ -762,7 +891,6 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
   const context = useMemo<MapContextValue>(
     () => ({
       setMarker: (spec) => {
-        const prev = markersRef.current.get(spec.id);
         markersRef.current.set(spec.id, spec);
 
         const previous = lastSentMarkersRef.current.get(spec.id);
@@ -791,7 +919,6 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
         scheduleSync();
       },
       setLine: (spec) => {
-        const prev = linesRef.current.get(spec.id);
         linesRef.current.set(spec.id, spec);
 
         const previous = lastSentLinesRef.current.get(spec.id);
@@ -842,6 +969,15 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
   }, [enqueueOp, mapStyle, postMessageToWeb]);
 
   useEffect(() => {
+    const op = { type: "set_theme", payload: theme };
+    if (readyRef.current) {
+      postMessageToWeb({ type: "map_update", operations: [op] });
+    } else {
+      enqueueOp("command:theme", op);
+    }
+  }, [enqueueOp, postMessageToWeb, theme]);
+
+  useEffect(() => {
     const op = { type: "hospitals", payload: !!showHospitals };
     if (readyRef.current) {
       postMessageToWeb({ type: "map_update", operations: [op] });
@@ -849,6 +985,17 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
       enqueueOp("command:hospitals", op);
     }
   }, [enqueueOp, postMessageToWeb, showHospitals]);
+
+  const sendCommand = useCallback(
+    (key: string, op: unknown) => {
+      if (readyRef.current) {
+        postMessageToWeb({ type: "command", command: op });
+      } else {
+        enqueueOp(key, op);
+      }
+    },
+    [enqueueOp, postMessageToWeb]
+  );
 
   useImperativeHandle(
     ref,
@@ -863,24 +1010,24 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
           left: 40,
         };
 
-        const op = {
+        // Pressing recenter must never show hospitals / street from an old position.
+        if (!options?.keepCache) sendCommand("command:invalidate", { type: "invalidate" });
+
+        sendCommand("command:fit", {
           type: "fit",
           payload: {
             pts: coordinates.map((c) => [c.latitude, c.longitude]),
             pad: padding,
             maxZoom: 18,
           },
-        };
-
-        if (readyRef.current) {
-          postMessageToWeb({ type: "command", command: op });
-        } else {
-          enqueueOp("command:fit", op);
-        }
+        });
       },
-      animateToRegion: (region, durationMs = 600) => {
+      animateToRegion: (region, durationMs = 600, options) => {
         const boost = propsRef.current.zoomBoost ?? DEFAULT_ZOOM_BOOST;
-        const op = {
+
+        if (!options?.keepCache) sendCommand("command:invalidate", { type: "invalidate" });
+
+        sendCommand("command:fly", {
           type: "fly",
           payload: {
             lat: region.latitude,
@@ -888,16 +1035,13 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
             zoom: zoomFor(region.latitudeDelta, boost),
             ms: durationMs,
           },
-        };
-
-        if (readyRef.current) {
-          postMessageToWeb({ type: "command", command: op });
-        } else {
-          enqueueOp("command:fly", op);
-        }
+        });
+      },
+      refreshLocationData: () => {
+        sendCommand("command:invalidate", { type: "invalidate" });
       },
     }),
-    [enqueueOp, postMessageToWeb]
+    [sendCommand]
   );
 
   const onMessage = useCallback(
@@ -937,13 +1081,15 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
     webRef.current?.reload();
   }, []);
 
+  const dark = mapStyle === "night";
+
   return (
-    <View style={[styles.container, style]}>
+    <View style={[styles.container, dark && styles.containerDark, style]}>
       <MapContext.Provider value={context}>
         <WebView
           ref={webRef}
           source={{ html }}
-          style={styles.web}
+          style={[styles.web, dark && styles.containerDark]}
           originWhitelist={["*"]}
           javaScriptEnabled
           domStorageEnabled
@@ -965,9 +1111,17 @@ export const TomTomMap = forwardRef<TomTomMapHandle, Props>(function TomTomMap(
       </MapContext.Provider>
 
       {showStreetName && !!street && (
-        <View style={styles.streetChip} pointerEvents="none">
-          <Ionicons name="navigate" size={11} color="#DC2626" />
-          <Text style={styles.streetText} numberOfLines={1}>
+        <View
+          style={[styles.streetChip, dark && styles.streetChipDark]}
+          pointerEvents="none"
+        >
+          <View style={styles.streetIcon}>
+            <Ionicons name="navigate" size={10} color="#fff" />
+          </View>
+          <Text
+            style={[styles.streetText, dark && styles.streetTextDark]}
+            numberOfLines={1}
+          >
             {street}
           </Text>
         </View>
@@ -1058,35 +1212,57 @@ export function TomTomPolyline({
 const styles = StyleSheet.create({
   container: {
     overflow: "hidden",
-    backgroundColor: "#E2E8F0",
+    backgroundColor: "#E8EDF3",
+  },
+  containerDark: {
+    backgroundColor: "#1E293B",
   },
   web: {
     flex: 1,
-    backgroundColor: "#E2E8F0",
+    backgroundColor: "#E8EDF3",
   },
   streetChip: {
     position: "absolute",
-    top: 10,
-    left: 10,
-    maxWidth: "70%",
+    top: 12,
+    left: 12,
+    maxWidth: "72%",
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
+    gap: 8,
+    paddingLeft: 6,
+    paddingRight: 12,
     paddingVertical: 6,
-    borderRadius: 10,
-    backgroundColor: "rgba(255,255,255,0.95)",
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(15,23,42,0.08)",
     shadowColor: "#0F172A",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  streetChipDark: {
+    backgroundColor: "rgba(30,41,59,0.96)",
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  streetIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DC2626",
   },
   streetText: {
     flexShrink: 1,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: "800",
+    letterSpacing: -0.1,
     color: "#0F172A",
+  },
+  streetTextDark: {
+    color: "#F1F5F9",
   },
   missingKey: {
     position: "absolute",
